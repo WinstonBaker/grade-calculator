@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.database import Base, engine, get_db
+from backend.database import Base, engine, ensure_schema, get_db
 from backend.paths import current_platform, frozen, frontend_dist, github_repo
 from backend.updates import check_for_updates, download_update
 from backend.version import MACOS_ASSET, WINDOWS_ASSET, __version__
-from backend.engine import AGGREGATIONS, DEFAULT_SCALE, SEASON_ORDER
-from backend.models import Assignment, Category, Course, Fumble, GradeScale, Semester, Settings
+from backend.engine import AGGREGATIONS, SEASON_ORDER, normalize_scale, preset_payload, scale_as_dicts
+from backend.models import Assignment, Category, Course, Fumble, ScaleProfile, Semester, Settings
 from backend.schemas import (
     AssignmentCreate,
     AssignmentUpdate,
@@ -19,6 +21,9 @@ from backend.schemas import (
     CourseCreate,
     CourseUpdate,
     FumbleCreate,
+    ScaleApply,
+    ScaleProfileCreate,
+    ScaleProfileUpdate,
     ScaleUpdate,
     SemesterCreate,
     SemesterUpdate,
@@ -27,16 +32,28 @@ from backend.schemas import (
 from backend.service import (
     apply_score_fields,
     build_gpa,
+    coerce_target_letter,
     copy_default_scale,
+    create_scale_profile,
+    delete_scale_profile,
+    list_scale_profiles,
+    parse_default_scale,
+    replace_course_scale,
+    replace_profile_rows,
     seed_if_needed,
     serialize_course,
+    serialize_scale_profile,
     serialize_semester,
+    set_primary_profile,
     sort_courses,
     sort_semesters,
+    sync_primary_scale_json,
     target_gp_from_settings,
+    update_primary_scale,
 )
 
 Base.metadata.create_all(bind=engine)
+ensure_schema()
 
 app = FastAPI(title="Grade Calculator")
 app.add_middleware(
@@ -54,7 +71,7 @@ def _settings(db: Session) -> Settings:
 
 
 def _target(db: Session) -> float:
-    _, gp = target_gp_from_settings(_settings(db))
+    _, gp = target_gp_from_settings(_settings(db), db)
     return gp
 
 
@@ -74,14 +91,15 @@ def _course_or_404(db: Session, course_id: int) -> Course:
 
 
 @app.get("/api/meta")
-def meta():
+def meta(db: Session = Depends(get_db)):
     repo = github_repo()
+    settings = _settings(db)
     return {
         "aggregations": list(AGGREGATIONS),
         "seasons": list(SEASON_ORDER),
-        "default_scale": [
-            {"letter": a, "min_percent": b, "quality_points": c} for a, b, c in DEFAULT_SCALE
-        ],
+        "default_scale": scale_as_dicts(parse_default_scale(settings, db)),
+        "scale_profiles": [serialize_scale_profile(profile) for profile in list_scale_profiles(db)],
+        "scale_presets": preset_payload(),
         "sorts": ["code", "percent", "letter", "gpa", "credits", "score"],
         "version": __version__,
         "frozen": frozen(),
@@ -245,18 +263,96 @@ def delete_course(course_id: int, db: Session = Depends(get_db)):
 @app.put("/api/courses/{course_id}/scale")
 def update_scale(course_id: int, body: ScaleUpdate, db: Session = Depends(get_db)):
     course = _course_or_404(db, course_id)
-    db.query(GradeScale).filter(GradeScale.course_id == course.id).delete()
-    for row in body.rows:
-        db.add(
-            GradeScale(
-                course_id=course.id,
-                letter=row.letter,
-                min_percent=row.min_percent,
-                quality_points=row.quality_points,
-            )
-        )
+    try:
+        rows = normalize_scale(body.rows)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    replace_course_scale(db, course, rows)
+    course.scale_profile_id = None
     db.commit()
     return serialize_course(_course_or_404(db, course_id), _target(db))
+
+
+@app.post("/api/courses/{course_id}/scale/default")
+def reset_scale(course_id: int, body: ScaleApply | None = None, db: Session = Depends(get_db)):
+    course = _course_or_404(db, course_id)
+    profile_id = body.scale_profile_id if body else None
+    if profile_id is not None and db.get(ScaleProfile, profile_id) is None:
+        raise HTTPException(404, "Default scale not found")
+    copy_default_scale(db, course, profile_id)
+    db.commit()
+    return serialize_course(_course_or_404(db, course_id), _target(db))
+
+
+@app.get("/api/scale-profiles")
+def get_scale_profiles(db: Session = Depends(get_db)):
+    _settings(db)
+    return [serialize_scale_profile(profile) for profile in list_scale_profiles(db)]
+
+
+@app.post("/api/scale-profiles")
+def post_scale_profile(body: ScaleProfileCreate, db: Session = Depends(get_db)):
+    _settings(db)
+    rows = None
+    if body.rows is not None:
+        try:
+            rows = normalize_scale(body.rows)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    profile = create_scale_profile(
+        db,
+        name=body.name,
+        rows=rows,
+        is_primary=body.is_primary,
+        preset_id=body.preset_id,
+    )
+    db.commit()
+    db.refresh(profile)
+    return serialize_scale_profile(profile)
+
+
+@app.patch("/api/scale-profiles/{profile_id}")
+def patch_scale_profile(profile_id: int, body: ScaleProfileUpdate, db: Session = Depends(get_db)):
+    _settings(db)
+    profile = db.get(ScaleProfile, profile_id)
+    if profile is None:
+        raise HTTPException(404, "Default scale not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Name cannot be empty")
+        profile.name = name
+    if body.sort_order is not None:
+        profile.sort_order = body.sort_order
+    if body.rows is not None:
+        try:
+            rows = normalize_scale(body.rows)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        replace_profile_rows(db, profile, rows)
+        if profile.is_primary:
+            sync_primary_scale_json(db, profile)
+    if "preset_id" in body.model_fields_set:
+        profile.preset_id = body.preset_id or None
+    if body.is_primary:
+        set_primary_profile(db, profile)
+    db.commit()
+    db.refresh(profile)
+    return serialize_scale_profile(profile)
+
+
+@app.delete("/api/scale-profiles/{profile_id}")
+def remove_scale_profile(profile_id: int, db: Session = Depends(get_db)):
+    _settings(db)
+    profile = db.get(ScaleProfile, profile_id)
+    if profile is None:
+        raise HTTPException(404, "Default scale not found")
+    try:
+        delete_scale_profile(db, profile)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/categories")
@@ -379,6 +475,15 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         import json
 
         settings.future_guess_json = json.dumps(body.future_guess)
+    if body.default_scale is not None:
+        import json
+
+        try:
+            rows = normalize_scale(body.default_scale)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        update_primary_scale(db, rows)
+        coerce_target_letter(settings, rows)
     db.commit()
     return build_gpa(db)
 
@@ -404,16 +509,22 @@ def delete_fumble(fumble_id: int, db: Session = Depends(get_db)):
 
 
 DIST = frontend_dist()
-if DIST.exists():
 
-    @app.get("/{full_path:path}")
-    def spa(full_path: str):
-        if full_path.startswith("api/"):
-            raise HTTPException(404, "Not found")
-        candidate = DIST / full_path
-        if full_path and candidate.exists() and candidate.is_file():
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_with_spa(request: Request, exc: StarletteHTTPException):
+    """Serve the built UI for unknown pages without stealing API methods."""
+    if (
+        DIST.exists()
+        and exc.status_code == 404
+        and request.method in {"GET", "HEAD"}
+        and not request.url.path.startswith("/api")
+    ):
+        relative = request.url.path.lstrip("/")
+        candidate = DIST / relative
+        if relative and candidate.is_file():
             return FileResponse(candidate)
         index = DIST / "index.html"
         if index.exists():
             return FileResponse(index)
-        raise HTTPException(404, "Frontend is not built")
+    return await http_exception_handler(request, exc)

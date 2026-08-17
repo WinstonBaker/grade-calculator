@@ -3,13 +3,18 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   api,
   assignmentPercent,
+  defaultExamCategoryId,
+  examNeededRows,
   fmtGpa,
   fmtPct,
   fmtScore,
+  gradeFromPercent,
   letterClass,
   letterFromPercent,
+  projectPercentFromExam,
   scoreClass,
 } from "./api";
+import { ScaleRowsEditor } from "./ScaleEditor.jsx";
 
 const AGG_LABELS = {
   average: "Average",
@@ -35,11 +40,13 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const [newCat, setNewCat] = useState("HW");
   const [showScale, setShowScale] = useState(false);
   const [openCats, setOpenCats] = useState({});
+  const [profiles, setProfiles] = useState([]);
 
   async function load() {
-    const [c, s] = await Promise.all([api.course(id), api.semesters()]);
+    const [c, s, m] = await Promise.all([api.course(id), api.semesters(), api.meta()]);
     setCourse(c);
     setSemesters(s);
+    setProfiles(m.scale_profiles || []);
   }
 
   useEffect(() => {
@@ -84,15 +91,21 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
     setOpenCats(Object.fromEntries(course.categories.map((c) => [c.id, false])));
   }
 
-  const whatIfGroups = useMemo(() => {
-    if (!course) return [];
-    const map = new Map();
-    for (const row of course.what_if || []) {
-      if (!map.has(row.category_name)) map.set(row.category_name, []);
-      map.get(row.category_name).push(row);
+  const [examCatId, setExamCatId] = useState(null);
+  const [examScoreRaw, setExamScoreRaw] = useState("");
+
+  useEffect(() => {
+    setExamScoreRaw("");
+    setExamCatId(null);
+  }, [id]);
+
+  useEffect(() => {
+    if (!course?.categories) return;
+    const ids = new Set(course.categories.map((c) => c.id));
+    if (examCatId == null || !ids.has(examCatId)) {
+      setExamCatId(defaultExamCategoryId(course.categories));
     }
-    return [...map.entries()];
-  }, [course]);
+  }, [course, examCatId]);
 
   if (!course) return <p className="muted">{error || "Loading…"}</p>;
 
@@ -101,7 +114,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
       <div className="topbar">
         <div>
           <p className="muted">
-            <Link to="/">Courses</Link> / {course.code}
+            <Link to="/courses">Courses</Link> / {course.code}
           </p>
           <div className="gradebook-title-row">
             <h1>{course.code}</h1>
@@ -114,6 +127,8 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
           </div>
         </div>
       </div>
+
+      {error ? <p className="error">{error}</p> : null}
 
       <div className="panel row course-settings" style={{ marginBottom: 16 }}>
         <label className="muted">
@@ -169,7 +184,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
             if (!window.confirm("Delete this class?")) return;
             await api.deleteCourse(course.id);
             onChange?.();
-            navigate("/");
+            navigate("/courses");
           }}
         >
           Delete class
@@ -177,7 +192,26 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
       </div>
 
       {showScale ? (
-        <ScaleEditor course={course} onSave={async (rows) => setCourse(await api.updateScale(course.id, rows))} />
+        <ScaleEditor
+          course={course}
+          profiles={profiles}
+          onSave={async (rows) => {
+            try {
+              setCourse(await api.updateScale(course.id, rows));
+              setError("");
+            } catch (err) {
+              setError(err.message);
+            }
+          }}
+          onApply={async (profileId) => {
+            try {
+              setCourse(await api.resetScale(course.id, profileId));
+              setError("");
+            } catch (err) {
+              setError(err.message);
+            }
+          }}
+        />
       ) : null}
 
       <div className="split">
@@ -214,84 +248,167 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
             </button>
           </form>
         </div>
-        <div className="panel">
-          <h2>What-if remaining</h2>
-          <p className="muted">Score needed on incomplete categories to hit each cutoff.</p>
-          {whatIfGroups.length === 0 ? (
-            <p className="muted">Enter weights and leave a category empty to see targets.</p>
-          ) : (
-            whatIfGroups.map(([name, rows]) => (
-              <div key={name} style={{ marginTop: 14 }}>
-                <strong>{name}</strong>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Letter</th>
-                      <th>Needed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows
-                      .filter((r) => ["A+", "A", "A-", "B+", "B", "B-"].includes(r.letter))
-                      .map((r) => (
-                        <tr key={r.letter}>
-                          <td>
-                            <span className={`letter ${letterClass(r.letter)}`}>{r.letter}</span>
-                          </td>
-                          <td className={`mono ${r.needed > 100 ? "neg" : r.needed < 0 ? "pos" : ""}`}>
-                            {fmtPct(r.needed)}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ))
-          )}
-        </div>
+        <ExamCalc
+          course={course}
+          examCatId={examCatId}
+          examScoreRaw={examScoreRaw}
+          onExamCatId={setExamCatId}
+          onExamScoreRaw={setExamScoreRaw}
+        />
       </div>
     </>
   );
 }
 
-function ScaleEditor({ course, onSave }) {
+function ScaleEditor({ course, profiles, onSave, onApply }) {
   const [rows, setRows] = useState(course.scale.map((r) => ({ ...r })));
+  const [saving, setSaving] = useState(false);
+  const selectedProfileId = course.scale_profile_id == null ? "" : String(course.scale_profile_id);
+
+  useEffect(() => {
+    setRows(course.scale.map((r) => ({ ...r })));
+  }, [course.scale]);
+
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
       <h2>Grade cutoffs</h2>
-      <div className="scale-grid muted" style={{ marginBottom: 8 }}>
-        <span>Letter</span>
-        <span>Min %</span>
-        <span>GP</span>
+      <p className="muted" style={{ marginTop: 0 }}>
+        This class only. Pick a saved default to copy it here. Saving custom cutoffs stops following that default.
+      </p>
+      <label className="muted" style={{ display: "block", marginBottom: 12 }}>
+        Default scale
+        <select
+          className="select"
+          style={{ display: "block", marginTop: 6, width: "min(100%, 360px)" }}
+          value={selectedProfileId}
+          disabled={saving}
+          onChange={async (event) => {
+            const value = event.target.value;
+            setSaving(true);
+            try {
+              if (!value) await onSave(rows);
+              else await onApply(Number(value));
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          <option value="">Custom</option>
+          {(profiles || []).map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name}
+              {profile.is_primary ? " (primary)" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      <ScaleRowsEditor rows={rows} onChange={setRows} />
+      <div className="row" style={{ marginTop: 10 }}>
+        <button
+          className="btn primary"
+          type="button"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            try {
+              await onSave(rows);
+            } finally {
+              setSaving(false);
+            }
+          }}
+        >
+          Save cutoffs
+        </button>
       </div>
-      {rows.map((row, i) => (
-        <div className="scale-grid" key={row.letter} style={{ marginBottom: 6 }}>
-          <span className="mono">{row.letter}</span>
-          <input
-            className="input"
-            value={row.min_percent}
-            onChange={(e) => {
-              const next = [...rows];
-              next[i] = { ...row, min_percent: Number(e.target.value) };
-              setRows(next);
-            }}
-          />
-          <input
-            className="input"
-            value={Number(row.quality_points).toFixed(3)}
-            step="0.001"
-            onChange={(e) => {
-              const next = [...rows];
-              const n = Number(e.target.value);
-              next[i] = { ...row, quality_points: Number.isNaN(n) ? 0 : Number(n.toFixed(3)) };
-              setRows(next);
-            }}
-          />
-        </div>
-      ))}
-      <button className="btn primary" style={{ marginTop: 10 }} onClick={() => onSave(rows)}>
-        Save cutoffs
-      </button>
+    </div>
+  );
+}
+
+function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw }) {
+  const resolvedId = examCatId ?? defaultExamCategoryId(course.categories);
+  const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
+  const projected = useMemo(
+    () => projectPercentFromExam(course, resolvedId, examPct),
+    [course, resolvedId, examPct]
+  );
+  const grade = gradeFromPercent(projected, course.scale);
+  const needed = useMemo(() => examNeededRows(course, resolvedId), [course, resolvedId]);
+  const examCat = course.categories.find((c) => c.id === resolvedId);
+  const hasWeight = examCat ? examCat.weight || examCat.weight_per_item || examCat.effective_weight : false;
+
+  return (
+    <div className="panel">
+      <h2>Final from exam</h2>
+      <p className="muted">Course grade if this exam scores a given percent, and what you need for each cutoff.</p>
+      {course.categories.length === 0 ? (
+        <p className="muted">Add a category for the exam first.</p>
+      ) : (
+        <>
+          <div className="exam-calc-fields">
+            <label className="muted">
+              Exam category
+              <select
+                className="select"
+                style={{ display: "block", marginTop: 4, width: "100%" }}
+                value={resolvedId ?? ""}
+                onChange={(e) => onExamCatId(Number(e.target.value))}
+              >
+                {course.categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                    {cat.percent != null ? ` · ${fmtPct(cat.percent)}%` : " · no score yet"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="muted">
+              Exam score
+              <input
+                className="input"
+                style={{ display: "block", marginTop: 4, width: "100%" }}
+                placeholder="90 or 18/20"
+                value={examScoreRaw}
+                onChange={(e) => onExamScoreRaw(e.target.value)}
+              />
+            </label>
+          </div>
+          {examScoreRaw.trim() && projected != null ? (
+            <div className="exam-preview">
+              <span className={`letter ${letterClass(grade.letter)}`}>{grade.letter || "—"}</span>
+              <strong className={`mono exam-pct ${letterClass(grade.letter)}`}>{fmtPct(projected)}%</strong>
+              <span className="mono">{fmtGpa(grade.quality_points)}</span>
+            </div>
+          ) : examScoreRaw.trim() && projected == null ? (
+            <p className="muted">Enter a valid score and give this category a weight.</p>
+          ) : null}
+          {!hasWeight ? (
+            <p className="muted">This category has no weight, so it cannot change the course grade.</p>
+          ) : needed.length === 0 ? (
+            <p className="muted">Add grade cutoffs to see exam targets.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Letter</th>
+                  <th>Exam %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needed.map((row) => (
+                  <tr key={row.letter}>
+                    <td>
+                      <span className={`letter ${letterClass(row.letter)}`}>{row.letter}</span>
+                    </td>
+                    <td className={`mono ${row.needed > 100 ? "neg" : row.needed < 0 ? "pos" : ""}`}>
+                      {fmtPct(row.needed)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
     </div>
   );
 }

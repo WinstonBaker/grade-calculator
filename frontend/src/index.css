@@ -609,6 +609,34 @@ th button.active {
   align-items: start;
 }
 
+.exam-calc-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+
+.exam-calc-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.exam-preview {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0 4px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.exam-preview .exam-pct {
+  font-size: 1.2rem;
+}
+
 .dist-charts {
   display: flex;
   flex-direction: column;
@@ -1105,9 +1133,48 @@ th button.active {
 
 .scale-grid {
   display: grid;
-  grid-template-columns: 70px 1fr 1fr;
+  grid-template-columns: 90px 1fr 1fr auto;
   gap: 6px;
   align-items: center;
+  margin-bottom: 6px;
+}
+
+.scale-grid-head {
+  margin-bottom: 8px;
+}
+
+.default-scale-editor {
+  margin-top: 16px;
+}
+
+.scale-profile-card {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-raised);
+}
+
+.scale-profile-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scale-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.scale-preset-letters {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .guess-grid input {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 DEFAULT_SCALE: list[tuple[str, float, float]] = [
@@ -22,6 +22,196 @@ DEFAULT_SCALE: list[tuple[str, float, float]] = [
 ]
 
 VALID_QUALITY_POINTS = {qp for _, _, qp in DEFAULT_SCALE}
+
+# School GPA tables. Percent cutoffs are typical 10-point plus/minus bands;
+# instructors can still change them per class. Quality points follow each
+# school's published undergraduate transcript scale.
+SCALE_PRESETS: list[dict] = [
+    {
+        "id": "ncsu",
+        "name": "NC State",
+        "description": "A+ is 4.333; plus/minus in thirds",
+        "rows": DEFAULT_SCALE,
+    },
+    {
+        "id": "unc",
+        "name": "UNC",
+        "description": "No A+ or D-; plus/minus at 3.7 / 3.3",
+        "rows": [
+            ("A", 93.0, 4.0),
+            ("A-", 90.0, 3.7),
+            ("B+", 87.0, 3.3),
+            ("B", 83.0, 3.0),
+            ("B-", 80.0, 2.7),
+            ("C+", 77.0, 2.3),
+            ("C", 73.0, 2.0),
+            ("C-", 70.0, 1.7),
+            ("D+", 67.0, 1.3),
+            ("D", 60.0, 1.0),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "clemson",
+        "name": "Clemson",
+        "description": "A–F only; no plus/minus",
+        "rows": [
+            ("A", 90.0, 4.0),
+            ("B", 80.0, 3.0),
+            ("C", 70.0, 2.0),
+            ("D", 60.0, 1.0),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "ecu",
+        "name": "ECU",
+        "description": "No A+; plus/minus at 3.7 / 3.3",
+        "rows": [
+            ("A", 93.0, 4.0),
+            ("A-", 90.0, 3.7),
+            ("B+", 87.0, 3.3),
+            ("B", 83.0, 3.0),
+            ("B-", 80.0, 2.7),
+            ("C+", 77.0, 2.3),
+            ("C", 73.0, 2.0),
+            ("C-", 70.0, 1.7),
+            ("D+", 67.0, 1.3),
+            ("D", 63.0, 1.0),
+            ("D-", 60.0, 0.7),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "uncw",
+        "name": "UNCW",
+        "description": "No A+; plus/minus in thirds",
+        "rows": [
+            ("A", 93.0, 4.0),
+            ("A-", 90.0, 3.67),
+            ("B+", 87.0, 3.33),
+            ("B", 83.0, 3.0),
+            ("B-", 80.0, 2.67),
+            ("C+", 77.0, 2.33),
+            ("C", 73.0, 2.0),
+            ("C-", 70.0, 1.67),
+            ("D+", 67.0, 1.33),
+            ("D", 63.0, 1.0),
+            ("D-", 60.0, 0.67),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "uncc",
+        "name": "UNCC",
+        "description": "A–F only; no plus/minus",
+        "rows": [
+            ("A", 90.0, 4.0),
+            ("B", 80.0, 3.0),
+            ("C", 70.0, 2.0),
+            ("D", 60.0, 1.0),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "duke",
+        "name": "Duke",
+        "description": "A+ same as A (4.0); plus/minus at 3.7 / 3.3",
+        "rows": [
+            ("A+", 97.0, 4.0),
+            ("A", 93.0, 4.0),
+            ("A-", 90.0, 3.7),
+            ("B+", 87.0, 3.3),
+            ("B", 83.0, 3.0),
+            ("B-", 80.0, 2.7),
+            ("C+", 77.0, 2.3),
+            ("C", 73.0, 2.0),
+            ("C-", 70.0, 1.7),
+            ("D+", 67.0, 1.3),
+            ("D", 63.0, 1.0),
+            ("D-", 60.0, 1.0),
+            ("F", 0.0, 0.0),
+        ],
+    },
+    {
+        "id": "cofc",
+        "name": "College of Charleston",
+        "description": "No A+; plus/minus at 3.7 / 3.3",
+        "rows": [
+            ("A", 93.0, 4.0),
+            ("A-", 90.0, 3.7),
+            ("B+", 87.0, 3.3),
+            ("B", 83.0, 3.0),
+            ("B-", 80.0, 2.7),
+            ("C+", 77.0, 2.3),
+            ("C", 73.0, 2.0),
+            ("C-", 70.0, 1.7),
+            ("D+", 67.0, 1.3),
+            ("D", 63.0, 1.0),
+            ("D-", 60.0, 0.7),
+            ("F", 0.0, 0.0),
+        ],
+    },
+]
+
+
+def scale_as_dicts(rows: Iterable[tuple[str, float, float]]) -> list[dict]:
+    return [{"letter": letter, "min_percent": minimum, "quality_points": qp} for letter, minimum, qp in rows]
+
+
+def preset_payload() -> list[dict]:
+    return [
+        {
+            "id": preset["id"],
+            "name": preset["name"],
+            "description": preset["description"],
+            "rows": scale_as_dicts(preset["rows"]),
+        }
+        for preset in SCALE_PRESETS
+    ]
+
+
+def _row_parts(row) -> tuple[str, float, float]:
+    if isinstance(row, dict):
+        letter = row.get("letter", "")
+        minimum = row.get("min_percent", 0)
+        qp = row.get("quality_points", 0)
+    elif hasattr(row, "letter"):
+        letter = row.letter
+        minimum = row.min_percent
+        qp = row.quality_points
+    else:
+        letter, minimum, qp = row
+    return str(letter), float(minimum), float(qp)
+
+
+def normalize_scale(rows) -> list[tuple[str, float, float]]:
+    """Validate and sort a grade scale high-to-low by cutoff."""
+    parsed: list[tuple[str, float, float]] = []
+    seen: set[str] = set()
+    if not rows:
+        raise ValueError("Grade scale must include at least one letter")
+    for row in rows:
+        letter, minimum, qp = _row_parts(row)
+        letter = letter.strip()
+        if not letter:
+            raise ValueError("Each row needs a letter")
+        key = letter.casefold()
+        if key in seen:
+            raise ValueError(f"Duplicate letter {letter}")
+        seen.add(key)
+        parsed.append((letter, minimum, round(qp, 3)))
+    parsed.sort(key=lambda item: (-item[1], item[0]))
+    return parsed
+
+
+def scale_rows_from_tuples(rows: Iterable[tuple[str, float, float]]) -> list["ScaleRow"]:
+    return [ScaleRow(*row) for row in rows]
+
+
+def quality_points_set(scale: Iterable["ScaleRow"]) -> set[float]:
+    return {row.quality_points for row in scale}
+
 
 SEASON_ORDER = {"spring": 1, "summer": 2, "fall": 3}
 
@@ -252,14 +442,13 @@ def term_score(quality_points: float | None, credits: float, target_gp: float) -
     return int(round((quality_points - target_gp) * credits * 3.0))
 
 
-def course_grade(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
+def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
+    """Grade the course without what-if rows."""
     scale = course.scale or [ScaleRow(*row) for row in DEFAULT_SCALE]
     cat_results: list[CategoryResult] = []
-    percents: dict[int | None, float | None] = {}
 
     for cat in course.categories:
         pct = category_percent(cat, course.categories)
-        percents[cat.id] = pct
         weight = effective_weight(cat)
         weighted = weight * pct if pct is not None and weight else None
         cat_results.append(
@@ -283,7 +472,8 @@ def course_grade(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
         percent = None
 
     letter, gp = letter_from_percent(percent, scale)
-    if course.gp_override is not None and course.gp_override in VALID_QUALITY_POINTS:
+    valid_qp = quality_points_set(scale) or VALID_QUALITY_POINTS
+    if course.gp_override is not None and course.gp_override in valid_qp:
         gp = course.gp_override
         letter = next((row.letter for row in scale if row.quality_points == gp), letter)
     elif course.gp_override is not None:
@@ -291,15 +481,101 @@ def course_grade(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
         pass
 
     score = term_score(gp, course.credits, target_gp) if gp is not None else None
-    what_if = what_if_needed(course, cat_results, scale, percent)
     return CourseResult(
         percent=percent,
         letter=letter,
         quality_points=gp,
         score=score,
         categories=cat_results,
-        what_if=what_if,
+        what_if=[],
     )
+
+
+def course_grade(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
+    scale = course.scale or [ScaleRow(*row) for row in DEFAULT_SCALE]
+    result = evaluate_course(course, target_gp)
+    return replace(result, what_if=what_if_needed(course, result.categories, scale, result.percent))
+
+
+def course_with_exam_score(
+    course: CourseInput,
+    category_id: int,
+    exam_percent: float,
+) -> CourseInput:
+    """Copy of the course with one category forced to `exam_percent`."""
+    cats: list[CategoryInput] = []
+    for cat in course.categories:
+        if cat.id != category_id:
+            cats.append(cat)
+            continue
+        n = max(_score_count(cat), 1)
+        cats.append(
+            replace(
+                cat,
+                aggregation="average",
+                replace_with_category_id=None,
+                assignments=[
+                    AssignmentInput(name="Exam", earned=exam_percent, possible=100.0)
+                    for _ in range(n)
+                ],
+            )
+        )
+    return replace(course, categories=cats)
+
+
+def project_from_exam(
+    course: CourseInput,
+    category_id: int,
+    exam_percent: float,
+    target_gp: float = 4.0,
+) -> CourseResult:
+    """Overall grade if the chosen category (usually the final) scores `exam_percent`."""
+    forced = course_with_exam_score(course, category_id, exam_percent)
+    forced = replace(forced, gp_override=None)
+    return evaluate_course(forced, target_gp)
+
+
+def exam_score_needed(
+    course: CourseInput,
+    category_id: int,
+    cutoff: float,
+    target_gp: float = 4.0,
+) -> float | None:
+    """Exam percent that makes the overall course grade equal `cutoff`."""
+
+    def overall(exam: float) -> float | None:
+        return project_from_exam(course, category_id, exam, target_gp).percent
+
+    p0 = overall(0.0)
+    p100 = overall(100.0)
+    if p0 is None or p100 is None:
+        return None
+    slope = (p100 - p0) / 100.0
+    p50 = overall(50.0)
+    linear_mid = p0 + 0.5 * (p100 - p0)
+    if p50 is not None and abs(p50 - linear_mid) < 1e-6:
+        if abs(slope) < 1e-15:
+            return None
+        return (cutoff - p0) / slope
+
+    lo, hi = -100.0, 300.0
+    p_lo, p_hi = overall(lo), overall(hi)
+    if p_lo is None or p_hi is None:
+        return None
+    if abs(p_hi - p_lo) < 1e-15:
+        return None
+    if p_hi < cutoff or p_lo >= cutoff:
+        return lo + (cutoff - p_lo) * (hi - lo) / (p_hi - p_lo)
+    for _ in range(48):
+        mid = (lo + hi) / 2.0
+        got = overall(mid)
+        if got is None:
+            return None
+        if got >= cutoff:
+            hi = mid
+        else:
+            lo = mid
+    return hi
 
 
 def what_if_needed(

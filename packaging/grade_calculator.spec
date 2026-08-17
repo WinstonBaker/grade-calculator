@@ -14,6 +14,7 @@ from backend.version import __version__
 
 datas = [(str(root / "frontend" / "dist"), "frontend/dist")]
 binaries = []
+icon_dir = root / "packaging"
 hiddenimports = collect_submodules("backend")
 
 for pkg in (
@@ -74,6 +75,7 @@ if sys.platform == "win32":
         runtime_tmpdir=None,
         console=False,
         disable_windowed_traceback=False,
+        icon=str(icon_dir / "icon.ico"),
     )
 else:
     exe = EXE(
@@ -103,7 +105,7 @@ else:
         app = BUNDLE(
             coll,
             name="Grade Calculator.app",
-            icon=None,
+            icon=str(icon_dir / "icon.icns"),
             bundle_identifier="com.winstonbaker.gradecalculator",
             version=__version__,
             info_plist={

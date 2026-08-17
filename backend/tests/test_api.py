@@ -124,5 +124,138 @@ def test_meta_includes_version_and_downloads(tmp_path):
         assert "windows" in body["downloads"]
         assert "macos" in body["downloads"]
         assert body["release_url"].endswith("/releases/latest")
+        assert any(p["id"] == "unc" for p in body["scale_presets"])
+        preset_ids = {p["id"] for p in body["scale_presets"]}
+        assert preset_ids == {"ncsu", "unc", "clemson", "ecu", "uncw", "uncc", "duke", "cofc"}
+        assert body["default_scale"][0]["letter"] == "A+"
+        profiles = body["scale_profiles"]
+        assert len(profiles) == 1
+        assert profiles[0]["name"] == "Default 1"
+        assert profiles[0]["is_primary"] is True
+        assert profiles[0]["rows"][0]["quality_points"] == 4.333
+    finally:
+        teardown()
+
+
+def test_default_scale_copied_to_new_courses(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        unc = next(p for p in client.get("/api/meta").json()["scale_presets"] if p["id"] == "unc")
+        saved = client.patch("/api/settings", json={"default_scale": unc["rows"], "target_letter": "A+"})
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["target_letter"] == "A"
+        assert all(row["letter"] != "A+" for row in body["default_scale"])
+
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CHEM 101", "credits": 3},
+        ).json()
+        letters = [row["letter"] for row in course["scale"]]
+        assert "A+" not in letters
+        assert letters[0] == "A"
+        assert course["scale"][0]["quality_points"] == 4.0
+        assert course["scale_profile_id"] is not None
+
+        reset = client.post(f"/api/courses/{course['id']}/scale/default")
+        assert reset.status_code == 200
+        assert [row["letter"] for row in reset.json()["scale"]] == letters
+
+        capped = next(p for p in client.get("/api/meta").json()["scale_presets"] if p["id"] == "duke")
+        client.patch("/api/settings", json={"default_scale": capped["rows"]})
+        other = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CHEM 102", "credits": 3},
+        ).json()
+        a_plus = next(row for row in other["scale"] if row["letter"] == "A+")
+        a_row = next(row for row in other["scale"] if row["letter"] == "A")
+        assert a_plus["quality_points"] == a_row["quality_points"] == 4.0
+    finally:
+        teardown()
+
+
+def test_scale_profile_crud_and_course_apply(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        profiles = client.get("/api/scale-profiles").json()
+        assert len(profiles) == 1
+        primary = profiles[0]
+        assert primary["name"] == "Default 1"
+        assert primary["rows"][0]["quality_points"] == 4.333
+
+        cloned = client.post("/api/scale-profiles", json={}).json()
+        assert cloned["name"] == "Default 2"
+        assert cloned["is_primary"] is False
+        assert cloned["rows"][0]["quality_points"] == 4.333
+
+        unc = next(p for p in client.get("/api/meta").json()["scale_presets"] if p["id"] == "unc")
+        updated = client.patch(f"/api/scale-profiles/{cloned['id']}", json={"rows": unc["rows"], "name": "Transfer"}).json()
+        assert updated["name"] == "Transfer"
+        assert all(row["letter"] != "A+" for row in updated["rows"])
+
+        listed = client.get("/api/scale-profiles").json()
+        assert [p["name"] for p in listed] == ["Default 1", "Transfer"]
+
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        first = client.post("/api/courses", json={"semester_id": sem_id, "code": "MA 101", "credits": 3}).json()
+        assert first["scale_profile_id"] == primary["id"]
+        assert first["scale"][0]["letter"] == "A+"
+        assert first["scale"][0]["quality_points"] == 4.333
+
+        applied = client.post(
+            f"/api/courses/{first['id']}/scale/default",
+            json={"scale_profile_id": cloned["id"]},
+        ).json()
+        assert applied["scale_profile_id"] == cloned["id"]
+        assert applied["scale"][0]["letter"] == "A"
+        assert applied["scale"][0]["quality_points"] == 4.0
+
+        custom_rows = [{**row} for row in applied["scale"]]
+        custom_rows[0]["min_percent"] = 94
+        custom = client.put(f"/api/courses/{first['id']}/scale", json={"rows": custom_rows}).json()
+        assert custom["scale_profile_id"] is None
+        assert custom["scale"][0]["min_percent"] == 94
+
+        promoted = client.patch(f"/api/scale-profiles/{cloned['id']}", json={"is_primary": True}).json()
+        assert promoted["is_primary"] is True
+        second = client.post("/api/courses", json={"semester_id": sem_id, "code": "CH 101", "credits": 3}).json()
+        assert second["scale_profile_id"] == cloned["id"]
+        assert second["scale"][0]["letter"] == "A"
+
+        deleted = client.delete(f"/api/scale-profiles/{cloned['id']}")
+        assert deleted.status_code == 200
+        leftover = client.get("/api/scale-profiles").json()
+        assert len(leftover) == 1
+        assert leftover[0]["is_primary"] is True
+        assert leftover[0]["id"] == primary["id"]
+        after_delete = client.get(f"/api/courses/{second['id']}").json()
+        assert after_delete["scale_profile_id"] is None
+        assert after_delete["scale"][0]["letter"] == "A"
+
+        blocked = client.delete(f"/api/scale-profiles/{primary['id']}")
+        assert blocked.status_code == 400
+    finally:
+        teardown()
+
+
+def test_identical_school_presets_keep_selected_name(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        presets = {p["id"]: p for p in client.get("/api/meta").json()["scale_presets"]}
+        profile_id = client.get("/api/scale-profiles").json()[0]["id"]
+
+        uncc = client.patch(
+            f"/api/scale-profiles/{profile_id}",
+            json={"rows": presets["uncc"]["rows"], "preset_id": "uncc"},
+        ).json()
+        assert uncc["preset_id"] == "uncc"
+        assert uncc["rows"] == presets["clemson"]["rows"]
+
+        clemson = client.patch(
+            f"/api/scale-profiles/{profile_id}",
+            json={"rows": presets["clemson"]["rows"], "preset_id": "clemson"},
+        ).json()
+        assert clemson["preset_id"] == "clemson"
     finally:
         teardown()

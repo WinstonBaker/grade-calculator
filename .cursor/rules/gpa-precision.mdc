@@ -1,0 +1,15 @@
+---
+description: GPA quality-point decimals are significant and must not be rounded together
+alwaysApply: true
+---
+
+# GPA decimal precision
+
+Quality points are not interchangeable at different precisions:
+
+- `4.3` ≠ `4.33` ≠ `4.333`
+- NC State A+ is `4.333` (thirds: 4.333 / 3.667 / 3.333)
+- UNCW-style thirds are often `3.67` / `3.33` (two decimals)
+- UNC / ECU plus-minus is often `3.7` / `3.3` (one decimal)
+
+Never round GPA values to 2 decimals (that turns 4.333 into 4.33). Rounding to 3 decimals is OK to kill float noise. Display with 3 decimals so 4.300, 4.330, and 4.333 stay visually distinct.

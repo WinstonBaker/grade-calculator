@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api, fmtGpa, fmtScore, scoreClass } from "./api";
 import CourseList from "./CourseList.jsx";
@@ -50,7 +50,7 @@ export default function App() {
         included: true,
       });
       await refresh();
-      navigate(`/?semester=${created.id}`);
+      navigate(`/courses?semester=${created.id}`);
       setError("");
     } catch (err) {
       setError(err.message);
@@ -67,9 +67,9 @@ export default function App() {
         <nav className="nav-block">
           <h2>Views</h2>
           <NavLink
-            to="/"
+            to="/courses"
             end
-            className={() => `nav-link ${location.pathname === "/" && !selectedSemester ? "active" : ""}`}
+            className={() => `nav-link ${location.pathname === "/courses" && !selectedSemester ? "active" : ""}`}
           >
             All courses
           </NavLink>
@@ -86,7 +86,7 @@ export default function App() {
             {semesters.map((sem) => (
               <NavLink
                 key={sem.id}
-                to={`/?semester=${sem.id}`}
+                to={`/courses?semester=${sem.id}`}
                 className={() => `nav-link ${selectedSemester === String(sem.id) ? "active" : ""}`}
               >
                 <span>{sem.name}</span>
@@ -132,7 +132,8 @@ export default function App() {
       <main className="main">
         {error ? <p className="error">{error}</p> : null}
         <Routes>
-          <Route path="/" element={<CourseList semesters={semesters} onChange={refresh} />} />
+          <Route path="/" element={<Navigate to="/gpa" replace />} />
+          <Route path="/courses" element={<CourseList semesters={semesters} onChange={refresh} />} />
           <Route
             path="/courses/:id"
             element={<Gradebook onChange={refresh} colorAssignmentGrades={appearance.gradeColors} />}

@@ -78,10 +78,30 @@ class ScaleUpdate(BaseModel):
     rows: list[ScaleRowIn]
 
 
+class ScaleApply(BaseModel):
+    scale_profile_id: int | None = None
+
+
+class ScaleProfileCreate(BaseModel):
+    name: str | None = None
+    rows: list[ScaleRowIn] | None = None
+    is_primary: bool = False
+    preset_id: str | None = None
+
+
+class ScaleProfileUpdate(BaseModel):
+    name: str | None = None
+    rows: list[ScaleRowIn] | None = None
+    is_primary: bool | None = None
+    sort_order: int | None = None
+    preset_id: str | None = None
+
+
 class SettingsUpdate(BaseModel):
     target_letter: str | None = None
     semesters_remaining: float | None = None
     future_guess: dict[str, dict[str, int]] | None = None
+    default_scale: list[ScaleRowIn] | None = None
 
 
 class FumbleCreate(BaseModel):

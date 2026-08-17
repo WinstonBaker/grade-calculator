@@ -11,7 +11,7 @@ const SORTS = [
   ["score", "Score"],
 ];
 
-const GP_OPTIONS = [
+const FALLBACK_GP_OPTIONS = [
   ["A+", 4.333],
   ["A", 4.0],
   ["A-", 3.667],
@@ -27,9 +27,16 @@ const GP_OPTIONS = [
   ["F", 0.0],
 ];
 
-function gpSelectValue(gp) {
+function gpOptions(course) {
+  if (course?.scale?.length) {
+    return course.scale.map((row) => [row.letter, row.quality_points]);
+  }
+  return FALLBACK_GP_OPTIONS;
+}
+
+function gpSelectValue(gp, options) {
   if (gp === null || gp === undefined) return "";
-  const match = GP_OPTIONS.find(([, v]) => Math.abs(v - Number(gp)) < 1e-6);
+  const match = options.find(([, v]) => Math.abs(v - Number(gp)) < 1e-6);
   return match ? String(match[1]) : String(gp);
 }
 
@@ -263,12 +270,12 @@ export default function CourseList({ semesters, onChange }) {
                     <select
                       className="select"
                       style={{ width: 118 }}
-                      value={gpSelectValue(c.gp_override)}
+                      value={gpSelectValue(c.gp_override, gpOptions(c))}
                       onChange={(e) => setOverride(c.id, e.target.value)}
                       title="GPA override — leave Auto to use percent cutoffs"
                     >
                       <option value="">Auto</option>
-                      {GP_OPTIONS.map(([letter, gp]) => (
+                      {gpOptions(c).map(([letter, gp]) => (
                         <option key={letter} value={gp}>
                           {letter} ({fmtGpa(gp)})
                         </option>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, fmtGpa, fmtScore, letterClass, scoreClass } from "./api";
+import { ScaleRowsEditor, scalesMatch } from "./ScaleEditor.jsx";
 import {
   DEFAULT_COLORS,
   DEFAULT_CUSTOM_GRADE_COLORS,
@@ -48,9 +49,26 @@ export default function Settings({ appearance, onAppearanceChange }) {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateError, setUpdateError] = useState("");
   const [updateMessage, setUpdateMessage] = useState("");
+  const [profileDrafts, setProfileDrafts] = useState({});
+
+  function applyGpa(next) {
+    setData(next);
+    setProfileDrafts(
+      Object.fromEntries(
+        (next.scale_profiles || []).map((profile) => [
+          profile.id,
+          {
+            name: profile.name,
+            preset_id: profile.preset_id || "",
+            rows: profile.rows.map((row) => ({ ...row })),
+          },
+        ])
+      )
+    );
+  }
 
   useEffect(() => {
-    api.gpa().then(setData).catch((err) => setError(err.message));
+    api.gpa().then(applyGpa).catch((err) => setError(err.message));
     api.meta().then(setMeta).catch(() => {});
   }, []);
 
@@ -92,7 +110,8 @@ export default function Settings({ appearance, onAppearanceChange }) {
 
   async function updateSettings(patch) {
     try {
-      setData(await api.patchSettings(patch));
+      const next = await api.patchSettings(patch);
+      applyGpa(next);
       setMessage("Saved");
       setError("");
       window.setTimeout(() => setMessage(""), 1400);
@@ -101,7 +120,86 @@ export default function Settings({ appearance, onAppearanceChange }) {
     }
   }
 
+  async function refreshProfiles(okMessage = "Saved") {
+    try {
+      applyGpa(await api.gpa());
+      setMessage(okMessage);
+      setError("");
+      window.setTimeout(() => setMessage(""), 1400);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function updateProfileDraft(id, patch) {
+    setProfileDrafts((current) => ({
+      ...current,
+      [id]: { ...current[id], ...patch },
+    }));
+  }
+
+  async function saveProfile(id) {
+    const draft = profileDrafts[id];
+    if (!draft) return;
+    try {
+      await api.patchScaleProfile(id, {
+        name: draft.name,
+        rows: draft.rows,
+        preset_id: draft.preset_id || null,
+      });
+      await refreshProfiles();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function applyPresetToProfile(id, preset) {
+    try {
+      await api.patchScaleProfile(id, { rows: preset.rows, preset_id: preset.id });
+      await refreshProfiles();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function makeAnotherDefault() {
+    try {
+      await api.createScaleProfile();
+      await refreshProfiles("Added default");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function makePrimary(id) {
+    try {
+      await api.patchScaleProfile(id, { is_primary: true });
+      await refreshProfiles();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function removeProfile(id) {
+    try {
+      await api.deleteScaleProfile(id);
+      await refreshProfiles("Removed default");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (!data) return <p className="muted">Loading settings…</p>;
+
+  const presets = data.scale_presets || meta?.scale_presets || [];
+  const profiles = data.scale_profiles || [];
+  const targetLetters = (data.default_scale || [])
+    .filter((row) => row.letter !== "F")
+    .map((row) => row.letter);
+  const targets = targetLetters.length ? [...targetLetters] : [...TARGETS];
+  if (data.target_letter && !targets.includes(data.target_letter)) {
+    targets.unshift(data.target_letter);
+  }
 
   return (
     <>
@@ -148,7 +246,7 @@ export default function Settings({ appearance, onAppearanceChange }) {
                 value={data.target_letter}
                 onChange={(e) => updateSettings({ target_letter: e.target.value })}
               >
-                {TARGETS.map((letter) => (
+                {targets.map((letter) => (
                   <option key={letter} className={letterClass(letter)}>
                     {letter}
                   </option>
@@ -191,6 +289,97 @@ export default function Settings({ appearance, onAppearanceChange }) {
           </div>
         </section>
       </div>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>Default grade scales</h2>
+        <p className="muted settings-note" style={{ marginTop: 0 }}>
+          New classes copy the primary scale. Existing classes keep their own cutoffs unless you apply a
+          default in the gradebook. GPA decimals matter: 3, 3.3, 3.33, and 3.333 are not the same.
+        </p>
+        {profiles.map((profile) => {
+          const draft = profileDrafts[profile.id] || {
+            name: profile.name,
+            preset_id: profile.preset_id || "",
+            rows: profile.rows.map((row) => ({ ...row })),
+          };
+          const selectedPresetId = draft.preset_id || "";
+          return (
+            <div className="scale-profile-card" key={profile.id}>
+              <div className="scale-profile-head">
+                <label className="muted">
+                  Name
+                  <input
+                    className="input"
+                    style={{ display: "block", marginTop: 6, minWidth: 180 }}
+                    value={draft.name}
+                    onChange={(event) => updateProfileDraft(profile.id, { name: event.target.value })}
+                    onBlur={() => {
+                      const name = draft.name.trim();
+                      if (name && name !== profile.name) {
+                        api.patchScaleProfile(profile.id, { name }).then(() => refreshProfiles()).catch((err) => setError(err.message));
+                      }
+                    }}
+                  />
+                </label>
+                <div className="scale-profile-actions">
+                  {profile.is_primary ? (
+                    <span className="muted">Primary — used for new classes</span>
+                  ) : (
+                    <button className="btn small" type="button" onClick={() => makePrimary(profile.id)}>
+                      Make primary
+                    </button>
+                  )}
+                  {profiles.length > 1 ? (
+                    <button className="btn small danger" type="button" onClick={() => removeProfile(profile.id)}>
+                      Delete
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <label className="muted" style={{ display: "block", marginTop: 12 }}>
+                School grade scale
+                <select
+                  className="select"
+                  style={{ display: "block", width: "min(100%, 360px)", marginTop: 6 }}
+                  value={selectedPresetId}
+                  onChange={(event) => {
+                    const preset = presets.find((item) => item.id === event.target.value);
+                    if (preset) applyPresetToProfile(profile.id, preset);
+                  }}
+                >
+                  {!selectedPresetId ? <option value="">Custom scale</option> : null}
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="default-scale-editor">
+                <ScaleRowsEditor
+                  rows={draft.rows}
+                  onChange={(rows) => {
+                    const preset = presets.find((item) => item.id === draft.preset_id);
+                    const stillMatches = preset ? scalesMatch(rows, preset.rows) : false;
+                    updateProfileDraft(profile.id, {
+                      rows,
+                      preset_id: stillMatches ? draft.preset_id : "",
+                    });
+                  }}
+                />
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button className="btn primary" type="button" onClick={() => saveProfile(profile.id)}>
+                    Save {draft.name || "default"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <button className="btn" type="button" style={{ marginTop: 12 }} onClick={makeAnotherDefault}>
+          Make another default
+        </button>
+      </section>
 
       <section className="panel" style={{ marginTop: 16 }}>
         <h2>Appearance</h2>

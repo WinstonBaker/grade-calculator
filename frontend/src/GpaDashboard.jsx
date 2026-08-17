@@ -2,8 +2,15 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
 
-const LETTERS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
+const FALLBACK_LETTERS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
 const CREDITS = [1, 2, 3, 4];
+
+function lettersFromScale(scale) {
+  const letters = (Array.isArray(scale) ? scale : [])
+    .filter((row) => row.letter !== "F")
+    .map((row) => row.letter);
+  return letters.length ? letters : FALLBACK_LETTERS;
+}
 
 function gradeFill(letter) {
   const cls = letterClass(letter) || "grade-f";
@@ -221,13 +228,18 @@ function subjectPrefix(code) {
   return match ? match[1].toUpperCase() : String(code || "?").toUpperCase();
 }
 
-const GRADE_ORDER = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"];
-
-function distributionFromCourses(courses) {
+function distributionFromCourses(courses, letterOrder = FALLBACK_LETTERS) {
   const graded = courses.filter((c) => c.letter && c.quality_points != null);
   const totalCredits = graded.reduce((sum, c) => sum + (Number(c.credits) || 0), 0);
   const totalCourses = graded.length;
-  return GRADE_ORDER.filter((letter) => letter !== "F").map((letter) => {
+  const extra = [
+    ...new Set(
+      graded
+        .map((c) => c.letter)
+        .filter((letter) => letter && letter !== "F" && !letterOrder.includes(letter))
+    ),
+  ];
+  return [...letterOrder.filter((letter) => letter !== "F"), ...extra].map((letter) => {
     const matched = graded.filter((c) => c.letter === letter);
     const creditHours = matched.reduce((sum, c) => sum + (Number(c.credits) || 0), 0);
     return {
@@ -240,7 +252,7 @@ function distributionFromCourses(courses) {
   });
 }
 
-function CourseCodeStats({ terms }) {
+function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
   const [minCredits, setMinCredits] = useState("6");
   const [sortKey, setSortKey] = useState("score");
   const [sortDesc, setSortDesc] = useState(true);
@@ -278,9 +290,9 @@ function CourseCodeStats({ terms }) {
     return [...buckets.values()].map((row) => ({
       ...row,
       gpa: row.gpaCredits > 0 ? row.qpCredits / row.gpaCredits : null,
-      distribution: distributionFromCourses(row.items),
+      distribution: distributionFromCourses(row.items, letterOrder),
     }));
-  }, [terms]);
+  }, [terms, letterOrder]);
 
   const filtered = useMemo(() => {
     const list = rows.filter((r) => r.credits >= min);
@@ -490,7 +502,7 @@ export default function GpaDashboard() {
   const [fumbleGp, setFumbleGp] = useState("4.333");
   const [guessDraft, setGuessDraft] = useState({});
   const [openTerms, setOpenTerms] = useState({});
-  const [semestersSectionOpen, setSemestersSectionOpen] = useState(true);
+  const [semestersSectionOpen, setSemestersSectionOpen] = useState(false);
   const [futureGuessOpen, setFutureGuessOpen] = useState(false);
 
   async function load() {
@@ -502,15 +514,20 @@ export default function GpaDashboard() {
   }, []);
 
   useEffect(() => {
-    if (data?.future_guess?.grid) setGuessDraft(data.future_guess.grid);
-  }, [data]);
+    if (!data?.default_scale?.length) return;
+    const values = data.default_scale.map((row) => String(row.quality_points));
+    if (!values.includes(String(fumbleGp))) {
+      const top = data.default_scale.find((row) => row.letter !== "F") || data.default_scale[0];
+      setFumbleGp(String(top.quality_points));
+    }
+  }, [data, fumbleGp]);
 
   useEffect(() => {
     if (!data?.terms) return;
     setOpenTerms((prev) => {
       const next = { ...prev };
       for (const term of data.terms) {
-        if (next[term.id] === undefined) next[term.id] = term.course_count > 0;
+        if (next[term.id] === undefined) next[term.id] = false;
       }
       return next;
     });
@@ -546,6 +563,8 @@ export default function GpaDashboard() {
   }
 
   if (!data) return <p className="muted">Loading…</p>;
+
+  const letters = lettersFromScale(data.default_scale);
 
   async function commitGuess(ch, letter, value) {
     const next = { ...guessDraft };
@@ -583,7 +602,7 @@ export default function GpaDashboard() {
               value={data.target_letter}
               onChange={async (e) => setData(await api.patchSettings({ target_letter: e.target.value }))}
             >
-              {LETTERS.map((l) => (
+              {letters.map((l) => (
                 <option key={l}>{l}</option>
               ))}
             </select>
@@ -799,7 +818,7 @@ export default function GpaDashboard() {
         </div>
       </div>
 
-      <CourseCodeStats terms={data.terms} />
+      <CourseCodeStats terms={data.terms} letterOrder={letters} />
 
       <section className="panel term-accordion" style={{ marginTop: 16 }}>
         <div
@@ -836,7 +855,7 @@ export default function GpaDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {LETTERS.map((letter) => (
+                  {letters.map((letter) => (
                     <tr key={letter}>
                       <td>
                         <span className={`letter ${letterClass(letter)}`}>{letter}</span>

@@ -42,8 +42,13 @@ While developing, data is stored in `data/grades.db` (gitignored). Packaged apps
 - **Semesters** — Fall / Spring / Summer, newest first, include/exclude from GPA
 - **Classes** — search and sort by code, percent, letter, GPA, credits, or score
 - **Gradebook** — category weights, drop lowest, points ratio (`19/20` or `19,50`), bonus, per-item weights, final replaces lowest test, custom cutoffs, GP override
-- **What-if** — score needed on remaining work for A+ through B-
+- **Grade scales** — save multiple named defaults (NCSU, UNC, Clemson, ECU, UNCW, UNCC, Duke, College of Charleston, or custom). New classes copy the primary default; each class can apply Default 1, Default 2, or a custom scale
+- **What-if** — score needed on remaining work for each letter on the scale
 - **GPA dashboard** — term GPA, overall GPA/score, credits remaining, distribution, future-course guess, fumbles
 - **Updates** — Settings includes a button that checks GitHub for a newer Windows or Mac build
 
 Scores can be entered as a percent (`95`) or earned/possible (`19/20` or `19,20`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
