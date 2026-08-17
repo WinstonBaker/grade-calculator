@@ -620,21 +620,58 @@ export default function GpaDashboard() {
       </div>
 
       <div className="grid-stats">
-        <div className="stat">
+        <div
+          className="stat stat-tip"
+          tabIndex={0}
+          aria-describedby="overall-gpa-tip"
+        >
           <div className="label">Overall GPA</div>
           <div className="value">{fmtGpa(data.overall_gpa)}</div>
+          <p className="stat-tip-bubble" id="overall-gpa-tip" role="tooltip">
+            Credit-weighted average of quality points from included semesters only. Each class contributes
+            letter GPA × credits; excluded terms do not count. Shown to three decimals so 4.300, 4.330, and
+            4.333 stay distinct.
+          </p>
         </div>
-        <div className="stat">
+        <div
+          className="stat stat-tip"
+          tabIndex={0}
+          aria-describedby="overall-score-tip"
+        >
           <div className="label">Overall score</div>
           <div className={`value ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</div>
+          <p className="stat-tip-bubble" id="overall-score-tip" role="tooltip">
+            How far your classes sit above or below your target letter ({data.target_letter} ={" "}
+            {fmtGpa(data.target_gp)}). Each class adds about (GPA − target) × credits × 3. Positive means
+            ahead of target; zero is on pace; negative is behind. Scales without a higher A+ usually cannot
+            go far above a target of A.
+          </p>
         </div>
-        <div className="stat">
-          <div className="label">Credits</div>
+        <div
+          className="stat stat-tip"
+          tabIndex={0}
+          aria-describedby="credits-taken-tip"
+        >
+          <div className="label">Credits taken</div>
           <div className="value">{data.total_credits}</div>
+          <p className="stat-tip-bubble" id="credits-taken-tip" role="tooltip">
+            Graded credit hours from included semesters that count toward overall GPA.
+          </p>
         </div>
-        <div className="stat">
-          <div className="label">Score / remaining sem</div>
-          <div className="value">{fmtPct(data.score_per_semester, 1)}</div>
+        <div
+          className="stat stat-tip"
+          tabIndex={0}
+          aria-describedby="score-pace-tip"
+        >
+          <div className="label">Pace / semester</div>
+          <div className={`value ${scoreClass(data.score_per_semester)}`}>
+            {fmtScore(data.score_per_semester == null ? null : Number(Number(data.score_per_semester).toFixed(1)))}
+          </div>
+          <p className="stat-tip-bubble" id="score-pace-tip" role="tooltip">
+            With {data.semesters_remaining} semester{Number(data.semesters_remaining) === 1 ? "" : "s"} left, this is
+            how much overall score you need to earn each term to finish at your target ({data.target_letter}). A
+            negative pace means you are already ahead and can afford to lose some score.
+          </p>
         </div>
       </div>
 

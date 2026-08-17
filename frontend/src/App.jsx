@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "reac
 import { useEffect, useState } from "react";
 import { api, fmtGpa, fmtScore, scoreClass } from "./api";
 import CourseList from "./CourseList.jsx";
+import FeedbackBubble from "./FeedbackBubble.jsx";
 import Gradebook from "./Gradebook.jsx";
 import GpaDashboard from "./GpaDashboard.jsx";
 import Settings from "./Settings.jsx";
@@ -19,6 +20,7 @@ export default function App() {
   const [year, setYear] = useState("2025");
   const [season, setSeason] = useState("fall");
   const [appearance, setAppearance] = useState(() => loadAppearance());
+  const [githubRepo, setGithubRepo] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
   const selectedSemester = new URLSearchParams(location.search).get("semester");
@@ -34,6 +36,7 @@ export default function App() {
 
   useEffect(() => {
     refresh();
+    api.meta().then((meta) => setGithubRepo(meta.github_repo || "")).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -128,6 +131,7 @@ export default function App() {
             </button>
           </form>
         </nav>
+        <FeedbackBubble repo={githubRepo} />
       </aside>
       <main className="main">
         {error ? <p className="error">{error}</p> : null}
