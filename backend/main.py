@@ -11,7 +11,16 @@ from backend.database import Base, engine, ensure_schema, get_db
 from backend.paths import current_platform, frozen, frontend_dist, github_repo
 from backend.updates import check_for_updates, download_update
 from backend.version import MACOS_ASSET, WINDOWS_ASSET, __version__
-from backend.engine import AGGREGATIONS, SEASON_ORDER, normalize_scale, preset_payload, scale_as_dicts
+from backend.engine import (
+    ACCEPTED_AGGREGATIONS,
+    AGGREGATION_LABELS,
+    AGGREGATIONS,
+    SEASON_ORDER,
+    normalize_scale,
+    preset_payload,
+    resolve_category_policy,
+    scale_as_dicts,
+)
 from backend.models import Assignment, Category, Course, Fumble, ScaleProfile, Semester, Settings
 from backend.schemas import (
     AssignmentCreate,
@@ -75,6 +84,10 @@ def _target(db: Session) -> float:
     return gp
 
 
+def _gpa_cap(db: Session) -> float | None:
+    return _settings(db).gpa_cap
+
+
 def _course_or_404(db: Session, course_id: int) -> Course:
     course = (
         db.query(Course)
@@ -96,6 +109,7 @@ def meta(db: Session = Depends(get_db)):
     settings = _settings(db)
     return {
         "aggregations": list(AGGREGATIONS),
+        "aggregation_labels": dict(AGGREGATION_LABELS),
         "seasons": list(SEASON_ORDER),
         "default_scale": scale_as_dicts(parse_default_scale(settings, db)),
         "scale_profiles": [serialize_scale_profile(profile) for profile in list_scale_profiles(db)],
@@ -133,7 +147,7 @@ def post_update_download():
 def list_semesters(db: Session = Depends(get_db)):
     target = _target(db)
     semesters = sort_semesters(db.query(Semester).all())
-    return [serialize_semester(s, target) for s in semesters]
+    return [serialize_semester(s, target, _gpa_cap(db)) for s in semesters]
 
 
 @app.post("/api/semesters")
@@ -148,7 +162,7 @@ def create_semester(body: SemesterCreate, db: Session = Depends(get_db)):
     db.add(sem)
     db.commit()
     db.refresh(sem)
-    return serialize_semester(sem, _target(db))
+    return serialize_semester(sem, _target(db), _gpa_cap(db))
 
 
 @app.patch("/api/semesters/{semester_id}")
@@ -173,7 +187,7 @@ def update_semester(semester_id: int, body: SemesterUpdate, db: Session = Depend
     if clash:
         raise HTTPException(409, f"{sem.year} {sem.season.title()} already exists")
     db.commit()
-    return serialize_semester(sem, _target(db))
+    return serialize_semester(sem, _target(db), _gpa_cap(db))
 
 
 @app.delete("/api/semesters/{semester_id}")
@@ -217,6 +231,7 @@ def create_course(body: CourseCreate, db: Session = Depends(get_db)):
         credits=body.credits,
         bonus_points=body.bonus_points,
         gp_override=body.gp_override,
+        grade_rounding=body.grade_rounding,
     )
     db.add(course)
     db.commit()
@@ -246,6 +261,8 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         course.bonus_points = body.bonus_points
     if "gp_override" in body.model_fields_set:
         course.gp_override = body.gp_override
+    if "grade_rounding" in body.model_fields_set:
+        course.grade_rounding = body.grade_rounding
     db.commit()
     return serialize_course(_course_or_404(db, course_id), _target(db))
 
@@ -355,22 +372,38 @@ def remove_scale_profile(profile_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+def _category_policy(*, aggregation, drop_count, include_bonus, replace_with_category_id):
+    if aggregation not in ACCEPTED_AGGREGATIONS:
+        raise HTTPException(400, f"Unknown aggregation {aggregation}")
+    return resolve_category_policy(
+        aggregation,
+        drop_count,
+        include_bonus,
+        replace_with_category_id,
+    )
+
+
 @app.post("/api/categories")
 def create_category(body: CategoryCreate, db: Session = Depends(get_db)):
     course = db.get(Course, body.course_id)
     if course is None:
         raise HTTPException(404, "Course not found")
-    if body.aggregation not in AGGREGATIONS:
-        raise HTTPException(400, f"Unknown aggregation {body.aggregation}")
+    policy = _category_policy(
+        aggregation=body.aggregation,
+        drop_count=body.drop_count,
+        include_bonus=body.include_bonus,
+        replace_with_category_id=body.replace_with_category_id,
+    )
     order = len(course.categories)
     cat = Category(
         course_id=body.course_id,
         name=body.name,
         weight=body.weight,
         weight_per_item=body.weight_per_item,
-        aggregation=body.aggregation,
-        drop_count=body.drop_count,
-        replace_with_category_id=body.replace_with_category_id,
+        aggregation=policy.aggregation,
+        drop_count=policy.drop_count,
+        include_bonus=policy.include_bonus,
+        replace_with_category_id=policy.replace_with_category_id,
         sort_order=order,
     )
     db.add(cat)
@@ -389,14 +422,24 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
         cat.weight = body.weight
     if "weight_per_item" in body.model_fields_set:
         cat.weight_per_item = body.weight_per_item
-    if body.aggregation is not None:
-        if body.aggregation not in AGGREGATIONS:
-            raise HTTPException(400, f"Unknown aggregation {body.aggregation}")
-        cat.aggregation = body.aggregation
-    if body.drop_count is not None:
-        cat.drop_count = body.drop_count
-    if "replace_with_category_id" in body.model_fields_set:
-        cat.replace_with_category_id = body.replace_with_category_id
+    aggregation = body.aggregation if body.aggregation is not None else cat.aggregation
+    drop_count = body.drop_count if body.drop_count is not None else cat.drop_count
+    include_bonus = body.include_bonus if "include_bonus" in body.model_fields_set else bool(cat.include_bonus)
+    replace_with = (
+        body.replace_with_category_id
+        if "replace_with_category_id" in body.model_fields_set
+        else cat.replace_with_category_id
+    )
+    policy = _category_policy(
+        aggregation=aggregation,
+        drop_count=drop_count,
+        include_bonus=include_bonus,
+        replace_with_category_id=replace_with,
+    )
+    cat.aggregation = policy.aggregation
+    cat.drop_count = policy.drop_count
+    cat.include_bonus = policy.include_bonus
+    cat.replace_with_category_id = policy.replace_with_category_id
     db.commit()
     return serialize_course(_course_or_404(db, cat.course_id), _target(db))
 
@@ -471,6 +514,10 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         settings.target_letter = body.target_letter
     if body.semesters_remaining is not None:
         settings.semesters_remaining = body.semesters_remaining
+    if "gpa_cap" in body.model_fields_set:
+        if body.gpa_cap is not None and body.gpa_cap <= 0:
+            raise HTTPException(400, "GPA cap must be greater than zero")
+        settings.gpa_cap = body.gpa_cap
     if body.future_guess is not None:
         import json
 

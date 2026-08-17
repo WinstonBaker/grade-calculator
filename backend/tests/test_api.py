@@ -59,7 +59,7 @@ def test_semester_course_grade_flow(tmp_path):
                 "course_id": cid,
                 "name": "HW",
                 "weight": 0.27,
-                "aggregation": "drop_lowest",
+                "aggregation": "average",
                 "drop_count": 1,
             },
         )
@@ -87,10 +87,10 @@ def test_semester_course_grade_flow(tmp_path):
             json={"semester_id": sem_id, "code": "MAE 310", "credits": 3},
         ).json()
         oid = other["id"]
-        client.post("/api/categories", json={"course_id": oid, "name": "HW", "weight": 0.15, "aggregation": "average_plus_bonus"})
+        client.post("/api/categories", json={"course_id": oid, "name": "HW", "weight": 0.15, "aggregation": "average", "include_bonus": True})
         client.post(
             "/api/categories",
-            json={"course_id": oid, "name": "Tests", "weight": 0, "weight_per_item": 0.15, "aggregation": "average_plus_bonus"},
+            json={"course_id": oid, "name": "Tests", "weight": 0, "weight_per_item": 0.15, "aggregation": "average", "include_bonus": True},
         )
         client.post("/api/categories", json={"course_id": oid, "name": "Final", "weight": 0.4, "aggregation": "average"})
         other = client.get(f"/api/courses/{oid}").json()
@@ -125,6 +125,9 @@ def test_meta_includes_version_and_downloads(tmp_path):
         assert "macos" in body["downloads"]
         assert body["release_url"].endswith("/releases/latest")
         assert any(p["id"] == "unc" for p in body["scale_presets"])
+        assert body["aggregations"] == ["average", "points_ratio"]
+        assert body["aggregation_labels"]["average"] == "Average"
+        assert body["aggregation_labels"]["points_ratio"] == "Points ratio"
         preset_ids = {p["id"] for p in body["scale_presets"]}
         assert preset_ids == {"ncsu", "unc", "clemson", "ecu", "uncw", "uncc", "duke", "cofc"}
         assert body["default_scale"][0]["letter"] == "A+"
@@ -171,6 +174,41 @@ def test_default_scale_copied_to_new_courses(tmp_path):
         a_plus = next(row for row in other["scale"] if row["letter"] == "A+")
         a_row = next(row for row in other["scale"] if row["letter"] == "A")
         assert a_plus["quality_points"] == a_row["quality_points"] == 4.0
+    finally:
+        teardown()
+
+
+def test_optional_gpa_cap_preserves_aplus_score(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": sem_id,
+                "code": "HON 101",
+                "credits": 3,
+                "gp_override": 4.333,
+            },
+        ).json()
+        assert course["quality_points"] == 4.333
+        assert course["score"] == 3
+
+        uncapped = client.get("/api/gpa").json()
+        assert uncapped["gpa_cap"] is None
+        assert abs(uncapped["overall_gpa"] - 4.333) < 0.001
+        assert uncapped["terms"][0]["term_gpa"] == 4.333
+
+        capped = client.patch("/api/settings", json={"gpa_cap": 4.0}).json()
+        assert capped["gpa_cap"] == 4.0
+        assert capped["overall_gpa"] == 4.0
+        assert capped["terms"][0]["term_gpa"] == 4.0
+        assert capped["overall_score"] == 3
+        assert client.get("/api/semesters").json()[0]["term_gpa"] == 4.0
+
+        restored = client.patch("/api/settings", json={"gpa_cap": None}).json()
+        assert restored["gpa_cap"] is None
+        assert abs(restored["overall_gpa"] - 4.333) < 0.001
     finally:
         teardown()
 
@@ -259,3 +297,68 @@ def test_identical_school_presets_keep_selected_name(tmp_path):
         assert clemson["preset_id"] == "clemson"
     finally:
         teardown()
+
+
+def test_legacy_aggregation_maps_to_knobs(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        cid = client.post("/api/courses", json={"semester_id": sem_id, "code": "CSC 101", "credits": 3}).json()["id"]
+        client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "HW", "weight": 0.2, "aggregation": "drop_lowest"},
+        )
+        client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "Labs", "weight": 0.2, "aggregation": "average_plus_bonus"},
+        )
+        client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "Tests", "weight": 0.4, "aggregation": "replace_min_with"},
+        )
+        course = client.get(f"/api/courses/{cid}").json()
+        by_name = {c["name"]: c for c in course["categories"]}
+        assert by_name["HW"]["aggregation"] == "average"
+        assert by_name["HW"]["drop_count"] == 1
+        assert by_name["HW"]["include_bonus"] is False
+        assert by_name["Labs"]["aggregation"] == "average"
+        assert by_name["Labs"]["include_bonus"] is True
+        assert by_name["Labs"]["drop_count"] == 0
+        assert by_name["Tests"]["aggregation"] == "average"
+        assert by_name["Tests"]["drop_count"] == 0
+        rejected = client.patch(
+            f"/api/categories/{by_name['HW']['id']}",
+            json={"drop_count": -1},
+        )
+        assert rejected.status_code == 422
+    finally:
+        teardown()
+
+
+def test_migrate_legacy_category_modes(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    from backend.database import migrate_legacy_category_modes
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'migrate.db'}")
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE categories ("
+                "id INTEGER PRIMARY KEY, aggregation VARCHAR(32), drop_count INTEGER, include_bonus BOOLEAN DEFAULT 0)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO categories (aggregation, drop_count, include_bonus) VALUES "
+                "('average', 1, 0), ('drop_lowest', 2, 0), ('average_plus_bonus', 1, 0), "
+                "('replace_min_with', 1, 0), ('points_ratio', 1, 0)"
+            )
+        )
+        migrate_legacy_category_modes(conn, reset_plain_drop_counts=True)
+        rows = list(conn.execute(text("SELECT aggregation, drop_count, include_bonus FROM categories ORDER BY id")))
+    assert rows[0][0] == "average" and rows[0][1] == 0 and not rows[0][2]
+    assert rows[1][0] == "average" and rows[1][1] == 2 and not rows[1][2]
+    assert rows[2][0] == "average" and rows[2][1] == 0 and rows[2][2]
+    assert rows[3][0] == "average" and rows[3][1] == 0 and not rows[3][2]
+    assert rows[4][0] == "points_ratio" and rows[4][1] == 0 and not rows[4][2]

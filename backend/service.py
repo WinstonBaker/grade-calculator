@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.engine import (
+    AGGREGATION_LABELS,
     AGGREGATIONS,
     DEFAULT_SCALE,
     SEASON_ORDER,
@@ -46,6 +47,7 @@ def seed_if_needed(db: Session) -> None:
                 id=1,
                 target_letter="A",
                 semesters_remaining=8,
+                gpa_cap=None,
                 future_guess_json="{}",
                 default_scale_json=json.dumps(scale_as_dicts(DEFAULT_SCALE)),
             )
@@ -318,6 +320,7 @@ def course_to_input(course: Course) -> CourseInput:
         credits=course.credits,
         bonus_points=course.bonus_points or 0.0,
         gp_override=course.gp_override,
+        grade_rounding=course.grade_rounding,
         categories=[
             CategoryInput(
                 id=cat.id,
@@ -325,7 +328,8 @@ def course_to_input(course: Course) -> CourseInput:
                 weight=cat.weight,
                 weight_per_item=cat.weight_per_item,
                 aggregation=cat.aggregation,
-                drop_count=cat.drop_count,
+                drop_count=cat.drop_count or 0,
+                include_bonus=bool(cat.include_bonus),
                 replace_with_category_id=cat.replace_with_category_id,
                 assignments=[
                     AssignmentInput(
@@ -398,7 +402,8 @@ def serialize_course(course: Course, target_gp: float) -> dict:
                 "weight": cat.weight,
                 "weight_per_item": cat.weight_per_item,
                 "aggregation": cat.aggregation,
-                "drop_count": cat.drop_count,
+                "drop_count": cat.drop_count or 0,
+                "include_bonus": bool(cat.include_bonus),
                 "replace_with_category_id": cat.replace_with_category_id,
                 "sort_order": cat.sort_order,
                 "percent": computed.percent if computed else None,
@@ -418,6 +423,7 @@ def serialize_course(course: Course, target_gp: float) -> dict:
         "credits": course.credits,
         "bonus_points": course.bonus_points,
         "gp_override": course.gp_override,
+        "grade_rounding": course.grade_rounding,
         "scale_profile_id": course.scale_profile_id,
         "percent": result.percent,
         "letter": result.letter,
@@ -447,14 +453,20 @@ def serialize_course(course: Course, target_gp: float) -> dict:
     }
 
 
-def serialize_semester(sem: Semester, target_gp: float) -> dict:
+def cap_gpa(gpa: float | None, gpa_cap: float | None) -> float | None:
+    if gpa is None or gpa_cap is None:
+        return gpa
+    return min(gpa, gpa_cap)
+
+
+def serialize_semester(sem: Semester, target_gp: float, gpa_cap: float | None = None) -> dict:
     courses = [serialize_course(c, target_gp) for c in sem.courses]
     pairs = [
         (c["credits"], c["quality_points"])
         for c in courses
         if c["quality_points"] is not None
     ]
-    gpa = weighted_gpa(pairs)
+    gpa = cap_gpa(weighted_gpa(pairs), gpa_cap)
     credits = sum(c["credits"] for c in courses if c["quality_points"] is not None and c["quality_points"] > 0)
     score = sum(c["score"] or 0 for c in courses if c["quality_points"] is not None)
     return {
@@ -496,12 +508,16 @@ def build_gpa(db: Session) -> dict:
     settings = db.get(Settings, 1)
     target_letter, target_gp = target_gp_from_settings(settings, db)
     semesters = sort_semesters(db.query(Semester).all())
-    terms = [serialize_semester(s, target_gp) for s in semesters]
+    terms = [serialize_semester(s, target_gp, settings.gpa_cap) for s in semesters]
 
     included_terms = [t for t in terms if t["included"]]
     overall_score = sum(t["term_score"] for t in included_terms)
     total_credits = sum(t["term_credits"] for t in included_terms)
-    overall = overall_gpa_from_score(overall_score, total_credits, target_gp) if total_credits else None
+    overall = (
+        cap_gpa(overall_gpa_from_score(overall_score, total_credits, target_gp), settings.gpa_cap)
+        if total_credits
+        else None
+    )
 
     all_credits = 0.0
     for term in terms:
@@ -509,7 +525,7 @@ def build_gpa(db: Session) -> dict:
             all_credits += course["credits"] or 0
     credits_remaining = all_credits - total_credits
     remaining_sems = settings.semesters_remaining or 0
-    score_per_sem = (-overall_score / remaining_sems) if remaining_sems else None
+    score_per_sem = (overall_score / remaining_sems) if remaining_sems else None
 
     included_courses = [c for t in included_terms for c in t["courses"] if c["quality_points"] is not None]
     default_rows = parse_default_scale(settings, db)
@@ -566,7 +582,11 @@ def build_gpa(db: Session) -> dict:
         )
 
     score_with = overall_score + fumble_total
-    gpa_with = overall_gpa_from_score(score_with, total_credits, target_gp) if total_credits else None
+    gpa_with = (
+        cap_gpa(overall_gpa_from_score(score_with, total_credits, target_gp), settings.gpa_cap)
+        if total_credits
+        else None
+    )
 
     try:
         guess_raw = json.loads(settings.future_guess_json or "{}")
@@ -580,7 +600,7 @@ def build_gpa(db: Session) -> dict:
     adj_credits = total_credits + extra if extra else None
     adj_score = (overall_score + delta) if delta is not None else None
     adj_gpa = (
-        overall_gpa_from_score(adj_score, adj_credits, target_gp)
+        cap_gpa(overall_gpa_from_score(adj_score, adj_credits, target_gp), settings.gpa_cap)
         if adj_score is not None and adj_credits
         else None
     )
@@ -589,6 +609,7 @@ def build_gpa(db: Session) -> dict:
         "target_letter": target_letter,
         "target_gp": target_gp,
         "semesters_remaining": settings.semesters_remaining,
+        "gpa_cap": settings.gpa_cap,
         "overall_gpa": overall,
         "overall_score": overall_score,
         "total_credits": total_credits,
@@ -609,6 +630,7 @@ def build_gpa(db: Session) -> dict:
             "adjusted_gpa": adj_gpa,
         },
         "aggregations": list(AGGREGATIONS),
+        "aggregation_labels": dict(AGGREGATION_LABELS),
         "default_scale": scale_as_dicts(default_rows),
         "scale_profiles": [serialize_scale_profile(profile) for profile in list_scale_profiles(db)],
         "scale_presets": preset_payload(),

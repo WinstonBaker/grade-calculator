@@ -70,6 +70,8 @@ a {
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .feedback-bubble {
@@ -80,6 +82,7 @@ a {
   align-items: flex-start;
   gap: 10px;
   padding-top: 8px;
+  flex-shrink: 0;
 }
 
 .feedback-fab {
@@ -361,6 +364,13 @@ a {
 .stat-tip {
   position: relative;
   cursor: help;
+}
+
+/* The card itself is a stacking context (entry animation + hover transform), so
+   the bubble's z-index cannot escape it. Lift the whole card while it is active. */
+.stat-tip:hover,
+.stat-tip:focus-within {
+  z-index: 20;
 }
 
 .stat-tip-bubble {
@@ -833,6 +843,120 @@ th button.active {
   font-size: 0.8rem;
 }
 
+.gpa-trends {
+  margin-top: 16px;
+}
+
+.gpa-trends-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.gpa-trends-head p {
+  margin: -4px 0 0;
+  font-size: 0.82rem;
+}
+
+.gpa-trends-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.gpa-trends-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gpa-trends-legend i {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.gpa-trends-legend .semester,
+.gpa-trend-line.semester,
+.gpa-trend-dot.semester {
+  background: var(--gold);
+  stroke: var(--gold);
+}
+
+.gpa-trends-legend .cumulative,
+.gpa-trend-line.cumulative,
+.gpa-trend-dot.cumulative {
+  background: var(--green);
+  stroke: var(--green);
+}
+
+.gpa-trends-chart {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.gpa-trends-chart svg {
+  display: block;
+  width: 100%;
+  min-width: 620px;
+  height: auto;
+}
+
+.gpa-trend-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.gpa-trend-axis {
+  fill: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.gpa-trend-axis.term {
+  font-size: 10px;
+}
+
+.gpa-trend-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.gpa-trend-line.cumulative {
+  stroke-dasharray: 7 5;
+}
+
+.gpa-trend-dot {
+  fill: var(--bg-raised);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+  transition: r 100ms ease;
+}
+
+.gpa-trend-hit {
+  stroke: transparent;
+  stroke-width: 32;
+}
+
+.gpa-trends-detail {
+  min-height: 1.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 0.82rem;
+}
+
 @media (max-width: 720px) {
   .dist-charts-row {
     grid-template-columns: 1fr;
@@ -1282,9 +1406,102 @@ th button.active {
   font-family: "IBM Plex Mono", monospace;
 }
 
-.guess-grid input {
-  width: 64px;
+.guess-body {
+  padding: 0 18px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.guess-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+}
+
+.guess-grid th {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.guess-grid th:first-child,
+.guess-grid td:first-child {
+  width: 5rem;
+}
+
+.guess-grid th:last-child,
+.guess-grid td:last-child {
+  text-align: right;
+  width: 5rem;
+}
+
+.guess-grid td {
+  padding: 5px 8px;
+}
+
+.guess-grid tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.guess-grid tbody tr.has-plan {
+  background: var(--gold-dim);
+}
+
+.guess-cell {
+  width: 56px;
+  padding: 5px 8px;
   text-align: center;
+  font-family: "IBM Plex Mono", monospace;
+  background: transparent;
+}
+
+.guess-cell:hover {
+  background: var(--bg);
+}
+
+.guess-cell.filled {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--gold) 50%, var(--line));
+  color: var(--gold);
+}
+
+.guess-row-total {
+  color: var(--muted);
+}
+
+.guess-grid tr.has-plan .guess-row-total {
+  color: var(--text);
+}
+
+.guess-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.guess-summary div {
+  flex: 1 1 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.guess-summary span {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.guess-summary strong {
+  font-size: 1.1rem;
 }
 
 .update-panel {
@@ -1315,4 +1532,224 @@ th button.active {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.78rem;
   white-space: pre-wrap;
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes expand-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  70% {
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes chart-wipe {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes slice-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.main {
+  animation: fade-rise 260ms ease both;
+}
+
+.grid-stats .stat {
+  animation: fade-rise 320ms ease both;
+}
+
+.grid-stats .stat:nth-child(2) {
+  animation-delay: 50ms;
+}
+
+.grid-stats .stat:nth-child(3) {
+  animation-delay: 100ms;
+}
+
+.grid-stats .stat:nth-child(4) {
+  animation-delay: 150ms;
+}
+
+.stat {
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.stat:hover {
+  border-color: color-mix(in srgb, var(--gold) 30%, var(--line));
+  transform: translateY(-2px);
+}
+
+.panel {
+  animation: fade-rise 300ms ease both;
+}
+
+.btn {
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease, opacity 140ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.nav-link {
+  transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.nav-link:hover {
+  transform: translateX(2px);
+}
+
+.input,
+.select {
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+
+.term-accordion-head,
+.cat-head,
+.code-stats-row {
+  transition: background 160ms ease;
+}
+
+.term-accordion-chevron {
+  display: inline-block;
+  transition: transform 200ms ease;
+}
+
+.term-accordion-chevron.open {
+  transform: rotate(90deg);
+}
+
+.term-accordion-body,
+.code-detail-panel {
+  animation: expand-down 220ms ease both;
+}
+
+tbody tr {
+  transition: background 140ms ease;
+}
+
+.cat-card table.cat-scores tbody tr:hover,
+.table-wrap tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.exam-preview,
+.feedback-panel {
+  animation: fade-rise 200ms ease both;
+}
+
+.appearance-toggle {
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.appearance-toggle:hover {
+  border-color: color-mix(in srgb, var(--gold) 35%, var(--line));
+}
+
+.donut-slice {
+  animation: slice-in 420ms ease both;
+  transform-box: view-box;
+  transform-origin: center;
+}
+
+.donut-slice:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.donut-slice:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.donut-slice:nth-child(4) {
+  animation-delay: 180ms;
+}
+
+.donut-slice:nth-child(n + 5) {
+  animation-delay: 240ms;
+}
+
+.donut-tooltip,
+.gpa-trends-detail {
+  animation: fade-in 180ms ease both;
+}
+
+.gpa-trend-reveal {
+  transform-box: view-box;
+  animation: chart-wipe 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.gpa-trend-dot {
+  animation: pop-in 260ms ease 400ms both;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.error {
+  animation: fade-rise 200ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

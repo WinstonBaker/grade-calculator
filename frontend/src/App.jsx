@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "reac
 import { useEffect, useState } from "react";
 import { api, fmtGpa, fmtScore, scoreClass } from "./api";
 import CourseList from "./CourseList.jsx";
+import { CreditLabelProvider } from "./creditLabel.jsx";
 import FeedbackBubble from "./FeedbackBubble.jsx";
 import Gradebook from "./Gradebook.jsx";
 import GpaDashboard from "./GpaDashboard.jsx";
@@ -61,7 +62,8 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <CreditLabelProvider appearance={appearance}>
+      <div className="app">
       <aside className="sidebar">
         <div className="brand">
           <h1>Grade Calculator</h1>
@@ -93,10 +95,10 @@ export default function App() {
                 className={() => `nav-link ${selectedSemester === String(sem.id) ? "active" : ""}`}
               >
                 <span>{sem.name}</span>
-                {sem.term_gpa != null || sem.term_score != null ? (
+                {sem.term_gpa != null || (appearance.showScore !== false && sem.term_score != null) ? (
                   <span className="meta">
                     {sem.term_gpa != null ? <span>{fmtGpa(sem.term_gpa)}</span> : null}
-                    {sem.term_score != null ? (
+                    {appearance.showScore !== false && sem.term_score != null ? (
                       <span className={scoreClass(sem.term_score)}>{fmtScore(sem.term_score)}</span>
                     ) : null}
                   </span>
@@ -133,7 +135,7 @@ export default function App() {
         </nav>
         <FeedbackBubble repo={githubRepo} />
       </aside>
-      <main className="main">
+      <main className="main" key={location.pathname}>
         {error ? <p className="error">{error}</p> : null}
         <Routes>
           <Route path="/" element={<Navigate to="/gpa" replace />} />
@@ -152,5 +154,6 @@ export default function App() {
         </Routes>
       </main>
     </div>
+    </CreditLabelProvider>
   );
 }

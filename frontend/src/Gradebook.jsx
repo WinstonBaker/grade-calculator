@@ -15,13 +15,22 @@ import {
   scoreClass,
 } from "./api";
 import { ScaleRowsEditor } from "./ScaleEditor.jsx";
+import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 
-const AGG_LABELS = {
-  average: "Average",
-  drop_lowest: "Drop lowest",
-  points_ratio: "Points ratio",
-  average_plus_bonus: "Average + bonus",
-  replace_min_with: "Replace lowest with",
+const DEFAULT_AGG_OPTIONS = [
+  ["average", "Average"],
+  ["points_ratio", "Points ratio"],
+];
+
+const ROUNDING_OPTIONS = [
+  ["", "No rounding"],
+  ["0", "Whole number (92.5 → 93)"],
+  ["1", "One decimal (92.45 → 92.5)"],
+];
+
+const ROUNDING_NOTE = {
+  0: "a whole number",
+  1: "one decimal",
 };
 
 function fmtWeightPct(weight) {
@@ -32,6 +41,8 @@ function fmtWeightPct(weight) {
 }
 
 export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const { id } = useParams();
   const navigate = useNavigate();
   const [course, setCourse] = useState(null);
@@ -41,12 +52,16 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const [showScale, setShowScale] = useState(false);
   const [openCats, setOpenCats] = useState({});
   const [profiles, setProfiles] = useState([]);
+  const [aggOptions, setAggOptions] = useState(DEFAULT_AGG_OPTIONS);
 
   async function load() {
     const [c, s, m] = await Promise.all([api.course(id), api.semesters(), api.meta()]);
     setCourse(c);
     setSemesters(s);
     setProfiles(m.scale_profiles || []);
+    const ids = Array.isArray(m.aggregations) && m.aggregations.length ? m.aggregations : ["average", "points_ratio"];
+    const labels = m.aggregation_labels || {};
+    setAggOptions(ids.map((aggId) => [aggId, labels[aggId] || aggId]));
   }
 
   useEffect(() => {
@@ -122,7 +137,9 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
               <span className={`letter ${letterClass(course.letter)}`}>{course.letter || "—"}</span>
               <strong className={`mono ${letterClass(course.letter)}`}>{fmtPct(course.percent)}%</strong>
               <span className="mono">{fmtGpa(course.quality_points)}</span>
-              <span className={`mono ${scoreClass(course.score)}`}>{fmtScore(course.score)}</span>
+              {showScore ? (
+                <span className={`mono ${scoreClass(course.score)}`}>{fmtScore(course.score)}</span>
+              ) : null}
             </div>
           </div>
         </div>
@@ -142,8 +159,25 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
           />
         </label>
         <label className="muted">
-          Credits
+          {creditTerms.singularLabel}
           <input className="input" style={{ display: "block", marginTop: 4, width: 80 }} defaultValue={course.credits} onBlur={(e) => saveCourse({ credits: Number(e.target.value) })} />
+        </label>
+        <label className="muted">
+          Prof rounds %
+          <select
+            className="select"
+            style={{ display: "block", marginTop: 4 }}
+            value={course.grade_rounding == null ? "" : String(course.grade_rounding)}
+            onChange={(e) =>
+              saveCourse({ grade_rounding: e.target.value === "" ? null : Number(e.target.value) })
+            }
+          >
+            {ROUNDING_OPTIONS.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="muted">
           Overall Bonus
@@ -232,6 +266,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
               cat={cat}
               categories={course.categories}
               scale={course.scale}
+              aggOptions={aggOptions}
               colorAssignmentGrades={colorAssignmentGrades}
               open={!!openCats[cat.id]}
               onToggle={() => setOpenCats((prev) => ({ ...prev, [cat.id]: !prev[cat.id] }))}
@@ -325,13 +360,14 @@ function ScaleEditor({ course, profiles, onSave, onApply }) {
 }
 
 function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw }) {
+  const rounding = course.grade_rounding ?? null;
   const resolvedId = examCatId ?? defaultExamCategoryId(course.categories);
   const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
   const projected = useMemo(
     () => projectPercentFromExam(course, resolvedId, examPct),
     [course, resolvedId, examPct]
   );
-  const grade = gradeFromPercent(projected, course.scale);
+  const grade = gradeFromPercent(projected, course.scale, rounding);
   const needed = useMemo(() => examNeededRows(course, resolvedId), [course, resolvedId]);
   const examCat = course.categories.find((c) => c.id === resolvedId);
   const hasWeight = examCat ? examCat.weight || examCat.weight_per_item || examCat.effective_weight : false;
@@ -339,7 +375,12 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   return (
     <div className="panel">
       <h2>Final from exam</h2>
-      <p className="muted">Course grade if this exam scores a given percent, and what you need for each cutoff.</p>
+      <p className="muted">
+        Course grade if this exam scores a given percent, and what you need for each cutoff.
+        {rounding != null
+          ? ` Targets assume the final percent is rounded to ${ROUNDING_NOTE[rounding] || "the set precision"}.`
+          : ""}
+      </p>
       {course.categories.length === 0 ? (
         <p className="muted">Add a category for the exam first.</p>
       ) : (
@@ -413,7 +454,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   );
 }
 
-function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange, open, onToggle }) {
+function CategoryCard({ cat, categories, scale, aggOptions, colorAssignmentGrades, onChange, open, onToggle }) {
   const [name, setName] = useState(cat.name);
   const [scoreDrafts, setScoreDrafts] = useState({});
   const saveTimers = useRef({});
@@ -489,7 +530,7 @@ function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange,
             aria-label={open ? "Collapse category" : "Expand category"}
             onClick={onToggle}
           >
-            {open ? "▾" : "▸"}
+            <span className={`term-accordion-chevron ${open ? "open" : ""}`}>▸</span>
           </button>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => patch({ name })} />
         </div>
@@ -547,25 +588,45 @@ function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange,
             value={cat.aggregation}
             onChange={(e) => patch({ aggregation: e.target.value })}
           >
-            {Object.entries(AGG_LABELS).map(([k, v]) => (
+            {(aggOptions || DEFAULT_AGG_OPTIONS).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
               </option>
             ))}
           </select>
         </label>
-        {cat.aggregation === "drop_lowest" ? (
+        {cat.aggregation !== "points_ratio" ? (
           <label className="muted">
             Drop
             <input
               className="input"
               style={{ display: "block", width: 70, marginTop: 4 }}
-              defaultValue={cat.drop_count}
-              onBlur={(e) => patch({ drop_count: Number(e.target.value) })}
+              key={`drop-${cat.id}-${cat.drop_count}`}
+              type="number"
+              min="0"
+              step="1"
+              defaultValue={cat.drop_count ?? 0}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n) || n < 0) {
+                  e.target.value = String(cat.drop_count ?? 0);
+                  return;
+                }
+                patch({ drop_count: Math.floor(n) });
+              }}
             />
           </label>
         ) : null}
-        {cat.aggregation === "replace_min_with" ? (
+        <label className="muted">
+          Include bonus
+          <input
+            type="checkbox"
+            style={{ display: "block", marginTop: 8 }}
+            checked={!!cat.include_bonus}
+            onChange={(e) => patch({ include_bonus: e.target.checked })}
+          />
+        </label>
+        {cat.aggregation !== "points_ratio" ? (
           <label className="muted">
             Replace using
             <select
@@ -574,7 +635,7 @@ function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange,
               value={cat.replace_with_category_id || ""}
               onChange={(e) => patch({ replace_with_category_id: e.target.value ? Number(e.target.value) : null })}
             >
-              <option value="">Select</option>
+              <option value="">None</option>
               {categories
                 .filter((c) => c.id !== cat.id)
                 .map((c) => (
@@ -591,7 +652,7 @@ function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange,
           <tr>
             <th className="col-name">Name</th>
             <th className="col-score">Score</th>
-            <th className="col-bonus">Bonus</th>
+            {cat.include_bonus ? <th className="col-bonus">Bonus</th> : null}
             <th className="col-actions" />
           </tr>
         </thead>
@@ -632,13 +693,15 @@ function CategoryCard({ cat, categories, scale, colorAssignmentGrades, onChange,
                   }}
                 />
               </td>
-              <td className="col-bonus">
-                <input
-                  type="checkbox"
-                  checked={a.is_bonus}
-                  onChange={async (e) => onChange(await api.patchAssignment(a.id, { is_bonus: e.target.checked }))}
-                />
-              </td>
+              {cat.include_bonus ? (
+                <td className="col-bonus">
+                  <input
+                    type="checkbox"
+                    checked={a.is_bonus}
+                    onChange={async (e) => onChange(await api.patchAssignment(a.id, { is_bonus: e.target.checked }))}
+                  />
+                </td>
+              ) : null}
               <td className="col-actions">
                 <button className="btn small danger" onClick={async () => onChange(await api.deleteAssignment(a.id))}>
                   ×

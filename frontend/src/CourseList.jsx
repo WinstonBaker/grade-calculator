@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
+import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 
 const SORTS = [
   ["code", "Class"],
@@ -41,6 +42,8 @@ function gpSelectValue(gp, options) {
 }
 
 export default function CourseList({ semesters, onChange }) {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const [params, setParams] = useSearchParams();
   const semesterId = params.get("semester");
   const [courses, setCourses] = useState([]);
@@ -49,6 +52,15 @@ export default function CourseList({ semesters, onChange }) {
   const [desc, setDesc] = useState(false);
   const [code, setCode] = useState("");
   const [credits, setCredits] = useState("3");
+
+  const sortCols = useMemo(
+    () =>
+      SORTS.filter(([key]) => showScore || key !== "score").map(([key, label]) => [
+        key,
+        key === "credits" ? creditTerms.label : label,
+      ]),
+    [creditTerms.label, showScore]
+  );
 
   const [addTo, setAddTo] = useState("");
   const [year, setYear] = useState("");
@@ -82,6 +94,13 @@ export default function CourseList({ semesters, onChange }) {
   useEffect(() => {
     load().catch(console.error);
   }, [semesterId, q, sort, desc]);
+
+  useEffect(() => {
+    if (!showScore && sort === "score") {
+      setSort("code");
+      setDesc(false);
+    }
+  }, [showScore, sort]);
 
   function toggleSort(next) {
     if (sort === next) setDesc((d) => !d);
@@ -177,10 +196,12 @@ export default function CourseList({ semesters, onChange }) {
             <div className="label">Semester GPA</div>
             <div className="value">{fmtGpa(current.term_gpa)}</div>
           </div>
-          <div className="stat">
-            <div className="label">Semester score</div>
-            <div className={`value ${scoreClass(current.term_score)}`}>{fmtScore(current.term_score)}</div>
-          </div>
+          {showScore ? (
+            <div className="stat">
+              <div className="label">Semester score</div>
+              <div className={`value ${scoreClass(current.term_score)}`}>{fmtScore(current.term_score)}</div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -228,7 +249,14 @@ export default function CourseList({ semesters, onChange }) {
           </select>
         ) : null}
         <input className="input" placeholder="Class code (MAE 310)" value={code} onChange={(e) => setCode(e.target.value)} />
-        <input className="input" style={{ width: 90 }} value={credits} onChange={(e) => setCredits(e.target.value)} />
+        <input
+          className="input"
+          style={{ width: 90 }}
+          value={credits}
+          placeholder={creditTerms.label}
+          aria-label={creditTerms.label}
+          onChange={(e) => setCredits(e.target.value)}
+        />
         <button className="btn primary" type="submit">
           Add class
         </button>
@@ -241,7 +269,7 @@ export default function CourseList({ semesters, onChange }) {
           <table>
             <thead>
               <tr>
-                {SORTS.map(([key, label]) => (
+                {sortCols.map(([key, label]) => (
                   <th key={key}>
                     <button className={sort === key ? "active" : ""} onClick={() => toggleSort(key)}>
                       {label}
@@ -265,7 +293,9 @@ export default function CourseList({ semesters, onChange }) {
                   </td>
                   <td className="mono">{fmtGpa(c.quality_points)}</td>
                   <td className="mono">{c.credits}</td>
-                  <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+                  {showScore ? (
+                    <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+                  ) : null}
                   <td>
                     <select
                       className="select"

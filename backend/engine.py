@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
@@ -217,11 +218,18 @@ SEASON_ORDER = {"spring": 1, "summer": 2, "fall": 3}
 
 AGGREGATIONS = (
     "average",
-    "drop_lowest",
     "points_ratio",
+)
+LEGACY_AGGREGATIONS = (
+    "drop_lowest",
     "average_plus_bonus",
     "replace_min_with",
 )
+ACCEPTED_AGGREGATIONS = AGGREGATIONS + LEGACY_AGGREGATIONS
+AGGREGATION_LABELS = {
+    "average": "Average",
+    "points_ratio": "Points ratio",
+}
 
 
 @dataclass
@@ -243,13 +251,22 @@ class AssignmentInput:
 
 
 @dataclass
+class CategoryPolicy:
+    aggregation: str
+    drop_count: int
+    include_bonus: bool
+    replace_with_category_id: int | None
+
+
+@dataclass
 class CategoryInput:
     id: int | None = None
     name: str = ""
     weight: float = 0.0
     weight_per_item: float | None = None
     aggregation: str = "average"
-    drop_count: int = 1
+    drop_count: int = 0
+    include_bonus: bool = False
     replace_with_category_id: int | None = None
     assignments: list[AssignmentInput] = field(default_factory=list)
 
@@ -268,6 +285,7 @@ class CourseInput:
     credits: float = 0.0
     bonus_points: float = 0.0
     gp_override: float | None = None
+    grade_rounding: int | None = None
     categories: list[CategoryInput] = field(default_factory=list)
     scale: list[ScaleRow] = field(default_factory=list)
 
@@ -319,15 +337,42 @@ def parse_score(raw: str | None) -> tuple[float | None, float | None]:
     return float(text), 100.0
 
 
-def avg_drop_x(values: list[float], drop: int) -> float | None:
-    """AVGDROPX: average after dropping the lowest `drop` scores, keeping at least one."""
+def resolve_category_policy(
+    aggregation: str = "average",
+    drop_count: int | None = 0,
+    include_bonus: bool = False,
+    replace_with_category_id: int | None = None,
+) -> CategoryPolicy:
+    """Map exclusive legacy modes onto base + drop + bonus + replace knobs."""
+    drop = max(int(drop_count or 0), 0)
+    bonus = bool(include_bonus)
+    replace_id = replace_with_category_id
+    if aggregation == "drop_lowest":
+        return CategoryPolicy("average", drop if drop else 1, bonus, replace_id)
+    if aggregation == "average_plus_bonus":
+        return CategoryPolicy("average", drop, True, replace_id)
+    if aggregation == "replace_min_with":
+        return CategoryPolicy("average", drop, bonus, replace_id)
+    if aggregation == "points_ratio":
+        return CategoryPolicy("points_ratio", drop, bonus, replace_id)
+    return CategoryPolicy("average", drop, bonus, replace_id)
+
+
+def _kept_scores(values: list[float], drop: int) -> list[float]:
     numbered = [v for v in values if v is not None]
     n = len(numbered)
     if n == 0:
-        return None
+        return []
     keep = n - min(max(drop, 0), n - 1)
     ranked = sorted(numbered, reverse=True)
-    kept = ranked[:keep]
+    return ranked[:keep]
+
+
+def avg_drop_x(values: list[float], drop: int) -> float | None:
+    """AVGDROPX: average after dropping the lowest `drop` scores, keeping at least one."""
+    kept = _kept_scores(values, drop)
+    if not kept:
+        return None
     return sum(kept) / len(kept)
 
 
@@ -370,59 +415,67 @@ def category_percent(
     category: CategoryInput,
     categories: list[CategoryInput] | None = None,
 ) -> float | None:
-    agg = category.aggregation
+    policy = resolve_category_policy(
+        category.aggregation,
+        category.drop_count,
+        category.include_bonus,
+        category.replace_with_category_id,
+    )
     regular = _regular_percents(category)
-    bonuses = _bonus_values(category)
+    bonuses = _bonus_values(category) if policy.include_bonus else []
 
-    if agg == "points_ratio":
+    if policy.aggregation == "points_ratio":
         scored = [a for a in category.assignments if a.has_score() and not a.is_bonus]
-        return points_ratio(scored)
-
-    if agg == "drop_lowest":
-        return avg_drop_x(regular, category.drop_count)
-
-    if agg == "average_plus_bonus":
-        if not regular:
+        pct = points_ratio(scored)
+        if pct is None or not bonuses:
+            return pct
+        earned = sum(item.earned for item in scored if item.earned is not None)
+        possible = sum(
+            item.possible if item.possible not in (None, 0) else 0.0 for item in scored
+        )
+        if possible == 0:
             return None
-        return (sum(regular) + sum(bonuses)) / len(regular)
-
-    if agg == "replace_min_with":
-        if not regular:
-            return None
-        replacement = None
-        if categories and category.replace_with_category_id is not None:
-            other = next(
-                (c for c in categories if c.id == category.replace_with_category_id),
-                None,
-            )
-            if other is not None:
-                # Avoid recursion through replace_min_with loops: treat replacement as average.
-                replacement = category_percent(
-                    CategoryInput(
-                        id=other.id,
-                        aggregation="average" if other.aggregation == "replace_min_with" else other.aggregation,
-                        drop_count=other.drop_count,
-                        assignments=other.assignments,
-                    )
-                )
-        if replacement is None:
-            return sum(regular) / len(regular)
-        scores = list(regular)
-        lowest = min(scores)
-        if replacement > lowest:
-            scores.remove(lowest)
-            scores.append(replacement)
-        return sum(scores) / len(scores)
+        return 100.0 * (earned + sum(bonuses)) / possible
 
     if not regular:
         return None
-    return sum(regular) / len(regular)
+
+    scores = list(regular)
+    if policy.replace_with_category_id is not None and categories:
+        other = next((c for c in categories if c.id == policy.replace_with_category_id), None)
+        if other is not None:
+            replacement = category_percent(replace(other, replace_with_category_id=None), None)
+            if replacement is not None:
+                lowest = min(scores)
+                if replacement > lowest:
+                    scores.remove(lowest)
+                    scores.append(replacement)
+
+    kept = _kept_scores(scores, policy.drop_count)
+    if not kept:
+        return None
+    return (sum(kept) + sum(bonuses)) / len(kept)
 
 
 def effective_weight(category: CategoryInput) -> float:
     if category.weight_per_item is not None:
         return category.weight_per_item * _score_count(category)
     return category.weight
+
+
+def round_half_up(percent: float | None, decimals: int | None) -> float | None:
+    """Percent as the professor would round it (92.5 → 93 at 0 decimals)."""
+    if percent is None or decimals is None:
+        return percent
+    factor = 10.0 ** decimals
+    return math.floor(percent * factor + 0.5) / factor
+
+
+def cutoff_with_rounding(cutoff: float, decimals: int | None) -> float:
+    """Lowest raw percent that still rounds up to `cutoff`."""
+    if decimals is None:
+        return cutoff
+    return cutoff - 0.5 / (10.0 ** decimals)
 
 
 def letter_from_percent(percent: float | None, scale: list[ScaleRow]) -> tuple[str | None, float | None]:
@@ -471,7 +524,7 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
     else:
         percent = None
 
-    letter, gp = letter_from_percent(percent, scale)
+    letter, gp = letter_from_percent(round_half_up(percent, course.grade_rounding), scale)
     valid_qp = quality_points_set(scale) or VALID_QUALITY_POINTS
     if course.gp_override is not None and course.gp_override in valid_qp:
         gp = course.gp_override
@@ -513,6 +566,8 @@ def course_with_exam_score(
             replace(
                 cat,
                 aggregation="average",
+                drop_count=0,
+                include_bonus=False,
                 replace_with_category_id=None,
                 assignments=[
                     AssignmentInput(name="Exam", earned=exam_percent, possible=100.0)
@@ -609,7 +664,8 @@ def what_if_needed(
             if letter == "F":
                 continue
             # Want (other_weighted + w * needed) / total_w + bonus = cutoff
-            needed = ((cutoff - bonus) * total_w - other_weighted) / target_weight
+            effective = cutoff_with_rounding(cutoff, course.grade_rounding)
+            needed = ((effective - bonus) * total_w - other_weighted) / target_weight
             rows.append(
                 WhatIfRow(
                     category_id=target.id,

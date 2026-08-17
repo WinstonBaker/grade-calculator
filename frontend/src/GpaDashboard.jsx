@@ -1,6 +1,17 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
+import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
+import { useAnimatedNumber } from "./useAnimatedNumber";
+
+function AnimatedValue({ value, format }) {
+  const animated = useAnimatedNumber(value);
+  return <>{format(animated)}</>;
+}
+
+const fmtAnimatedScore = (value) => fmtScore(value == null ? null : Math.round(value));
+const fmtAnimatedTenth = (value) => fmtScore(value == null ? null : Number(Number(value).toFixed(1)));
+const fmtAnimatedCredits = (value) => (value == null ? "—" : Number(Number(value).toFixed(2)));
 
 const FALLBACK_LETTERS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
 const CREDITS = [1, 2, 3, 4];
@@ -85,6 +96,7 @@ function truncateDistribution(distribution) {
 }
 
 function DistributionTable({ distribution }) {
+  const creditTerms = useCreditTerms();
   const rows = truncateDistribution(distribution);
   if (!rows.length) return null;
   return (
@@ -92,8 +104,8 @@ function DistributionTable({ distribution }) {
       <thead>
         <tr>
           <th>Letter</th>
-          <th>Credits</th>
-          <th>% credits</th>
+          <th>{creditTerms.label}</th>
+          <th>% {creditTerms.plural}</th>
           <th>Courses</th>
           <th>% courses</th>
         </tr>
@@ -117,6 +129,7 @@ function DistributionTable({ distribution }) {
 
 function DonutChart({ title, slices, total, unit, emptyLabel }) {
   const [hover, setHover] = useState(null);
+  const creditTerms = useCreditTerms();
   const size = 200;
   const cx = size / 2;
   const cy = size / 2;
@@ -182,7 +195,7 @@ function DonutChart({ title, slices, total, unit, emptyLabel }) {
         <div className="donut-tooltip">
           <span className={`letter ${letterClass(tip.letter)}`}>{tip.letter}</span>
           <span className="mono">
-            {tip.credits} cr ({fmtPct((tip.creditPct ?? tip.pct) * 100, 1)}%)
+            {tip.credits} {creditTerms.short} ({fmtPct((tip.creditPct ?? tip.pct) * 100, 1)}%)
           </span>
           <span className="mono">
             {tip.courses} courses ({fmtPct((tip.coursePct ?? tip.pct) * 100, 1)}%)
@@ -196,6 +209,7 @@ function DonutChart({ title, slices, total, unit, emptyLabel }) {
 }
 
 function GradeDistributionCharts({ distribution }) {
+  const creditTerms = useCreditTerms();
   const byCredits = useMemo(() => buildSlices(distribution, "credit_hours"), [distribution]);
   const byCourses = useMemo(() => buildSlices(distribution, "courses"), [distribution]);
 
@@ -203,11 +217,11 @@ function GradeDistributionCharts({ distribution }) {
     <div className="dist-charts">
       <div className="dist-charts-row">
         <DonutChart
-          title="By credits"
+          title={`By ${creditTerms.plural}`}
           slices={byCredits.slices}
           total={byCredits.total}
-          unit="credits"
-          emptyLabel="No graded credits yet."
+          unit={creditTerms.plural}
+          emptyLabel={`No graded ${creditTerms.plural} yet.`}
         />
         <DonutChart
           title="By courses"
@@ -218,6 +232,167 @@ function GradeDistributionCharts({ distribution }) {
         />
       </div>
     </div>
+  );
+}
+
+const TERM_SEQUENCE = { spring: 1, summer: 2, fall: 3 };
+
+function shortTermName(term) {
+  const year = String(term.year || "").slice(-2);
+  const season = String(term.season || "").slice(0, 3);
+  return `${season.charAt(0).toUpperCase()}${season.slice(1)} ’${year}`;
+}
+
+function GpaTrendChart({ terms, gpaCap }) {
+  const [hover, setHover] = useState(null);
+  const points = useMemo(() => {
+    const included = (terms || [])
+      .filter((term) => term.included && term.term_gpa != null)
+      .sort(
+        (a, b) =>
+          Number(a.year) - Number(b.year) ||
+          (TERM_SEQUENCE[a.season] || 0) - (TERM_SEQUENCE[b.season] || 0)
+      );
+    let qualityPoints = 0;
+    let credits = 0;
+    return included.map((term) => {
+      for (const course of term.courses || []) {
+        if (course.quality_points == null) continue;
+        const courseCredits = Number(course.credits) || 0;
+        qualityPoints += Number(course.quality_points) * courseCredits;
+        credits += courseCredits;
+      }
+      return {
+        ...term,
+        semesterGpa: Number(term.term_gpa),
+        cumulativeGpa: credits
+          ? Math.min(qualityPoints / credits, gpaCap == null ? Infinity : Number(gpaCap))
+          : null,
+      };
+    });
+  }, [terms, gpaCap]);
+
+  if (!points.length) {
+    return <p className="muted">Include a graded semester to see GPA trends.</p>;
+  }
+
+  const width = 800;
+  const height = 270;
+  const margin = { top: 20, right: 24, bottom: 54, left: 52 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const values = points.flatMap((point) => [point.semesterGpa, point.cumulativeGpa]).filter(Number.isFinite);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const spread = rawMax - rawMin;
+  const tickStep = spread <= 1 ? 0.25 : spread <= 2 ? 0.5 : 1;
+  let yMin = Math.max(0, Math.floor((rawMin - 0.1) / tickStep) * tickStep);
+  let yMax = Math.ceil((rawMax + 0.1) / tickStep) * tickStep;
+  if (yMax <= yMin) yMax = yMin + tickStep;
+  const yTicks = [];
+  for (let value = yMin; value <= yMax + 1e-8; value += tickStep) {
+    yTicks.push(Number(value.toFixed(3)));
+  }
+  const x = (index) =>
+    margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+  const y = (value) => margin.top + ((yMax - value) / (yMax - yMin)) * plotHeight;
+  const line = (key) =>
+    points
+      .filter((point) => Number.isFinite(point[key]))
+      .map((point) => `${x(points.indexOf(point))},${y(point[key])}`)
+      .join(" ");
+  const active = hover == null ? null : points[hover];
+
+  return (
+    <section className="panel gpa-trends" aria-label="GPA trends">
+      <div className="gpa-trends-head">
+        <div>
+          <h2>GPA trends</h2>
+          <p className="muted">Included semesters, oldest to newest.</p>
+        </div>
+        <div className="gpa-trends-legend" aria-label="Chart legend">
+          <span><i className="semester" />Semester GPA</span>
+          <span><i className="cumulative" />Cumulative GPA</span>
+        </div>
+      </div>
+      <div className="gpa-trends-chart">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label="Semester and cumulative GPA over time"
+          onMouseLeave={() => setHover(null)}
+        >
+          {yTicks.map((tick) => (
+            <g key={tick}>
+              <line
+                className="gpa-trend-grid"
+                x1={margin.left}
+                x2={width - margin.right}
+                y1={y(tick)}
+                y2={y(tick)}
+              />
+              <text className="gpa-trend-axis" x={margin.left - 10} y={y(tick) + 4} textAnchor="end">
+                {fmtGpa(tick)}
+              </text>
+            </g>
+          ))}
+          <clipPath id="gpa-trend-reveal">
+            <rect
+              className="gpa-trend-reveal"
+              style={{ transformOrigin: `${margin.left}px 0px` }}
+              x={margin.left}
+              y={0}
+              width={plotWidth}
+              height={height}
+            />
+          </clipPath>
+          <g clipPath="url(#gpa-trend-reveal)">
+            <polyline className="gpa-trend-line semester" points={line("semesterGpa")} />
+            <polyline className="gpa-trend-line cumulative" points={line("cumulativeGpa")} />
+          </g>
+          {points.map((point, index) => (
+            <g key={point.id}>
+              <line
+                className="gpa-trend-hit"
+                x1={x(index)}
+                x2={x(index)}
+                y1={margin.top}
+                y2={margin.top + plotHeight}
+                onMouseEnter={() => setHover(index)}
+              />
+              <circle
+                className="gpa-trend-dot semester"
+                cx={x(index)}
+                cy={y(point.semesterGpa)}
+                r={hover === index ? 6 : 4}
+                onMouseEnter={() => setHover(index)}
+              />
+              <circle
+                className="gpa-trend-dot cumulative"
+                cx={x(index)}
+                cy={y(point.cumulativeGpa)}
+                r={hover === index ? 6 : 4}
+                onMouseEnter={() => setHover(index)}
+              />
+              <text className="gpa-trend-axis term" x={x(index)} y={height - 20} textAnchor="middle">
+                {shortTermName(point)}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div className="gpa-trends-detail" aria-live="polite">
+        {active ? (
+          <>
+            <strong>{active.name}</strong>
+            <span>Semester <b className="mono">{fmtGpa(active.semesterGpa)}</b></span>
+            <span>Cumulative <b className="mono">{fmtGpa(active.cumulativeGpa)}</b></span>
+          </>
+        ) : (
+          <span className="muted">Hover a semester for exact GPAs</span>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -253,10 +428,16 @@ function distributionFromCourses(courses, letterOrder = FALLBACK_LETTERS) {
 }
 
 function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const [minCredits, setMinCredits] = useState("6");
-  const [sortKey, setSortKey] = useState("score");
+  const [sortKey, setSortKey] = useState(showScore ? "score" : "gpa");
   const [sortDesc, setSortDesc] = useState(true);
   const [openCode, setOpenCode] = useState(null);
+
+  useEffect(() => {
+    if (!showScore && sortKey === "score") setSortKey("gpa");
+  }, [showScore, sortKey]);
 
   const min = Number(minCredits) || 0;
 
@@ -340,10 +521,10 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
   const cols = [
     ["code", "Code"],
     ["courses", "Courses"],
-    ["credits", "Credits"],
-    ["score", "Score"],
+    ["credits", creditTerms.label],
+    showScore ? ["score", "Score"] : null,
     ["gpa", "GPA"],
-  ];
+  ].filter(Boolean);
 
   return (
     <section className="panel" style={{ marginTop: 16 }}>
@@ -352,11 +533,11 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
           <h2 style={{ margin: 0 }}>Course codes</h2>
           <p className="muted" style={{ margin: "6px 0 0" }}>
             Subject prefixes from included classes (MA, MAE, PY, …). Click a code for grade breakdown. Filter by
-            minimum credits to rank the best.
+            minimum {creditTerms.plural} to rank the best.
           </p>
         </div>
         <label className="muted">
-          Min credits
+          Min {creditTerms.plural}
           <input
             className="input"
             type="number"
@@ -370,23 +551,27 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
       </div>
 
       <div className="code-best-grid">
-        <div className="code-best">
-          <div className="donut-title">Best by score</div>
-          {bestByScore.length === 0 ? (
-            <p className="muted">No codes meet the minimum.</p>
-          ) : (
-            <ol className="code-best-list">
-              {bestByScore.map((r, i) => (
-                <li key={r.code}>
-                  <span className="mono muted">{i + 1}.</span>
-                  <strong>{r.code}</strong>
-                  <span className={`mono ${scoreClass(r.score)}`}>{fmtScore(r.score)}</span>
-                  <span className="mono muted">{r.credits} cr</span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
+        {showScore ? (
+          <div className="code-best">
+            <div className="donut-title">Best by score</div>
+            {bestByScore.length === 0 ? (
+              <p className="muted">No codes meet the minimum.</p>
+            ) : (
+              <ol className="code-best-list">
+                {bestByScore.map((r, i) => (
+                  <li key={r.code}>
+                    <span className="mono muted">{i + 1}.</span>
+                    <strong>{r.code}</strong>
+                    <span className={`mono ${scoreClass(r.score)}`}>{fmtScore(r.score)}</span>
+                    <span className="mono muted">
+                      {r.credits} {creditTerms.short}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        ) : null}
         <div className="code-best">
           <div className="donut-title">Best by GPA</div>
           {bestByGpa.length === 0 ? (
@@ -398,7 +583,9 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
                   <span className="mono muted">{i + 1}.</span>
                   <strong>{r.code}</strong>
                   <span className="mono">{fmtGpa(r.gpa)}</span>
-                  <span className="mono muted">{r.credits} cr</span>
+                  <span className="mono muted">
+                    {r.credits} {creditTerms.short}
+                  </span>
                 </li>
               ))}
             </ol>
@@ -407,7 +594,9 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="empty">No subject codes with at least {min} credits.</div>
+        <div className="empty">
+          No subject codes with at least {min} {creditTerms.plural}.
+        </div>
       ) : (
         <div className="table-wrap" style={{ marginTop: 14 }}>
           <table className="code-stats-table">
@@ -436,12 +625,14 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
                       onKeyDown={(e) => e.key === "Enter" && toggleCode(r.code)}
                     >
                       <td>
-                        <span className="term-accordion-chevron">{open ? "▾" : "▸"}</span>{" "}
+                        <span className={`term-accordion-chevron ${open ? "open" : ""}`}>▸</span>{" "}
                         <strong>{r.code}</strong>
                       </td>
                       <td className="mono">{r.courses}</td>
                       <td className="mono">{r.credits}</td>
-                      <td className={`mono ${scoreClass(r.score)}`}>{fmtScore(r.score)}</td>
+                      {showScore ? (
+                        <td className={`mono ${scoreClass(r.score)}`}>{fmtScore(r.score)}</td>
+                      ) : null}
                       <td className="mono">{fmtGpa(r.gpa)}</td>
                     </tr>
                     {open ? (
@@ -456,8 +647,8 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
                                   <th>Class</th>
                                   <th>Letter</th>
                                   <th>GPA</th>
-                                  <th>Credits</th>
-                                  <th>Score</th>
+                                  <th>{creditTerms.label}</th>
+                                  {showScore ? <th>Score</th> : null}
                                 </tr>
                               </thead>
                               <tbody>
@@ -473,7 +664,9 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
                                       </td>
                                       <td className="mono">{fmtGpa(c.quality_points)}</td>
                                       <td className="mono">{c.credits}</td>
-                                      <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+                                      {showScore ? (
+                                        <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+                                      ) : null}
                                     </tr>
                                   ))}
                               </tbody>
@@ -494,6 +687,8 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
 }
 
 export default function GpaDashboard() {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const [data, setData] = useState(null);
   const [view, setView] = useState("semester");
   const [sort, setSort] = useState("code");
@@ -504,6 +699,8 @@ export default function GpaDashboard() {
   const [openTerms, setOpenTerms] = useState({});
   const [semestersSectionOpen, setSemestersSectionOpen] = useState(false);
   const [futureGuessOpen, setFutureGuessOpen] = useState(false);
+  const [showAllGuessLetters, setShowAllGuessLetters] = useState(false);
+  const guessSeeded = useRef(false);
 
   async function load() {
     setData(await api.gpa());
@@ -514,6 +711,13 @@ export default function GpaDashboard() {
   }, []);
 
   useEffect(() => {
+    if (!showScore && sort === "score") {
+      setSort("code");
+      setDesc(false);
+    }
+  }, [showScore, sort]);
+
+  useEffect(() => {
     if (!data?.default_scale?.length) return;
     const values = data.default_scale.map((row) => String(row.quality_points));
     if (!values.includes(String(fumbleGp))) {
@@ -521,6 +725,19 @@ export default function GpaDashboard() {
       setFumbleGp(String(top.quality_points));
     }
   }, [data, fumbleGp]);
+
+  // Saved guesses live on the server; seed the draft once so edits merge instead of wiping them.
+  useEffect(() => {
+    const grid = data?.future_guess?.grid;
+    if (guessSeeded.current || !grid) return;
+    guessSeeded.current = true;
+    const seeded = {};
+    for (const [credits, counts] of Object.entries(grid)) {
+      const used = Object.fromEntries(Object.entries(counts).filter(([, count]) => Number(count)));
+      if (Object.keys(used).length) seeded[credits] = used;
+    }
+    setGuessDraft(seeded);
+  }, [data]);
 
   useEffect(() => {
     if (!data?.terms) return;
@@ -565,13 +782,30 @@ export default function GpaDashboard() {
   if (!data) return <p className="muted">Loading…</p>;
 
   const letters = lettersFromScale(data.default_scale);
+  const plannedCourses = letters.reduce(
+    (sum, letter) => sum + CREDITS.reduce((rowSum, ch) => rowSum + (Number(guessValue(ch, letter)) || 0), 0),
+    0
+  );
+  // Planning usually only touches the top letters, so hide the long tail until it is used.
+  const visibleGuessLetters = showAllGuessLetters
+    ? letters
+    : letters.filter((letter, index) => index < 6 || CREDITS.some((ch) => Number(guessValue(ch, letter))));
+
+  function guessValue(ch, letter) {
+    return guessDraft[ch]?.[letter] ?? guessDraft[String(ch)]?.[letter] ?? "";
+  }
 
   async function commitGuess(ch, letter, value) {
-    const next = { ...guessDraft };
-    next[ch] = { ...(next[ch] || {}) };
+    const next = { ...(data?.future_guess?.grid || {}), ...guessDraft };
+    next[ch] = { ...(next[ch] || next[String(ch)] || {}) };
     next[ch][letter] = Number(value) || 0;
     setGuessDraft(next);
     setData(await api.patchSettings({ future_guess: next }));
+  }
+
+  async function clearGuess() {
+    setGuessDraft({});
+    setData(await api.patchSettings({ future_guess: {} }));
   }
 
   function toggleTerm(id) {
@@ -594,28 +828,34 @@ export default function GpaDashboard() {
           <h1>GPA</h1>
         </div>
         <div className="row">
-          <label className="muted">
-            Target
-            <select
-              className="select"
-              style={{ display: "block", marginTop: 4 }}
-              value={data.target_letter}
-              onChange={async (e) => setData(await api.patchSettings({ target_letter: e.target.value }))}
-            >
-              {letters.map((l) => (
-                <option key={l}>{l}</option>
-              ))}
-            </select>
-          </label>
-          <label className="muted">
-            Semesters remaining
-            <input
-              className="input"
-              style={{ display: "block", marginTop: 4, width: 90 }}
-              defaultValue={data.semesters_remaining}
-              onBlur={async (e) => setData(await api.patchSettings({ semesters_remaining: Number(e.target.value) }))}
-            />
-          </label>
+          {showScore ? (
+            <>
+              <label className="muted">
+                Target
+                <select
+                  className="select"
+                  style={{ display: "block", marginTop: 4 }}
+                  value={data.target_letter}
+                  onChange={async (e) => setData(await api.patchSettings({ target_letter: e.target.value }))}
+                >
+                  {letters.map((l) => (
+                    <option key={l}>{l}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="muted">
+                Semesters remaining
+                <input
+                  className="input"
+                  style={{ display: "block", marginTop: 4, width: 90 }}
+                  defaultValue={data.semesters_remaining}
+                  onBlur={async (e) =>
+                    setData(await api.patchSettings({ semesters_remaining: Number(e.target.value) }))
+                  }
+                />
+              </label>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -626,25 +866,12 @@ export default function GpaDashboard() {
           aria-describedby="overall-gpa-tip"
         >
           <div className="label">Overall GPA</div>
-          <div className="value">{fmtGpa(data.overall_gpa)}</div>
+          <div className="value">
+            <AnimatedValue value={data.overall_gpa} format={fmtGpa} />
+          </div>
           <p className="stat-tip-bubble" id="overall-gpa-tip" role="tooltip">
-            Credit-weighted average of quality points from included semesters only. Each class contributes
-            letter GPA × credits; excluded terms do not count. Shown to three decimals so 4.300, 4.330, and
-            4.333 stay distinct.
-          </p>
-        </div>
-        <div
-          className="stat stat-tip"
-          tabIndex={0}
-          aria-describedby="overall-score-tip"
-        >
-          <div className="label">Overall score</div>
-          <div className={`value ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</div>
-          <p className="stat-tip-bubble" id="overall-score-tip" role="tooltip">
-            How far your classes sit above or below your target letter ({data.target_letter} ={" "}
-            {fmtGpa(data.target_gp)}). Each class adds about (GPA − target) × credits × 3. Positive means
-            ahead of target; zero is on pace; negative is behind. Scales without a higher A+ usually cannot
-            go far above a target of A.
+            {creditTerms.singularLabel}-weighted average of quality points from included semesters only. Each
+            class contributes letter GPA × {creditTerms.plural}; excluded terms do not count.
           </p>
         </div>
         <div
@@ -652,27 +879,51 @@ export default function GpaDashboard() {
           tabIndex={0}
           aria-describedby="credits-taken-tip"
         >
-          <div className="label">Credits taken</div>
-          <div className="value">{data.total_credits}</div>
-          <p className="stat-tip-bubble" id="credits-taken-tip" role="tooltip">
-            Graded credit hours from included semesters that count toward overall GPA.
-          </p>
-        </div>
-        <div
-          className="stat stat-tip"
-          tabIndex={0}
-          aria-describedby="score-pace-tip"
-        >
-          <div className="label">Pace / semester</div>
-          <div className={`value ${scoreClass(data.score_per_semester)}`}>
-            {fmtScore(data.score_per_semester == null ? null : Number(Number(data.score_per_semester).toFixed(1)))}
+          <div className="label">{creditTerms.label} taken</div>
+          <div className="value">
+            <AnimatedValue value={data.total_credits} format={fmtAnimatedCredits} />
           </div>
-          <p className="stat-tip-bubble" id="score-pace-tip" role="tooltip">
-            With {data.semesters_remaining} semester{Number(data.semesters_remaining) === 1 ? "" : "s"} left, this is
-            how much overall score you need to earn each term to finish at your target ({data.target_letter}). A
-            negative pace means you are already ahead and can afford to lose some score.
+          <p className="stat-tip-bubble" id="credits-taken-tip" role="tooltip">
+            Graded {creditTerms.plural} from included semesters that count toward overall GPA.
           </p>
         </div>
+        {showScore ? (
+          <div
+            className="stat stat-tip"
+            tabIndex={0}
+            aria-describedby="overall-score-tip"
+          >
+            <div className="label">Overall score</div>
+            <div className={`value ${scoreClass(data.overall_score)}`}>
+              <AnimatedValue value={data.overall_score} format={fmtAnimatedScore} />
+            </div>
+            <p className="stat-tip-bubble" id="overall-score-tip" role="tooltip">
+              How far your classes sit above or below your target letter ({data.target_letter} ={" "}
+              {fmtGpa(data.target_gp)}). Each class adds about (GPA − target) × {creditTerms.plural} × 3.
+              Positive means ahead of target; zero is on pace; negative is behind. If your scale’s top GPA is
+              the same as A (no bonus A+), a target of A usually keeps score near zero instead of largely
+              positive.
+            </p>
+          </div>
+        ) : null}
+        {showScore ? (
+          <div
+            className="stat stat-tip"
+            tabIndex={0}
+            aria-describedby="score-pace-tip"
+          >
+            <div className="label">Buffer / semester</div>
+            <div className={`value ${scoreClass(data.score_per_semester)}`}>
+              <AnimatedValue value={data.score_per_semester} format={fmtAnimatedTenth} />
+            </div>
+            <p className="stat-tip-bubble" id="score-pace-tip" role="tooltip">
+              Your overall score spread across the {data.semesters_remaining} semester
+              {Number(data.semesters_remaining) === 1 ? "" : "s"} you have left. Green/positive means you are ahead
+              of target ({data.target_letter}) and can afford that much score drop each term; red/negative means you
+              need to gain that much score each term.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       <div className="row" style={{ marginBottom: 14 }}>
@@ -695,12 +946,18 @@ export default function GpaDashboard() {
           >
             <div>
               <h2 className="term-accordion-title">
-                <span className="term-accordion-chevron">{semestersSectionOpen ? "▾" : "▸"}</span>
+                <span className={`term-accordion-chevron ${semestersSectionOpen ? "open" : ""}`}>▸</span>
                 Semesters
               </h2>
               <p className="term-accordion-meta">
-                {data.terms.length} terms · {data.total_credits} included credits · score{" "}
-                <span className={`mono ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</span>
+                {data.terms.length} terms · {data.total_credits} included {creditTerms.plural}
+                {showScore ? (
+                  <>
+                    {" "}
+                    · score{" "}
+                    <span className={`mono ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</span>
+                  </>
+                ) : null}
               </p>
             </div>
             <div className="term-accordion-actions" onClick={(e) => e.stopPropagation()}>
@@ -734,12 +991,20 @@ export default function GpaDashboard() {
                     >
                       <div>
                         <h2 className="term-accordion-title">
-                          <span className="term-accordion-chevron">{open ? "▾" : "▸"}</span>
+                          <span className={`term-accordion-chevron ${open ? "open" : ""}`}>▸</span>
                           {term.name}
                         </h2>
                         <p className="term-accordion-meta">
-                          GPA {fmtGpa(term.term_gpa)} · {term.term_credits} credits · score{" "}
-                          <span className={`mono ${scoreClass(term.term_score)}`}>{fmtScore(term.term_score)}</span>
+                          GPA {fmtGpa(term.term_gpa)} · {term.term_credits} {creditTerms.plural}
+                          {showScore ? (
+                            <>
+                              {" "}
+                              · score{" "}
+                              <span className={`mono ${scoreClass(term.term_score)}`}>
+                                {fmtScore(term.term_score)}
+                              </span>
+                            </>
+                          ) : null}
                         </p>
                       </div>
                       <div className="term-accordion-actions" onClick={(e) => e.stopPropagation()}>
@@ -778,6 +1043,8 @@ export default function GpaDashboard() {
           />
         </div>
       )}
+
+      <GpaTrendChart terms={data.terms} gpaCap={data.gpa_cap} />
 
       <div className="split" style={{ marginTop: 16 }}>
         <div className="panel">
@@ -829,7 +1096,7 @@ export default function GpaDashboard() {
                 <th>Class</th>
                 <th>Did</th>
                 <th>Should</th>
-                <th>∆</th>
+                {showScore ? <th>∆</th> : null}
                 <th />
               </tr>
             </thead>
@@ -839,7 +1106,9 @@ export default function GpaDashboard() {
                   <td>{f.code}</td>
                   <td className="mono">{fmtGpa(f.did_get)}</td>
                   <td className="mono">{fmtGpa(f.should_have_been_gp)}</td>
-                  <td className={`mono ${scoreClass(f.delta)}`}>{fmtScore(f.delta)}</td>
+                  {showScore ? (
+                    <td className={`mono ${scoreClass(f.delta)}`}>{fmtScore(f.delta)}</td>
+                  ) : null}
                   <td>
                     <button className="btn small danger" onClick={async () => setData(await api.deleteFumble(f.id))}>
                       ×
@@ -850,7 +1119,13 @@ export default function GpaDashboard() {
             </tbody>
           </table>
           <p className="muted" style={{ marginTop: 10 }}>
-            Score with fumbles {fmtScore(data.score_with_fumbles)} → GPA {fmtGpa(data.gpa_with_fumbles)}
+            {showScore ? (
+              <>
+                Score with fumbles {fmtScore(data.score_with_fumbles)} → GPA {fmtGpa(data.gpa_with_fumbles)}
+              </>
+            ) : (
+              <>GPA with fumbles {fmtGpa(data.gpa_with_fumbles)}</>
+            )}
           </p>
         </div>
       </div>
@@ -867,62 +1142,106 @@ export default function GpaDashboard() {
         >
           <div>
             <h2 className="term-accordion-title">
-              <span className="term-accordion-chevron">{futureGuessOpen ? "▾" : "▸"}</span>
+              <span className={`term-accordion-chevron ${futureGuessOpen ? "open" : ""}`}>▸</span>
               Future guess
             </h2>
             <p className="term-accordion-meta">
               {futureGuessOpen
-                ? "How many remaining courses at each letter and credit load."
-                : `∆ score ${data.future_guess.delta_score ?? "—"} · adjusted credits ${
-                    data.future_guess.adjusted_credits ?? "—"
-                  } · adjusted GPA ${fmtGpa(data.future_guess.adjusted_gpa)}`}
+                ? `How many remaining courses at each letter and ${creditTerms.singular} load.`
+                : showScore
+                  ? `∆ score ${data.future_guess.delta_score ?? "—"} · adjusted ${creditTerms.plural} ${
+                      data.future_guess.adjusted_credits ?? "—"
+                    } · adjusted GPA ${fmtGpa(data.future_guess.adjusted_gpa)}`
+                  : `Adjusted ${creditTerms.plural} ${data.future_guess.adjusted_credits ?? "—"} · adjusted GPA ${fmtGpa(data.future_guess.adjusted_gpa)}`}
             </p>
           </div>
         </div>
         {futureGuessOpen ? (
-          <>
+          <div className="guess-body">
+            <div className="guess-toolbar">
+              <span className="muted">Planned courses: {plannedCourses || "none yet"}</span>
+              <div className="row">
+                {letters.length > visibleGuessLetters.length || showAllGuessLetters ? (
+                  <button className="btn small" type="button" onClick={() => setShowAllGuessLetters((v) => !v)}>
+                    {showAllGuessLetters ? "Show top letters" : "Show all letters"}
+                  </button>
+                ) : null}
+                <button className="btn small" type="button" disabled={!plannedCourses} onClick={clearGuess}>
+                  Clear
+                </button>
+              </div>
+            </div>
             <div className="table-wrap">
               <table className="guess-grid">
                 <thead>
                   <tr>
-                    <th />
+                    <th>Letter</th>
                     {CREDITS.map((ch) => (
-                      <th key={ch}>{ch} CH</th>
+                      <th key={ch}>
+                        {ch} {creditTerms.short}
+                      </th>
                     ))}
+                    <th>Courses</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {letters.map((letter) => (
-                    <tr key={letter}>
-                      <td>
-                        <span className={`letter ${letterClass(letter)}`}>{letter}</span>
-                      </td>
-                      {CREDITS.map((ch) => (
-                        <td key={ch}>
-                          <input
-                            className="input"
-                            value={guessDraft[ch]?.[letter] ?? guessDraft[String(ch)]?.[letter] ?? ""}
-                            onChange={(e) => {
-                              const next = {
-                                ...guessDraft,
-                                [ch]: { ...(guessDraft[ch] || guessDraft[String(ch)] || {}), [letter]: e.target.value },
-                              };
-                              setGuessDraft(next);
-                            }}
-                            onBlur={(e) => commitGuess(ch, letter, e.target.value)}
-                          />
+                  {visibleGuessLetters.map((letter) => {
+                    const rowTotal = CREDITS.reduce((sum, ch) => sum + (Number(guessValue(ch, letter)) || 0), 0);
+                    return (
+                      <tr key={letter} className={rowTotal ? "has-plan" : ""}>
+                        <td>
+                          <span className={`letter ${letterClass(letter)}`}>{letter}</span>
                         </td>
-                      ))}
-                    </tr>
-                  ))}
+                        {CREDITS.map((ch) => {
+                          const value = guessValue(ch, letter);
+                          return (
+                            <td key={ch}>
+                              <input
+                                className={`input guess-cell ${Number(value) ? "filled" : ""}`}
+                                inputMode="numeric"
+                                placeholder="0"
+                                aria-label={`${letter} courses worth ${ch} ${creditTerms.plural}`}
+                                value={value}
+                                onChange={(e) => {
+                                  setGuessDraft({
+                                    ...guessDraft,
+                                    [ch]: {
+                                      ...(guessDraft[ch] || guessDraft[String(ch)] || {}),
+                                      [letter]: e.target.value,
+                                    },
+                                  });
+                                }}
+                                onBlur={(e) => commitGuess(ch, letter, e.target.value)}
+                              />
+                            </td>
+                          );
+                        })}
+                        <td className="mono guess-row-total">{rowTotal || "—"}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-            <p className="muted" style={{ marginTop: 12 }}>
-              ∆ score {data.future_guess.delta_score ?? "—"} · adjusted credits{" "}
-              {data.future_guess.adjusted_credits ?? "—"} · adjusted GPA {fmtGpa(data.future_guess.adjusted_gpa)}
-            </p>
-          </>
+            <div className="guess-summary">
+              {showScore ? (
+                <div>
+                  <span className="muted">∆ score</span>
+                  <strong className={`mono ${scoreClass(data.future_guess.delta_score)}`}>
+                    {data.future_guess.delta_score == null ? "—" : fmtScore(data.future_guess.delta_score)}
+                  </strong>
+                </div>
+              ) : null}
+              <div>
+                <span className="muted">Adjusted {creditTerms.plural}</span>
+                <strong className="mono">{data.future_guess.adjusted_credits ?? "—"}</strong>
+              </div>
+              <div>
+                <span className="muted">Adjusted GPA</span>
+                <strong className="mono">{fmtGpa(data.future_guess.adjusted_gpa)}</strong>
+              </div>
+            </div>
+          </div>
         ) : null}
       </section>
     </>
@@ -930,6 +1249,8 @@ export default function GpaDashboard() {
 }
 
 function CourseTable({ courses, showSemester = false, sort = null, desc = false, onSort = null }) {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   if (!courses.length) return <div className="empty">No classes in this view.</div>;
 
   const sortable = typeof onSort === "function";
@@ -939,8 +1260,8 @@ function CourseTable({ courses, showSemester = false, sort = null, desc = false,
     ["percent", "%"],
     ["letter", "Letter"],
     ["gpa", "GPA"],
-    ["credits", "CH"],
-    ["score", "Score"],
+    ["credits", creditTerms.short],
+    showScore ? ["score", "Score"] : null,
   ].filter(Boolean);
 
   return (
@@ -974,7 +1295,7 @@ function CourseTable({ courses, showSemester = false, sort = null, desc = false,
             </td>
             <td className="mono">{fmtGpa(c.quality_points)}</td>
             <td className="mono">{c.credits}</td>
-            <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+            {showScore ? <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td> : null}
           </tr>
         ))}
       </tbody>

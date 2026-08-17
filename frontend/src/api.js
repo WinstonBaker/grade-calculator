@@ -108,10 +108,24 @@ export function letterClass(letter) {
 }
 
 /** Map a percent to letter + quality points using the course scale (highest cutoff ≤ percent). */
-export function gradeFromPercent(percent, scale) {
+/** Percent as the professor would round it (92.5 → 93 at 0 decimals). */
+export function roundHalfUp(percent, decimals) {
+  if (percent == null || decimals == null || Number.isNaN(Number(percent))) return percent;
+  const factor = 10 ** Number(decimals);
+  return Math.floor(Number(percent) * factor + 0.5) / factor;
+}
+
+/** Lowest raw percent that still rounds up to `cutoff`. */
+export function cutoffWithRounding(cutoff, decimals) {
+  if (decimals == null) return cutoff;
+  return Number(cutoff) - 0.5 / 10 ** Number(decimals);
+}
+
+export function gradeFromPercent(percent, scale, rounding = null) {
   if (percent == null || Number.isNaN(Number(percent))) return { letter: null, quality_points: null };
+  const value = roundHalfUp(percent, rounding);
   const rows = Array.isArray(scale) && scale.length ? scale : [];
-  const eligible = rows.filter((row) => Number(row.min_percent) <= Number(percent));
+  const eligible = rows.filter((row) => Number(row.min_percent) <= Number(value));
   if (!eligible.length) return { letter: null, quality_points: null };
   const best = eligible.reduce((a, row) =>
     Number(row.min_percent) > Number(a.min_percent) ? row : a
@@ -178,7 +192,7 @@ export function projectPercentFromExam(course, examCategoryId, examPercent) {
     if (cat.id === examCategoryId) {
       pct = examPct;
       weight = examCategoryWeight(cat);
-    } else if (cat.aggregation === "replace_min_with" && cat.replace_with_category_id === examCategoryId) {
+    } else if (cat.aggregation !== "points_ratio" && cat.replace_with_category_id === examCategoryId) {
       pct = replaceMinWithPercent(cat, examPct);
       weight = cat.effective_weight || examCategoryWeight(cat);
     } else if (cat.percent != null && cat.effective_weight) {
@@ -232,7 +246,11 @@ export function examNeededRows(course, examCategoryId) {
       letter: row.letter,
       cutoff_percent: row.min_percent,
       quality_points: row.quality_points,
-      needed: examNeededForCutoff(course, examCategoryId, row.min_percent),
+      needed: examNeededForCutoff(
+        course,
+        examCategoryId,
+        cutoffWithRounding(row.min_percent, course?.grade_rounding ?? null)
+      ),
     }));
 }
 

@@ -21,6 +21,7 @@ class CourseCreate(BaseModel):
     credits: float = 3.0
     bonus_points: float = 0.0
     gp_override: float | None = None
+    grade_rounding: int | None = Field(default=None, ge=0, le=3)
 
 
 class CourseUpdate(BaseModel):
@@ -29,6 +30,7 @@ class CourseUpdate(BaseModel):
     credits: float | None = None
     bonus_points: float | None = None
     gp_override: float | None = None
+    grade_rounding: int | None = Field(default=None, ge=0, le=3)
 
 
 class CategoryCreate(BaseModel):
@@ -37,7 +39,8 @@ class CategoryCreate(BaseModel):
     weight: float = 0.0
     weight_per_item: float | None = None
     aggregation: str = "average"
-    drop_count: int = 1
+    drop_count: int = Field(default=0, ge=0)
+    include_bonus: bool = False
     replace_with_category_id: int | None = None
 
 
@@ -46,7 +49,8 @@ class CategoryUpdate(BaseModel):
     weight: float | None = None
     weight_per_item: float | None = None
     aggregation: str | None = None
-    drop_count: int | None = None
+    drop_count: int | None = Field(default=None, ge=0)
+    include_bonus: bool | None = None
     replace_with_category_id: int | None = None
 
 
@@ -100,6 +104,7 @@ class ScaleProfileUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     target_letter: str | None = None
     semesters_remaining: float | None = None
+    gpa_cap: float | None = None
     future_guess: dict[str, dict[str, int]] | None = None
     default_scale: list[ScaleRowIn] | None = None
 

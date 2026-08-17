@@ -10,6 +10,7 @@ export default function FeedbackBubble({ repo }) {
 
   useEffect(() => {
     if (!open) return undefined;
+    panelRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
     function onPointerDown(event) {
       if (panelRef.current && !panelRef.current.contains(event.target)) {
         setOpen(false);

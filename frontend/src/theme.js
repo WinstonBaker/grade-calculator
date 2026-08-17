@@ -7,6 +7,72 @@ export const DEFAULT_COLORS = {
 };
 
 export const DEFAULT_GRADE_SCALE = "classic";
+export const DEFAULT_CREDIT_LABEL = "credits";
+
+export const CREDIT_LABEL_OPTIONS = [
+  { id: "credits", name: "Credits", singular: "credit", plural: "credits", short: "cr" },
+  { id: "units", name: "Units", singular: "unit", plural: "units", short: "u" },
+  { id: "hours", name: "Hours", singular: "hour", plural: "hours", short: "hr" },
+  {
+    id: "credit_hours",
+    name: "Credit hours",
+    singular: "credit hour",
+    plural: "credit hours",
+    short: "CH",
+  },
+  {
+    id: "semester_hours",
+    name: "Semester hours",
+    singular: "semester hour",
+    plural: "semester hours",
+    short: "SH",
+  },
+  { id: "other", name: "Other" },
+];
+
+function titleCase(value) {
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function singularFromPlural(plural) {
+  const text = String(plural || "").trim();
+  if (!text) return "credit";
+  if (/ies$/i.test(text)) return text.replace(/ies$/i, "y");
+  if (/ses$/i.test(text) || /xes$/i.test(text) || /zes$/i.test(text) || /ches$/i.test(text) || /shes$/i.test(text)) {
+    return text.replace(/es$/i, "");
+  }
+  if (/s$/i.test(text) && !/ss$/i.test(text)) return text.slice(0, -1);
+  return text;
+}
+
+export function resolveCreditTerms(appearance = {}) {
+  const id = appearance.creditLabelId || DEFAULT_CREDIT_LABEL;
+  if (id === "other") {
+    const plural = String(appearance.creditLabelCustom || "").trim() || "credits";
+    const singular = singularFromPlural(plural);
+    return {
+      id: "other",
+      singular,
+      plural,
+      short: plural.slice(0, 2).toLowerCase() || "cr",
+      label: titleCase(plural),
+      singularLabel: titleCase(singular),
+    };
+  }
+  const option = CREDIT_LABEL_OPTIONS.find((item) => item.id === id) || CREDIT_LABEL_OPTIONS[0];
+  return {
+    id: option.id,
+    singular: option.singular,
+    plural: option.plural,
+    short: option.short,
+    label: titleCase(option.plural),
+    singularLabel: titleCase(option.singular),
+  };
+}
 
 /** Letter keys used by grade color styles. */
 export const GRADE_LETTER_KEYS = ["ap", "a", "am", "bp", "b", "bm", "cp", "c", "cm", "dp", "d", "dm", "f"];
@@ -177,8 +243,13 @@ export function loadAppearance() {
       const parsed = JSON.parse(raw);
       return {
         gradeColors: parsed.gradeColors !== false,
+        showScore: parsed.showScore !== false,
         gradeScale: resolveGradeScaleId(parsed.gradeScale),
         customGradeColors: normalizeGradeColors(parsed.customGradeColors),
+        creditLabelId: CREDIT_LABEL_OPTIONS.some((item) => item.id === parsed.creditLabelId)
+          ? parsed.creditLabelId
+          : DEFAULT_CREDIT_LABEL,
+        creditLabelCustom: String(parsed.creditLabelCustom || "").trim(),
         primary: normalizeHex(parsed.primary) || DEFAULT_COLORS.primary,
         secondary: normalizeHex(parsed.secondary) || DEFAULT_COLORS.secondary,
         tertiary: normalizeHex(parsed.tertiary) || DEFAULT_COLORS.tertiary,
@@ -192,8 +263,11 @@ export function loadAppearance() {
   const legacyLight = window.localStorage.getItem("grade-calculator-light-mode") === "true";
   return {
     gradeColors: window.localStorage.getItem("grade-calculator-grade-colors") !== "false",
+    showScore: true,
     gradeScale: DEFAULT_GRADE_SCALE,
     customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
+    creditLabelId: DEFAULT_CREDIT_LABEL,
+    creditLabelCustom: "",
     primary: legacyLight ? "#a87526" : DEFAULT_COLORS.primary,
     secondary: legacyLight ? "#f4f1e9" : DEFAULT_COLORS.secondary,
     tertiary: legacyLight ? "#356da8" : DEFAULT_COLORS.tertiary,
@@ -205,8 +279,11 @@ export function saveAppearance(appearance) {
     STORAGE_KEY,
     JSON.stringify({
       gradeColors: appearance.gradeColors,
+      showScore: appearance.showScore !== false,
       gradeScale: resolveGradeScaleId(appearance.gradeScale),
       customGradeColors: normalizeGradeColors(appearance.customGradeColors),
+      creditLabelId: appearance.creditLabelId || DEFAULT_CREDIT_LABEL,
+      creditLabelCustom: String(appearance.creditLabelCustom || "").trim(),
       primary: appearance.primary,
       secondary: appearance.secondary,
       tertiary: appearance.tertiary,

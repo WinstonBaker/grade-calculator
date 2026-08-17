@@ -16,6 +16,7 @@ from backend.engine import (
     parse_score,
     points_ratio,
     project_from_exam,
+    resolve_category_policy,
     scale_rows_from_tuples,
     term_score,
     DEFAULT_SCALE,
@@ -41,6 +42,40 @@ def test_avg_drop_x_ma407_hw():
 
 def test_avg_drop_x_keeps_one():
     assert avg_drop_x([70], 5) == 70
+
+
+def test_resolve_legacy_modes():
+    dropped = resolve_category_policy("drop_lowest", 0)
+    assert dropped.aggregation == "average"
+    assert dropped.drop_count == 1
+    assert resolve_category_policy("drop_lowest", 2).drop_count == 2
+    bonus = resolve_category_policy("average_plus_bonus")
+    assert bonus.aggregation == "average"
+    assert bonus.include_bonus is True
+    assert bonus.drop_count == 0
+    replaced = resolve_category_policy("replace_min_with", 0, False, 9)
+    assert replaced.aggregation == "average"
+    assert replaced.replace_with_category_id == 9
+    assert replaced.drop_count == 0
+
+
+def test_drop_two_lowest():
+    cat = CategoryInput(
+        aggregation="average",
+        drop_count=2,
+        assignments=[P(50), P(80), P(90), P(100)],
+    )
+    assert category_percent(cat) == 95
+
+
+def test_drop_and_bonus_compose():
+    cat = CategoryInput(
+        aggregation="average",
+        drop_count=1,
+        include_bonus=True,
+        assignments=[P(50), P(90), P(100), P(10, bonus=True)],
+    )
+    assert abs(category_percent(cat) - 100) < 1e-9
 
 
 def test_points_ratio():
@@ -207,6 +242,45 @@ def test_gp_override():
     result = course_grade(course)
     assert result.quality_points == 4.333
     assert result.letter == "A+"
+
+
+def test_grade_rounding_lifts_letter_at_half():
+    def graded(rounding):
+        course = CourseInput(
+            code="X",
+            credits=3,
+            grade_rounding=rounding,
+            categories=[CategoryInput(id=1, name="All", weight=1, assignments=[P(92.5)])],
+        )
+        return course_grade(course)
+
+    exact = graded(None)
+    assert exact.letter == "A-"
+    assert abs(exact.percent - 92.5) < 1e-9
+
+    rounded = graded(0)
+    assert rounded.letter == "A"
+    assert rounded.quality_points == 4.0
+    # The stored percent stays exact; only the cutoff lookup rounds.
+    assert abs(rounded.percent - 92.5) < 1e-9
+
+
+def test_grade_rounding_lowers_needed_score():
+    def needed_for_a(rounding):
+        course = CourseInput(
+            code="X",
+            credits=3,
+            grade_rounding=rounding,
+            categories=[
+                CategoryInput(id=1, name="Tests", weight=0.5, assignments=[P(90)]),
+                CategoryInput(id=2, name="Final", weight=0.5, assignments=[]),
+            ],
+        )
+        rows = course_grade(course).what_if
+        return next(row.needed for row in rows if row.letter == "A")
+
+    assert abs(needed_for_a(None) - 96.0) < 1e-9
+    assert abs(needed_for_a(0) - 95.0) < 1e-9
 
 
 def test_overall_gpa_from_score():

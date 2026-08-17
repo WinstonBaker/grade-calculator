@@ -29,6 +29,8 @@ class Course(Base):
     credits: Mapped[float] = mapped_column(Float, default=3.0)
     bonus_points: Mapped[float] = mapped_column(Float, default=0.0)
     gp_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Decimal places the professor rounds the final percent to before cutoffs; NULL means no rounding.
+    grade_rounding: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scale_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("scale_profiles.id"), nullable=True
     )
@@ -66,7 +68,8 @@ class Category(Base):
     weight: Mapped[float] = mapped_column(Float, default=0.0)
     weight_per_item: Mapped[float | None] = mapped_column(Float, nullable=True)
     aggregation: Mapped[str] = mapped_column(String(32), default="average")
-    drop_count: Mapped[int] = mapped_column(Integer, default=1)
+    drop_count: Mapped[int] = mapped_column(Integer, default=0)
+    include_bonus: Mapped[bool] = mapped_column(Boolean, default=False)
     replace_with_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -122,6 +125,7 @@ class Settings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     target_letter: Mapped[str] = mapped_column(String(8), default="A")
     semesters_remaining: Mapped[float] = mapped_column(Float, default=8)
+    gpa_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
     future_guess_json: Mapped[str] = mapped_column(Text, default="{}")
     default_scale_json: Mapped[str] = mapped_column(Text, default="[]")
 

@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api, fmtGpa, fmtScore, letterClass, scoreClass } from "./api";
 import { ScaleRowsEditor, scalesMatch } from "./ScaleEditor.jsx";
 import {
+  CREDIT_LABEL_OPTIONS,
   DEFAULT_COLORS,
   DEFAULT_CUSTOM_GRADE_COLORS,
   GRADE_SCALES,
 } from "./theme";
+import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 
 const TARGETS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
 
@@ -41,6 +43,8 @@ const CUSTOM_LETTERS = [
 ];
 
 export default function Settings({ appearance, onAppearanceChange }) {
+  const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const [data, setData] = useState(null);
   const [meta, setMeta] = useState(null);
   const [message, setMessage] = useState("");
@@ -266,9 +270,42 @@ export default function Settings({ appearance, onAppearanceChange }) {
             </label>
           </div>
           <p className="muted settings-note">
-            Score measures performance relative to the selected target. Semesters remaining controls the pace shown
-            on the GPA dashboard.
+            {showScore
+              ? "Score measures performance relative to the selected target. Semesters remaining controls the pace shown on the GPA dashboard."
+              : "Target letter and remaining semesters are used when Score is turned on."}
           </p>
+          <label className="appearance-toggle" style={{ marginTop: 12 }}>
+            <span>
+              <strong>Show Score</strong>
+              <small>
+                Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay
+                visible.
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={appearance.showScore !== false}
+              onChange={(e) =>
+                onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))
+              }
+            />
+          </label>
+          <label className="appearance-toggle" style={{ marginTop: 12 }}>
+            <span>
+              <strong>Cap GPA at 4.000</strong>
+              <small>
+                Caps semester and cumulative GPA only.
+                {showScore ? " A+ quality points still count toward Score." : ""}
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={data.gpa_cap === 4}
+              onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })}
+            />
+          </label>
         </section>
 
         <section className="panel">
@@ -278,12 +315,14 @@ export default function Settings({ appearance, onAppearanceChange }) {
               <span className="muted">GPA</span>
               <strong className="mono">{fmtGpa(data.overall_gpa)}</strong>
             </div>
+            {showScore ? (
+              <div>
+                <span className="muted">Score</span>
+                <strong className={`mono ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</strong>
+              </div>
+            ) : null}
             <div>
-              <span className="muted">Score</span>
-              <strong className={`mono ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</strong>
-            </div>
-            <div>
-              <span className="muted">Credits</span>
+              <span className="muted">{creditTerms.label}</span>
               <strong className="mono">{data.total_credits}</strong>
             </div>
           </div>
@@ -393,6 +432,46 @@ export default function Settings({ appearance, onAppearanceChange }) {
       <section className="panel" style={{ marginTop: 16 }}>
         <h2>Appearance</h2>
         <div className="appearance-settings">
+          <label className="muted" style={{ display: "block" }}>
+            Credit name
+            <select
+              className="select"
+              style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
+              value={appearance.creditLabelId || "credits"}
+              onChange={(e) =>
+                onAppearanceChange((current) => ({
+                  ...current,
+                  creditLabelId: e.target.value,
+                }))
+              }
+            >
+              {CREDIT_LABEL_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {appearance.creditLabelId === "other" ? (
+            <label className="muted" style={{ display: "block", marginTop: 10 }}>
+              Custom name
+              <input
+                className="input"
+                style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
+                value={appearance.creditLabelCustom || ""}
+                placeholder="e.g. Units"
+                onChange={(e) =>
+                  onAppearanceChange((current) => ({
+                    ...current,
+                    creditLabelCustom: e.target.value,
+                  }))
+                }
+              />
+            </label>
+          ) : null}
+          <p className="muted settings-note" style={{ marginTop: 8 }}>
+            Used for labels like “{creditTerms.label} taken” across the app.
+          </p>
           <label className="appearance-toggle">
             <span>
               <strong>Color grades by letter</strong>
