@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class SemesterCreate(BaseModel):
+    year: int
+    season: str
+    included: bool = True
+
+
+class SemesterUpdate(BaseModel):
+    year: int | None = None
+    season: str | None = None
+    included: bool | None = None
+
+
+class CourseCreate(BaseModel):
+    semester_id: int
+    code: str
+    credits: float = 3.0
+    bonus_points: float = 0.0
+    gp_override: float | None = None
+
+
+class CourseUpdate(BaseModel):
+    semester_id: int | None = None
+    code: str | None = None
+    credits: float | None = None
+    bonus_points: float | None = None
+    gp_override: float | None = None
+
+
+class CategoryCreate(BaseModel):
+    course_id: int
+    name: str
+    weight: float = 0.0
+    weight_per_item: float | None = None
+    aggregation: str = "average"
+    drop_count: int = 1
+    replace_with_category_id: int | None = None
+
+
+class CategoryUpdate(BaseModel):
+    name: str | None = None
+    weight: float | None = None
+    weight_per_item: float | None = None
+    aggregation: str | None = None
+    drop_count: int | None = None
+    replace_with_category_id: int | None = None
+
+
+class AssignmentCreate(BaseModel):
+    category_id: int
+    name: str = ""
+    score: str | None = None
+    earned: float | None = None
+    possible: float | None = None
+    is_bonus: bool = False
+
+
+class AssignmentUpdate(BaseModel):
+    name: str | None = None
+    score: str | None = None
+    earned: float | None = None
+    possible: float | None = None
+    is_bonus: bool | None = None
+    clear_score: bool = False
+
+
+class ScaleRowIn(BaseModel):
+    letter: str
+    min_percent: float
+    quality_points: float
+
+
+class ScaleUpdate(BaseModel):
+    rows: list[ScaleRowIn]
+
+
+class SettingsUpdate(BaseModel):
+    target_letter: str | None = None
+    semesters_remaining: float | None = None
+    future_guess: dict[str, dict[str, int]] | None = None
+
+
+class FumbleCreate(BaseModel):
+    course_id: int
+    should_have_been_gp: float = Field(..., description="Quality points, e.g. 4.333")
