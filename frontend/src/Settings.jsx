@@ -341,18 +341,27 @@ export default function Settings({ appearance, onAppearanceChange }) {
                 <select
                   className="select"
                   style={{ display: "block", width: "min(100%, 360px)", marginTop: 6 }}
-                  value={selectedPresetId}
+                  value={selectedPresetId || "other"}
                   onChange={(event) => {
-                    const preset = presets.find((item) => item.id === event.target.value);
+                    const value = event.target.value;
+                    if (value === "other") {
+                      updateProfileDraft(profile.id, { preset_id: "" });
+                      api
+                        .patchScaleProfile(profile.id, { preset_id: null })
+                        .then(() => refreshProfiles())
+                        .catch((err) => setError(err.message));
+                      return;
+                    }
+                    const preset = presets.find((item) => item.id === value);
                     if (preset) applyPresetToProfile(profile.id, preset);
                   }}
                 >
-                  {!selectedPresetId ? <option value="">Custom scale</option> : null}
                   {presets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.name}
                     </option>
                   ))}
+                  <option value="other">Other</option>
                 </select>
               </label>
               <div className="default-scale-editor">
