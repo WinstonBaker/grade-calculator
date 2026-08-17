@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { ScaleRowsEditor } from "./ScaleEditor.jsx";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
+import { GradeHistoryChart } from "./GradeHistory.jsx";
 
 const DEFAULT_AGG_OPTIONS = [
   ["average", "Average"],
@@ -55,9 +56,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const [aggOptions, setAggOptions] = useState(DEFAULT_AGG_OPTIONS);
 
   async function load() {
-    const [c, s, m] = await Promise.all([api.course(id), api.semesters(), api.meta()]);
+    const [c, s, m, history] = await Promise.all([
+      api.course(id),
+      api.semesters(),
+      api.meta(),
+      api.snapshots(id).catch(() => []),
+    ]);
     setCourse(c);
     setSemesters(s);
+    setSnapshots(history);
     setProfiles(m.scale_profiles || []);
     const ids = Array.isArray(m.aggregations) && m.aggregations.length ? m.aggregations : ["average", "points_ratio"];
     const labels = m.aggregation_labels || {};
@@ -108,6 +115,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
 
   const [examCatId, setExamCatId] = useState(null);
   const [examScoreRaw, setExamScoreRaw] = useState("");
+  const [snapshots, setSnapshots] = useState([]);
 
   useEffect(() => {
     setExamScoreRaw("");
@@ -208,6 +216,38 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
             ))}
           </select>
         </label>
+        <label className="muted">
+          Tests category
+          <select
+            className="select"
+            style={{ display: "block", marginTop: 4 }}
+            value={course.test_category_id || ""}
+            onChange={(e) => saveCourse({ test_category_id: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">None</option>
+            {course.categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="muted">
+          Exam category
+          <select
+            className="select"
+            style={{ display: "block", marginTop: 4 }}
+            value={course.exam_category_id || ""}
+            onChange={(e) => saveCourse({ exam_category_id: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">None</option>
+            {course.categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <button className="btn" type="button" onClick={() => setShowScale((v) => !v)}>
           Cutoffs
         </button>
@@ -291,6 +331,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
           onExamScoreRaw={setExamScoreRaw}
         />
       </div>
+      <GradeHistoryChart snapshots={snapshots} title={`${course.code} over time`} />
     </>
   );
 }

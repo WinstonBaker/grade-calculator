@@ -15,7 +15,9 @@ from backend.engine import (
     ACCEPTED_AGGREGATIONS,
     AGGREGATION_LABELS,
     AGGREGATIONS,
+    SEASON_LABELS,
     SEASON_ORDER,
+    SNAPSHOT_INTERVALS,
     normalize_scale,
     preset_payload,
     resolve_category_policy,
@@ -29,7 +31,9 @@ from backend.schemas import (
     CategoryUpdate,
     CourseCreate,
     CourseUpdate,
+    ExportRequest,
     FumbleCreate,
+    ImportRequest,
     ScaleApply,
     ScaleProfileCreate,
     ScaleProfileUpdate,
@@ -45,8 +49,12 @@ from backend.service import (
     copy_default_scale,
     create_scale_profile,
     delete_scale_profile,
+    export_course_templates,
+    import_course_templates,
     list_scale_profiles,
+    list_snapshots,
     parse_default_scale,
+    record_grade_snapshots,
     replace_course_scale,
     replace_profile_rows,
     seed_if_needed,
@@ -54,6 +62,7 @@ from backend.service import (
     serialize_scale_profile,
     serialize_semester,
     set_primary_profile,
+    snapshot_status,
     sort_courses,
     sort_semesters,
     sync_primary_scale_json,
@@ -88,6 +97,14 @@ def _gpa_cap(db: Session) -> float | None:
     return _settings(db).gpa_cap
 
 
+def _owned_category_id(course: Course, category_id: int | None) -> int | None:
+    if category_id is None:
+        return None
+    if not any(cat.id == category_id for cat in course.categories):
+        raise HTTPException(400, "Category does not belong to this class")
+    return category_id
+
+
 def _course_or_404(db: Session, course_id: int) -> Course:
     course = (
         db.query(Course)
@@ -111,6 +128,8 @@ def meta(db: Session = Depends(get_db)):
         "aggregations": list(AGGREGATIONS),
         "aggregation_labels": dict(AGGREGATION_LABELS),
         "seasons": list(SEASON_ORDER),
+        "season_labels": dict(SEASON_LABELS),
+        "snapshot_intervals": list(SNAPSHOT_INTERVALS),
         "default_scale": scale_as_dicts(parse_default_scale(settings, db)),
         "scale_profiles": [serialize_scale_profile(profile) for profile in list_scale_profiles(db)],
         "scale_presets": preset_payload(),
@@ -154,7 +173,7 @@ def list_semesters(db: Session = Depends(get_db)):
 def create_semester(body: SemesterCreate, db: Session = Depends(get_db)):
     season = body.season.lower()
     if season not in SEASON_ORDER:
-        raise HTTPException(400, "Season must be spring, summer, or fall")
+        raise HTTPException(400, "Season must be spring, summer, fall, or transfer")
     dup = db.query(Semester).filter(Semester.year == body.year, Semester.season == season).first()
     if dup:
         raise HTTPException(409, f"{body.year} {season.title()} already exists")
@@ -175,7 +194,7 @@ def update_semester(semester_id: int, body: SemesterUpdate, db: Session = Depend
     if body.season is not None:
         season = body.season.lower()
         if season not in SEASON_ORDER:
-            raise HTTPException(400, "Season must be spring, summer, or fall")
+            raise HTTPException(400, "Season must be spring, summer, fall, or transfer")
         sem.season = season
     if body.included is not None:
         sem.included = body.included
@@ -263,6 +282,10 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         course.gp_override = body.gp_override
     if "grade_rounding" in body.model_fields_set:
         course.grade_rounding = body.grade_rounding
+    if "test_category_id" in body.model_fields_set:
+        course.test_category_id = _owned_category_id(course, body.test_category_id)
+    if "exam_category_id" in body.model_fields_set:
+        course.exam_category_id = _owned_category_id(course, body.exam_category_id)
     db.commit()
     return serialize_course(_course_or_404(db, course_id), _target(db))
 
@@ -453,6 +476,12 @@ def delete_category(category_id: int, db: Session = Depends(get_db)):
     db.query(Category).filter(Category.replace_with_category_id == category_id).update(
         {Category.replace_with_category_id: None}
     )
+    course = db.get(Course, course_id)
+    if course is not None:
+        if course.test_category_id == category_id:
+            course.test_category_id = None
+        if course.exam_category_id == category_id:
+            course.exam_category_id = None
     db.delete(cat)
     db.commit()
     return serialize_course(_course_or_404(db, course_id), _target(db))
@@ -531,6 +560,11 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
             raise HTTPException(400, str(exc)) from exc
         update_primary_scale(db, rows)
         coerce_target_letter(settings, rows)
+    if body.snapshot_interval is not None:
+        interval = body.snapshot_interval.lower()
+        if interval not in SNAPSHOT_INTERVALS:
+            raise HTTPException(400, "Snapshot interval must be off, weekly, biweekly, or monthly")
+        settings.snapshot_interval = interval
     db.commit()
     return build_gpa(db)
 
@@ -553,6 +587,56 @@ def delete_fumble(fumble_id: int, db: Session = Depends(get_db)):
     db.delete(row)
     db.commit()
     return build_gpa(db)
+
+
+@app.post("/api/export")
+def export_courses(body: ExportRequest, db: Session = Depends(get_db)):
+    _settings(db)
+    if not body.course_ids:
+        raise HTTPException(400, "Select at least one class")
+    courses = (
+        db.query(Course)
+        .options(joinedload(Course.categories))
+        .filter(Course.id.in_(body.course_ids))
+        .all()
+    )
+    found = {c.id for c in courses}
+    missing = [cid for cid in body.course_ids if cid not in found]
+    if missing:
+        raise HTTPException(404, "One or more classes were not found")
+    return export_course_templates(courses)
+
+
+@app.post("/api/import")
+def import_courses(body: ImportRequest, db: Session = Depends(get_db)):
+    if db.get(Semester, body.semester_id) is None:
+        raise HTTPException(404, "Semester not found")
+    if not body.courses:
+        raise HTTPException(400, "No classes to import")
+    created = import_course_templates(db, body.semester_id, body.courses)
+    db.commit()
+    target = _target(db)
+    return [serialize_course(_course_or_404(db, c.id), target) for c in created]
+
+
+@app.get("/api/snapshots/status")
+def get_snapshot_status(db: Session = Depends(get_db)):
+    _settings(db)
+    return snapshot_status(db)
+
+
+@app.get("/api/snapshots")
+def get_snapshots(course_id: int | None = None, db: Session = Depends(get_db)):
+    _settings(db)
+    return list_snapshots(db, course_id)
+
+
+@app.post("/api/snapshots")
+def post_snapshots(db: Session = Depends(get_db)):
+    rows = record_grade_snapshots(db, _target(db))
+    db.commit()
+    status = snapshot_status(db)
+    return {"recorded": len(rows), "snapshots": rows, **status}
 
 
 DIST = frontend_dist()

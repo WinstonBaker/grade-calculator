@@ -60,6 +60,13 @@ export const api = {
   patchSettings: (body) => req("/api/settings", { method: "PATCH", headers, body: JSON.stringify(body) }),
   createFumble: (body) => req("/api/fumbles", { method: "POST", headers, body: JSON.stringify(body) }),
   deleteFumble: (id) => req(`/api/fumbles/${id}`, { method: "DELETE" }),
+  exportCourses: (courseIds) =>
+    req("/api/export", { method: "POST", headers, body: JSON.stringify({ course_ids: courseIds }) }),
+  importCourses: (body) => req("/api/import", { method: "POST", headers, body: JSON.stringify(body) }),
+  snapshotStatus: () => req("/api/snapshots/status"),
+  snapshots: (courseId) =>
+    req(courseId ? `/api/snapshots?course_id=${courseId}` : "/api/snapshots"),
+  recordSnapshots: () => req("/api/snapshots", { method: "POST" }),
 };
 
 export function fmtPct(n, digits = 2) {
@@ -76,6 +83,13 @@ export function fmtScore(n) {
   if (n === null || n === undefined) return "—";
   const v = Number(n);
   return v > 0 ? `+${v}` : String(v);
+}
+
+export function fmtDelta(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  const text = v.toFixed(1);
+  return v > 0 ? `+${text}` : text;
 }
 
 export function scoreClass(n) {

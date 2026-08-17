@@ -6,7 +6,9 @@ from backend.engine import (
     avg_drop_x,
     category_percent,
     course_grade,
+    course_level_band,
     effective_weight,
+    exam_impact,
     exam_score_needed,
     fumble_delta,
     future_guess_delta,
@@ -371,3 +373,49 @@ def test_normalize_keeps_ncsu_thirds():
     minus = next(row for row in rows if row[0] == "A-")
     assert plus[2] == 4.333
     assert minus[2] == 3.667
+
+
+def test_course_level_band_three_and_four_digit():
+    assert course_level_band("MAE 310") == "300"
+    assert course_level_band("CSC 101L") == "100"
+    assert course_level_band("MATH 2310") == "2000"
+    assert course_level_band("ENGL 1010") == "1000"
+    assert course_level_band("Seminar") == "other"
+    assert course_level_band("MA 8") == "other"
+
+
+def test_exam_impact_delta_and_letter_change():
+    course = CourseInput(
+        code="MAE 310",
+        credits=3,
+        categories=[
+            CategoryInput(
+                id=1,
+                name="HW",
+                weight=0.2,
+                assignments=[P(90), P(90)],
+            ),
+            CategoryInput(
+                id=2,
+                name="Tests",
+                weight=0.5,
+                assignments=[P(80), P(80)],
+            ),
+            CategoryInput(
+                id=3,
+                name="Final",
+                weight=0.3,
+                assignments=[P(95)],
+            ),
+        ],
+        scale=scale_rows_from_tuples(DEFAULT_SCALE),
+    )
+    impact = exam_impact(course, 2, 3)
+    assert impact is not None
+    assert impact["test_percent"] == 80
+    assert impact["exam_percent"] == 95
+    assert impact["delta"] == 15
+    assert impact["letter_change"] == "up"
+    assert impact["letter_after"] is not None
+    assert impact["letter_before"] is not None
+

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -34,6 +36,8 @@ class Course(Base):
     scale_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("scale_profiles.id"), nullable=True
     )
+    test_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exam_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     semester: Mapped[Semester] = relationship(back_populates="courses")
     categories: Mapped[list[Category]] = relationship(
@@ -43,6 +47,9 @@ class Course(Base):
         back_populates="course", cascade="all, delete-orphan"
     )
     fumbles: Mapped[list[Fumble]] = relationship(
+        back_populates="course", cascade="all, delete-orphan"
+    )
+    snapshots: Mapped[list[GradeSnapshot]] = relationship(
         back_populates="course", cascade="all, delete-orphan"
     )
 
@@ -128,6 +135,7 @@ class Settings(Base):
     gpa_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
     future_guess_json: Mapped[str] = mapped_column(Text, default="{}")
     default_scale_json: Mapped[str] = mapped_column(Text, default="[]")
+    snapshot_interval: Mapped[str] = mapped_column(String(16), default="off")
 
 
 class Fumble(Base):
@@ -138,3 +146,16 @@ class Fumble(Base):
     should_have_been_gp: Mapped[float] = mapped_column(Float)
 
     course: Mapped[Course] = relationship(back_populates="fumbles")
+
+
+class GradeSnapshot(Base):
+    __tablename__ = "grade_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime)
+    percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    letter: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    batch_id: Mapped[str] = mapped_column(String(36), default="")
+
+    course: Mapped[Course] = relationship(back_populates="snapshots")

@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 import { useAnimatedNumber } from "./useAnimatedNumber";
+import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
+import { GradeHistoryChart } from "./GradeHistory.jsx";
+import { TERM_SEQUENCE } from "./seasons.js";
 
 function AnimatedValue({ value, format }) {
   const animated = useAnimatedNumber(value);
@@ -234,8 +237,6 @@ function GradeDistributionCharts({ distribution }) {
     </div>
   );
 }
-
-const TERM_SEQUENCE = { spring: 1, summer: 2, fall: 3 };
 
 function shortTermName(term) {
   const year = String(term.year || "").slice(-2);
@@ -686,6 +687,43 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS }) {
   );
 }
 
+function CourseLevelStats({ rows }) {
+  const creditTerms = useCreditTerms();
+  if (!rows?.length) return null;
+  return (
+    <section className="panel" style={{ marginTop: 16 }}>
+      <h2>Course levels</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        100-level from three-digit codes (MAE 310 → 300), 1000-level from four-digit codes (MATH 2310 → 2000).
+      </p>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Level</th>
+              <th>Courses</th>
+              <th>{creditTerms.label}</th>
+              <th>GPA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.level}>
+                <td>
+                  <strong>{row.level === "other" ? "Other" : `${row.level}-level`}</strong>
+                </td>
+                <td className="mono">{row.courses}</td>
+                <td className="mono">{row.credits}</td>
+                <td className="mono">{fmtGpa(row.gpa)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export default function GpaDashboard() {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
@@ -700,10 +738,14 @@ export default function GpaDashboard() {
   const [semestersSectionOpen, setSemestersSectionOpen] = useState(false);
   const [futureGuessOpen, setFutureGuessOpen] = useState(false);
   const [showAllGuessLetters, setShowAllGuessLetters] = useState(false);
+  const [snapshots, setSnapshots] = useState([]);
+  const [historyCourse, setHistoryCourse] = useState("");
   const guessSeeded = useRef(false);
 
   async function load() {
-    setData(await api.gpa());
+    const [gpa, snaps] = await Promise.all([api.gpa(), api.snapshots().catch(() => [])]);
+    setData(gpa);
+    setSnapshots(snaps);
   }
 
   useEffect(() => {
@@ -1132,6 +1174,43 @@ export default function GpaDashboard() {
 
       <CourseCodeStats terms={data.terms} letterOrder={letters} />
 
+      <CourseLevelStats rows={data.level_stats} />
+
+      {data.exam_impact?.cumulative?.courses ? (
+        <section className="panel" style={{ marginTop: 16 }}>
+          <h2>Exam impact</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Included semesters. Δ is exam percent minus the test-category average.
+          </p>
+          <ExamImpactStats summary={data.exam_impact.cumulative} />
+          {(data.exam_impact.terms || [])
+            .filter((term) => term.rows?.length)
+            .map((term) => (
+              <div key={term.semester_id} style={{ marginTop: 16 }}>
+                <h3 style={{ margin: "0 0 8px" }}>{term.name}</h3>
+                <ExamImpactStats summary={term} />
+                <ExamImpactTable
+                  courses={term.rows.map((row) => ({
+                    ...row,
+                    id: row.course_id,
+                    categories: [],
+                    test_category_id: row.test_category_id,
+                    exam_category_id: row.exam_category_id,
+                    exam_impact: row,
+                  }))}
+                />
+              </div>
+            ))}
+        </section>
+      ) : null}
+
+      <DashboardGradeHistory
+        terms={data.terms}
+        snapshots={snapshots}
+        historyCourse={historyCourse}
+        onHistoryCourse={setHistoryCourse}
+      />
+
       <section className="panel term-accordion" style={{ marginTop: 16 }}>
         <div
           className="term-accordion-head"
@@ -1245,6 +1324,48 @@ export default function GpaDashboard() {
         ) : null}
       </section>
     </>
+  );
+}
+
+function DashboardGradeHistory({ terms, snapshots, historyCourse, onHistoryCourse }) {
+  const courses = (terms || []).flatMap((term) => term.courses || []);
+  const withHistory = courses.filter((course) =>
+    (snapshots || []).some((row) => row.course_id === course.id && row.percent != null)
+  );
+  if (!withHistory.length) {
+    return (
+      <section className="panel" style={{ marginTop: 16 }}>
+        <h2>Grade history</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Record grades from the reminder or Settings to chart percent over the semester.
+        </p>
+      </section>
+    );
+  }
+  const selected = historyCourse || String(withHistory[0].id);
+  const current = withHistory.find((c) => String(c.id) === String(selected)) || withHistory[0];
+  const rows = (snapshots || []).filter((row) => row.course_id === current.id);
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <label className="muted">
+          Class
+          <select
+            className="select"
+            style={{ display: "block", marginTop: 4 }}
+            value={String(current.id)}
+            onChange={(e) => onHistoryCourse(e.target.value)}
+          >
+            {withHistory.map((course) => (
+              <option key={course.id} value={course.id}>
+                {course.code}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <GradeHistoryChart snapshots={rows} title={`${current.code} over time`} />
+    </div>
   );
 }
 

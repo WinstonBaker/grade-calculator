@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
@@ -214,7 +215,88 @@ def quality_points_set(scale: Iterable["ScaleRow"]) -> set[float]:
     return {row.quality_points for row in scale}
 
 
-SEASON_ORDER = {"spring": 1, "summer": 2, "fall": 3}
+SEASON_ORDER = {"transfer": 0, "spring": 1, "summer": 2, "fall": 3}
+SEASON_LABELS = {
+    "transfer": "Transfer",
+    "spring": "Spring",
+    "summer": "Summer",
+    "fall": "Fall",
+}
+
+SNAPSHOT_INTERVALS = {
+    "off": None,
+    "weekly": 7,
+    "biweekly": 14,
+    "monthly": 30,
+}
+
+
+def course_level_band(code: str) -> str:
+    """100-style (`MAE 310` → `300`) or 1000-style (`MATH 2310` → `2000`)."""
+    match = re.search(r"(\d+)", code or "")
+    if not match:
+        return "other"
+    digits = match.group(1)
+    n = int(digits)
+    if len(digits) == 3:
+        return str((n // 100) * 100)
+    if len(digits) == 4:
+        return str((n // 1000) * 1000)
+    return "other"
+
+
+def course_without_category_scores(course: CourseInput, category_id: int) -> CourseInput:
+    cats: list[CategoryInput] = []
+    for cat in course.categories:
+        if cat.id != category_id:
+            cats.append(cat)
+            continue
+        cats.append(
+            replace(
+                cat,
+                assignments=[replace(item, earned=None, possible=None) for item in cat.assignments],
+            )
+        )
+    return replace(course, categories=cats)
+
+
+def exam_impact(
+    course: CourseInput,
+    test_category_id: int | None,
+    exam_category_id: int | None,
+    target_gp: float = 4.0,
+) -> dict | None:
+    """Post-exam vs tests: score delta and letter movement. Ignores GP override."""
+    if not test_category_id or not exam_category_id:
+        return None
+    test = next((c for c in course.categories if c.id == test_category_id), None)
+    exam = next((c for c in course.categories if c.id == exam_category_id), None)
+    if test is None or exam is None:
+        return None
+    test_pct = category_percent(test, course.categories)
+    exam_pct = category_percent(exam, course.categories)
+    delta = (exam_pct - test_pct) if test_pct is not None and exam_pct is not None else None
+    plain = replace(course, gp_override=None)
+    after = evaluate_course(plain, target_gp)
+    before = evaluate_course(course_without_category_scores(plain, exam_category_id), target_gp)
+    letter_change = None
+    if before.letter and after.letter and before.quality_points is not None and after.quality_points is not None:
+        if after.quality_points > before.quality_points:
+            letter_change = "up"
+        elif after.quality_points < before.quality_points:
+            letter_change = "down"
+        else:
+            letter_change = "same"
+    return {
+        "test_category_id": test_category_id,
+        "exam_category_id": exam_category_id,
+        "test_percent": test_pct,
+        "exam_percent": exam_pct,
+        "delta": delta,
+        "letter_before": before.letter,
+        "letter_after": after.letter,
+        "letter_change": letter_change,
+    }
 
 AGGREGATIONS = (
     "average",

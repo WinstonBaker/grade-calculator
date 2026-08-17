@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
+import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
+import { SEASONS } from "./seasons.js";
 
 const SORTS = [
   ["code", "Class"],
@@ -147,6 +149,18 @@ export default function CourseList({ semesters, onChange }) {
     onChange?.();
   }
 
+  async function moveCourse(courseId, semesterId) {
+    await api.patchCourse(courseId, { semester_id: Number(semesterId) });
+    await load();
+    onChange?.();
+  }
+
+  async function patchExamCats(courseId, patch) {
+    await api.patchCourse(courseId, patch);
+    await load();
+    onChange?.();
+  }
+
   return (
     <>
       <div className="topbar">
@@ -227,9 +241,11 @@ export default function CourseList({ semesters, onChange }) {
               value={season}
               onChange={(e) => setSeason(e.target.value)}
             >
-              <option value="spring">Spring</option>
-              <option value="summer">Summer</option>
-              <option value="fall">Fall</option>
+              {SEASONS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </label>
           <button className="btn primary" type="submit" style={{ alignSelf: "flex-end" }}>
@@ -313,9 +329,12 @@ export default function CourseList({ semesters, onChange }) {
                     </select>
                   </td>
                   <td>
-                    <button className="btn small danger" onClick={() => removeCourse(c.id)}>
-                      Delete
-                    </button>
+                    <CourseMoveMenu
+                      course={c}
+                      semesters={semesters}
+                      onMove={(semesterId) => moveCourse(c.id, semesterId)}
+                      onDelete={() => removeCourse(c.id)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -323,6 +342,92 @@ export default function CourseList({ semesters, onChange }) {
           </table>
         )}
       </div>
+
+      {current ? (
+        <section className="panel" style={{ marginTop: 16 }}>
+          <h2>Exam vs tests</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Pick the test and exam categories for each class. Δ is exam percent minus the test average; letter
+            compares the course with and without the exam counting.
+          </p>
+          <ExamImpactStats
+            summary={{
+              avg_delta: averageDelta(courses),
+              letter_up: courses.filter((c) => c.exam_impact?.letter_change === "up").length,
+              letter_down: courses.filter((c) => c.exam_impact?.letter_change === "down").length,
+              letter_same: courses.filter((c) => c.exam_impact?.letter_change === "same").length,
+            }}
+          />
+          <ExamImpactTable courses={courses} onPatch={patchExamCats} />
+        </section>
+      ) : null}
     </>
+  );
+}
+
+function averageDelta(courses) {
+  const deltas = (courses || []).map((c) => c.exam_impact?.delta).filter((n) => n != null && !Number.isNaN(n));
+  if (!deltas.length) return null;
+  return deltas.reduce((sum, n) => sum + n, 0) / deltas.length;
+}
+
+function CourseMoveMenu({ course, semesters, onMove, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const others = semesters.filter((s) => s.id !== course.semester_id);
+
+  useEffect(() => {
+    function close(event) {
+      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  return (
+    <div className="kebab-wrap" ref={ref}>
+      <button
+        className="btn small kebab-btn"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋮
+      </button>
+      {open ? (
+        <div className="kebab-menu" role="menu">
+          {others.length ? (
+            others.map((sem) => (
+              <button
+                key={sem.id}
+                className="kebab-item"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onMove(sem.id);
+                }}
+              >
+                Move to {sem.name}
+              </button>
+            ))
+          ) : (
+            <div className="kebab-item muted">No other semesters</div>
+          )}
+          <button
+            className="kebab-item danger"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
