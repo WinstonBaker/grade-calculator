@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: GradeCalculator-Windows.exe
+          - os: macos-latest
+            artifact: GradeCalculator-macOS.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-desktop.txt
+
+      - name: Build desktop app
+        run: python -m PyInstaller packaging/grade_calculator.spec --noconfirm --clean
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item dist\GradeCalculator.exe GradeCalculator-Windows.exe
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dmg
+          cp -R "dist/Grade Calculator.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Grade Calculator" -srcfolder dmg -ov -format UDZO GradeCalculator-macOS.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/GradeCalculator-Windows.exe
+            dist/GradeCalculator-macOS.dmg
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            ## Download
+            - **Windows:** [GradeCalculator-Windows.exe](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-Windows.exe) — download and open
+            - **macOS:** [GradeCalculator-macOS.dmg](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image and drag Grade Calculator to Applications
+
+            Grades stay on this computer in a local database. Use **Settings → Check for updates** to fetch later versions.
