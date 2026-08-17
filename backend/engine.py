@@ -223,13 +223,6 @@ SEASON_LABELS = {
     "fall": "Fall",
 }
 
-SNAPSHOT_INTERVALS = {
-    "off": None,
-    "weekly": 7,
-    "biweekly": 14,
-    "monthly": 30,
-}
-
 
 def course_level_band(code: str) -> str:
     """100-style (`MAE 310` → `300`) or 1000-style (`MATH 2310` → `2000`)."""

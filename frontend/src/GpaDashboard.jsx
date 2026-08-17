@@ -4,7 +4,6 @@ import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 import { useAnimatedNumber } from "./useAnimatedNumber";
 import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
-import { GradeHistoryChart } from "./GradeHistory.jsx";
 import { TERM_SEQUENCE } from "./seasons.js";
 
 function AnimatedValue({ value, format }) {
@@ -738,14 +737,10 @@ export default function GpaDashboard() {
   const [semestersSectionOpen, setSemestersSectionOpen] = useState(false);
   const [futureGuessOpen, setFutureGuessOpen] = useState(false);
   const [showAllGuessLetters, setShowAllGuessLetters] = useState(false);
-  const [snapshots, setSnapshots] = useState([]);
-  const [historyCourse, setHistoryCourse] = useState("");
   const guessSeeded = useRef(false);
 
   async function load() {
-    const [gpa, snaps] = await Promise.all([api.gpa(), api.snapshots().catch(() => [])]);
-    setData(gpa);
-    setSnapshots(snaps);
+    setData(await api.gpa());
   }
 
   useEffect(() => {
@@ -1204,13 +1199,6 @@ export default function GpaDashboard() {
         </section>
       ) : null}
 
-      <DashboardGradeHistory
-        terms={data.terms}
-        snapshots={snapshots}
-        historyCourse={historyCourse}
-        onHistoryCourse={setHistoryCourse}
-      />
-
       <section className="panel term-accordion" style={{ marginTop: 16 }}>
         <div
           className="term-accordion-head"
@@ -1324,48 +1312,6 @@ export default function GpaDashboard() {
         ) : null}
       </section>
     </>
-  );
-}
-
-function DashboardGradeHistory({ terms, snapshots, historyCourse, onHistoryCourse }) {
-  const courses = (terms || []).flatMap((term) => term.courses || []);
-  const withHistory = courses.filter((course) =>
-    (snapshots || []).some((row) => row.course_id === course.id && row.percent != null)
-  );
-  if (!withHistory.length) {
-    return (
-      <section className="panel" style={{ marginTop: 16 }}>
-        <h2>Grade history</h2>
-        <p className="muted" style={{ marginTop: 0 }}>
-          Record grades from the reminder or Settings to chart percent over the semester.
-        </p>
-      </section>
-    );
-  }
-  const selected = historyCourse || String(withHistory[0].id);
-  const current = withHistory.find((c) => String(c.id) === String(selected)) || withHistory[0];
-  const rows = (snapshots || []).filter((row) => row.course_id === current.id);
-  return (
-    <div style={{ marginTop: 16 }}>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <label className="muted">
-          Class
-          <select
-            className="select"
-            style={{ display: "block", marginTop: 4 }}
-            value={String(current.id)}
-            onChange={(e) => onHistoryCourse(e.target.value)}
-          >
-            {withHistory.map((course) => (
-              <option key={course.id} value={course.id}>
-                {course.code}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <GradeHistoryChart snapshots={rows} title={`${current.code} over time`} />
-    </div>
   );
 }
 

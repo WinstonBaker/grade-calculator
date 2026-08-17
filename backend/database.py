@@ -31,9 +31,6 @@ def ensure_schema() -> None:
         if "gpa_cap" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE settings ADD COLUMN gpa_cap FLOAT"))
-        if "snapshot_interval" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE settings ADD COLUMN snapshot_interval VARCHAR(16) DEFAULT 'off'"))
     if "courses" in tables:
         cols = {col["name"] for col in insp.get_columns("courses")}
         if "scale_profile_id" not in cols:

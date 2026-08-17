@@ -389,48 +389,7 @@ def test_transfer_semester_and_level_stats(tmp_path):
         teardown()
 
 
-def test_export_import_templates(tmp_path):
-    client = make_client(tmp_path)
-    try:
-        sem_id = client.get("/api/semesters").json()[0]["id"]
-        course = client.post("/api/courses", json={"semester_id": sem_id, "code": "MAE 310", "credits": 3}).json()
-        client.post(
-            "/api/categories",
-            json={
-                "course_id": course["id"],
-                "name": "Tests",
-                "weight": 0,
-                "weight_per_item": 0.15,
-                "aggregation": "average",
-                "include_bonus": True,
-            },
-        )
-        client.post(
-            "/api/categories",
-            json={"course_id": course["id"], "name": "Final", "weight": 0.4, "aggregation": "average"},
-        )
-        exported = client.post("/api/export", json={"course_ids": [course["id"]]}).json()
-        assert exported["version"] == 1
-        assert exported["courses"][0]["code"] == "MAE 310"
-        assert exported["courses"][0]["categories"][0]["weight_per_item"] == 0.15
-        names = [c["name"] for c in exported["courses"][0]["categories"]]
-        assert names == ["Tests", "Final"]
-
-        dest = client.post("/api/semesters", json={"year": 2026, "season": "spring"}).json()
-        imported = client.post(
-            "/api/import",
-            json={"semester_id": dest["id"], "courses": exported["courses"]},
-        ).json()
-        assert len(imported) == 1
-        assert imported[0]["code"] == "MAE 310"
-        assert imported[0]["id"] != course["id"]
-        assert [c["name"] for c in imported[0]["categories"]] == ["Tests", "Final"]
-        assert all(not c["assignments"] for c in imported[0]["categories"])
-    finally:
-        teardown()
-
-
-def test_exam_impact_and_snapshots(tmp_path):
+def test_exam_impact(tmp_path):
     client = make_client(tmp_path)
     try:
         sem_id = client.get("/api/semesters").json()[0]["id"]
@@ -451,18 +410,6 @@ def test_exam_impact_and_snapshots(tmp_path):
         assert impact["letter_change"] in {"up", "down", "same"}
         gpa = client.get("/api/gpa").json()
         assert gpa["exam_impact"]["cumulative"]["with_exam"] == 1
-
-        client.patch("/api/settings", json={"snapshot_interval": "weekly"})
-        status = client.get("/api/snapshots/status").json()
-        assert status["interval"] == "weekly"
-        assert status["due"] is True
-        recorded = client.post("/api/snapshots").json()
-        assert recorded["recorded"] == 1
-        assert recorded["due"] is False
-        history = client.get(f"/api/snapshots?course_id={cid}").json()
-        assert len(history) == 1
-        assert history[0]["letter"]
-        assert history[0]["percent"] is not None
     finally:
         teardown()
 

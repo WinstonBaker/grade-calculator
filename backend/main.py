@@ -17,7 +17,6 @@ from backend.engine import (
     AGGREGATIONS,
     SEASON_LABELS,
     SEASON_ORDER,
-    SNAPSHOT_INTERVALS,
     normalize_scale,
     preset_payload,
     resolve_category_policy,
@@ -31,9 +30,7 @@ from backend.schemas import (
     CategoryUpdate,
     CourseCreate,
     CourseUpdate,
-    ExportRequest,
     FumbleCreate,
-    ImportRequest,
     ScaleApply,
     ScaleProfileCreate,
     ScaleProfileUpdate,
@@ -49,12 +46,8 @@ from backend.service import (
     copy_default_scale,
     create_scale_profile,
     delete_scale_profile,
-    export_course_templates,
-    import_course_templates,
     list_scale_profiles,
-    list_snapshots,
     parse_default_scale,
-    record_grade_snapshots,
     replace_course_scale,
     replace_profile_rows,
     seed_if_needed,
@@ -62,7 +55,6 @@ from backend.service import (
     serialize_scale_profile,
     serialize_semester,
     set_primary_profile,
-    snapshot_status,
     sort_courses,
     sort_semesters,
     sync_primary_scale_json,
@@ -129,7 +121,6 @@ def meta(db: Session = Depends(get_db)):
         "aggregation_labels": dict(AGGREGATION_LABELS),
         "seasons": list(SEASON_ORDER),
         "season_labels": dict(SEASON_LABELS),
-        "snapshot_intervals": list(SNAPSHOT_INTERVALS),
         "default_scale": scale_as_dicts(parse_default_scale(settings, db)),
         "scale_profiles": [serialize_scale_profile(profile) for profile in list_scale_profiles(db)],
         "scale_presets": preset_payload(),
@@ -560,11 +551,6 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
             raise HTTPException(400, str(exc)) from exc
         update_primary_scale(db, rows)
         coerce_target_letter(settings, rows)
-    if body.snapshot_interval is not None:
-        interval = body.snapshot_interval.lower()
-        if interval not in SNAPSHOT_INTERVALS:
-            raise HTTPException(400, "Snapshot interval must be off, weekly, biweekly, or monthly")
-        settings.snapshot_interval = interval
     db.commit()
     return build_gpa(db)
 
@@ -587,56 +573,6 @@ def delete_fumble(fumble_id: int, db: Session = Depends(get_db)):
     db.delete(row)
     db.commit()
     return build_gpa(db)
-
-
-@app.post("/api/export")
-def export_courses(body: ExportRequest, db: Session = Depends(get_db)):
-    _settings(db)
-    if not body.course_ids:
-        raise HTTPException(400, "Select at least one class")
-    courses = (
-        db.query(Course)
-        .options(joinedload(Course.categories))
-        .filter(Course.id.in_(body.course_ids))
-        .all()
-    )
-    found = {c.id for c in courses}
-    missing = [cid for cid in body.course_ids if cid not in found]
-    if missing:
-        raise HTTPException(404, "One or more classes were not found")
-    return export_course_templates(courses)
-
-
-@app.post("/api/import")
-def import_courses(body: ImportRequest, db: Session = Depends(get_db)):
-    if db.get(Semester, body.semester_id) is None:
-        raise HTTPException(404, "Semester not found")
-    if not body.courses:
-        raise HTTPException(400, "No classes to import")
-    created = import_course_templates(db, body.semester_id, body.courses)
-    db.commit()
-    target = _target(db)
-    return [serialize_course(_course_or_404(db, c.id), target) for c in created]
-
-
-@app.get("/api/snapshots/status")
-def get_snapshot_status(db: Session = Depends(get_db)):
-    _settings(db)
-    return snapshot_status(db)
-
-
-@app.get("/api/snapshots")
-def get_snapshots(course_id: int | None = None, db: Session = Depends(get_db)):
-    _settings(db)
-    return list_snapshots(db, course_id)
-
-
-@app.post("/api/snapshots")
-def post_snapshots(db: Session = Depends(get_db)):
-    rows = record_grade_snapshots(db, _target(db))
-    db.commit()
-    status = snapshot_status(db)
-    return {"recorded": len(rows), "snapshots": rows, **status}
 
 
 DIST = frontend_dist()

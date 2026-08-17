@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
-from uuid import uuid4
+from datetime import date
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -13,7 +12,6 @@ from backend.engine import (
     DEFAULT_SCALE,
     SEASON_LABELS,
     SEASON_ORDER,
-    SNAPSHOT_INTERVALS,
     AssignmentInput,
     CategoryInput,
     CourseInput,
@@ -37,7 +35,6 @@ from backend.models import (
     Course,
     Fumble,
     GradeScale,
-    GradeSnapshot,
     ScaleProfile,
     ScaleProfileRow,
     Semester,
@@ -56,7 +53,6 @@ def seed_if_needed(db: Session) -> None:
                 gpa_cap=None,
                 future_guess_json="{}",
                 default_scale_json=json.dumps(scale_as_dicts(DEFAULT_SCALE)),
-                snapshot_interval="off",
             )
         )
         try:
@@ -667,7 +663,6 @@ def build_gpa(db: Session) -> dict:
         "scale_presets": preset_payload(),
         "level_stats": build_level_stats([c for t in included_terms for c in t["courses"]]),
         "exam_impact": summarize_exam_impacts(terms),
-        "snapshot_interval": settings.snapshot_interval or "off",
     }
 
 
@@ -748,135 +743,3 @@ def build_level_stats(courses: list[dict]) -> list[dict]:
             }
         )
     return out
-
-
-def export_course_templates(courses: list[Course]) -> dict:
-    payload = []
-    for course in sorted(courses, key=lambda c: (c.code or "").lower()):
-        cats = sorted(course.categories, key=lambda c: (c.sort_order, c.id))
-        by_id = {c.id: c for c in cats}
-        payload.append(
-            {
-                "code": course.code,
-                "credits": course.credits,
-                "categories": [
-                    {
-                        "name": cat.name,
-                        "weight": cat.weight,
-                        "weight_per_item": cat.weight_per_item,
-                        "aggregation": cat.aggregation,
-                        "drop_count": cat.drop_count or 0,
-                        "include_bonus": bool(cat.include_bonus),
-                        "replace_with": (
-                            by_id[cat.replace_with_category_id].name
-                            if cat.replace_with_category_id in by_id
-                            else None
-                        ),
-                    }
-                    for cat in cats
-                ],
-            }
-        )
-    return {"version": 1, "courses": payload}
-
-
-def import_course_templates(db: Session, semester_id: int, templates: list) -> list[Course]:
-    created: list[Course] = []
-    for item in templates:
-        code = (item.code if hasattr(item, "code") else item.get("code") or "").strip()
-        if not code:
-            continue
-        credits = item.credits if hasattr(item, "credits") else item.get("credits", 3.0)
-        course = Course(semester_id=semester_id, code=code, credits=credits)
-        db.add(course)
-        db.flush()
-        copy_default_scale(db, course)
-        cats_in = item.categories if hasattr(item, "categories") else item.get("categories") or []
-        created_cats: list[Category] = []
-        for order, cat in enumerate(cats_in):
-            name = cat.name if hasattr(cat, "name") else cat.get("name") or "Category"
-            created_cats.append(
-                Category(
-                    course_id=course.id,
-                    name=name,
-                    weight=cat.weight if hasattr(cat, "weight") else cat.get("weight", 0.0),
-                    weight_per_item=(
-                        cat.weight_per_item if hasattr(cat, "weight_per_item") else cat.get("weight_per_item")
-                    ),
-                    aggregation=cat.aggregation if hasattr(cat, "aggregation") else cat.get("aggregation", "average"),
-                    drop_count=cat.drop_count if hasattr(cat, "drop_count") else cat.get("drop_count", 0),
-                    include_bonus=bool(
-                        cat.include_bonus if hasattr(cat, "include_bonus") else cat.get("include_bonus", False)
-                    ),
-                    sort_order=order,
-                )
-            )
-        db.add_all(created_cats)
-        db.flush()
-        by_name = {c.name: c for c in created_cats}
-        for cat, src in zip(created_cats, cats_in):
-            replace_with = src.replace_with if hasattr(src, "replace_with") else src.get("replace_with")
-            if replace_with and replace_with in by_name and by_name[replace_with].id != cat.id:
-                cat.replace_with_category_id = by_name[replace_with].id
-        created.append(course)
-    return created
-
-
-def snapshot_status(db: Session) -> dict:
-    settings = db.get(Settings, 1)
-    interval = (settings.snapshot_interval if settings else None) or "off"
-    days = SNAPSHOT_INTERVALS.get(interval)
-    last = db.query(GradeSnapshot).order_by(GradeSnapshot.recorded_at.desc()).first()
-    last_at = last.recorded_at if last else None
-    due = False
-    if days:
-        if last_at is None:
-            due = db.query(Course).count() > 0
-        else:
-            stamp = last_at if last_at.tzinfo else last_at.replace(tzinfo=timezone.utc)
-            due = (datetime.now(timezone.utc) - stamp).days >= days
-    return {
-        "interval": interval if interval in SNAPSHOT_INTERVALS else "off",
-        "last_recorded_at": last_at.isoformat() if last_at else None,
-        "due": due,
-    }
-
-
-def record_grade_snapshots(db: Session, target_gp: float) -> list[dict]:
-    now = datetime.now(timezone.utc)
-    batch_id = str(uuid4())
-    rows = []
-    for course in db.query(Course).all():
-        payload = serialize_course(course, target_gp)
-        row = GradeSnapshot(
-            course_id=course.id,
-            recorded_at=now,
-            percent=payload["percent"],
-            letter=payload["letter"],
-            batch_id=batch_id,
-        )
-        db.add(row)
-        rows.append(row)
-    db.flush()
-    return [serialize_snapshot(r, None) for r in rows]
-
-
-def serialize_snapshot(row: GradeSnapshot, code: str | None = None) -> dict:
-    return {
-        "id": row.id,
-        "course_id": row.course_id,
-        "code": code,
-        "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
-        "percent": row.percent,
-        "letter": row.letter,
-        "batch_id": row.batch_id,
-    }
-
-
-def list_snapshots(db: Session, course_id: int | None = None) -> list[dict]:
-    query = db.query(GradeSnapshot)
-    if course_id is not None:
-        query = query.filter(GradeSnapshot.course_id == course_id)
-    rows = query.order_by(GradeSnapshot.recorded_at.asc(), GradeSnapshot.id.asc()).all()
-    codes = {c.id: c.code for c in db.query(Course).all()}
-    return [serialize_snapshot(row, codes.get(row.course_id)) for row in rows]

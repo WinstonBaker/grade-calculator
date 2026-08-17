@@ -7,11 +7,8 @@ import FeedbackBubble from "./FeedbackBubble.jsx";
 import Gradebook from "./Gradebook.jsx";
 import GpaDashboard from "./GpaDashboard.jsx";
 import Settings from "./Settings.jsx";
-import Share from "./Share.jsx";
 import { SEASONS } from "./seasons.js";
 import { applyThemeColors, loadAppearance, saveAppearance } from "./theme";
-
-const SNOOZE_KEY = "gc-snapshot-snooze";
 
 export default function App() {
   const [semesters, setSemesters] = useState([]);
@@ -20,19 +17,13 @@ export default function App() {
   const [season, setSeason] = useState("fall");
   const [appearance, setAppearance] = useState(() => loadAppearance());
   const [githubRepo, setGithubRepo] = useState("");
-  const [snapshotStatus, setSnapshotStatus] = useState(null);
-  const [snapshotSnoozed, setSnapshotSnoozed] = useState(
-    () => typeof sessionStorage !== "undefined" && sessionStorage.getItem(SNOOZE_KEY) === "1"
-  );
   const navigate = useNavigate();
   const location = useLocation();
   const selectedSemester = new URLSearchParams(location.search).get("semester");
 
   async function refresh() {
     try {
-      const [sems, status] = await Promise.all([api.semesters(), api.snapshotStatus().catch(() => null)]);
-      setSemesters(sems);
-      setSnapshotStatus(status);
+      setSemesters(await api.semesters());
       setError("");
     } catch (err) {
       setError(err.message);
@@ -84,9 +75,6 @@ export default function App() {
           </NavLink>
           <NavLink to="/gpa" className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>
             GPA dashboard
-          </NavLink>
-          <NavLink to="/share" className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>
-            Share
           </NavLink>
           <NavLink to="/settings" className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>
             Settings
@@ -144,45 +132,6 @@ export default function App() {
       </aside>
       <main className="main" key={location.pathname}>
         {error ? <p className="error">{error}</p> : null}
-        {snapshotStatus?.due && !snapshotSnoozed ? (
-          <div className="snapshot-banner">
-            <div>
-              <strong>Record grades?</strong>
-              <p>
-                Saves each class’s current percent and letter. Exam what-ifs are ignored. Don’t record mid-edit.
-              </p>
-            </div>
-            <div className="row">
-              <button
-                className="btn primary"
-                type="button"
-                onClick={async () => {
-                  if (!window.confirm("Record current grades for every class?")) return;
-                  try {
-                    await api.recordSnapshots();
-                    setSnapshotSnoozed(false);
-                    sessionStorage.removeItem(SNOOZE_KEY);
-                    await refresh();
-                  } catch (err) {
-                    setError(err.message);
-                  }
-                }}
-              >
-                Record now
-              </button>
-              <button
-                className="btn"
-                type="button"
-                onClick={() => {
-                  sessionStorage.setItem(SNOOZE_KEY, "1");
-                  setSnapshotSnoozed(true);
-                }}
-              >
-                Not now
-              </button>
-            </div>
-          </div>
-        ) : null}
         <Routes>
           <Route path="/" element={<Navigate to="/gpa" replace />} />
           <Route path="/courses" element={<CourseList semesters={semesters} onChange={refresh} />} />
@@ -191,7 +140,6 @@ export default function App() {
             element={<Gradebook onChange={refresh} colorAssignmentGrades={appearance.gradeColors} />}
           />
           <Route path="/gpa" element={<GpaDashboard />} />
-          <Route path="/share" element={<Share semesters={semesters} onChange={refresh} />} />
           <Route
             path="/settings"
             element={

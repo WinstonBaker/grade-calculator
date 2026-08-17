@@ -16,7 +16,6 @@ import {
 } from "./api";
 import { ScaleRowsEditor } from "./ScaleEditor.jsx";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
-import { GradeHistoryChart } from "./GradeHistory.jsx";
 
 const DEFAULT_AGG_OPTIONS = [
   ["average", "Average"],
@@ -56,15 +55,9 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const [aggOptions, setAggOptions] = useState(DEFAULT_AGG_OPTIONS);
 
   async function load() {
-    const [c, s, m, history] = await Promise.all([
-      api.course(id),
-      api.semesters(),
-      api.meta(),
-      api.snapshots(id).catch(() => []),
-    ]);
+    const [c, s, m] = await Promise.all([api.course(id), api.semesters(), api.meta()]);
     setCourse(c);
     setSemesters(s);
-    setSnapshots(history);
     setProfiles(m.scale_profiles || []);
     const ids = Array.isArray(m.aggregations) && m.aggregations.length ? m.aggregations : ["average", "points_ratio"];
     const labels = m.aggregation_labels || {};
@@ -115,7 +108,6 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
 
   const [examCatId, setExamCatId] = useState(null);
   const [examScoreRaw, setExamScoreRaw] = useState("");
-  const [snapshots, setSnapshots] = useState([]);
 
   useEffect(() => {
     setExamScoreRaw("");
@@ -331,7 +323,6 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
           onExamScoreRaw={setExamScoreRaw}
         />
       </div>
-      <GradeHistoryChart snapshots={snapshots} title={`${course.code} over time`} />
     </>
   );
 }

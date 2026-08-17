@@ -1743,25 +1743,6 @@ tbody tr {
   animation: fade-rise 200ms ease both;
 }
 
-.snapshot-banner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 18px;
-  align-items: center;
-  justify-content: space-between;
-  margin: 0 0 16px;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--gold) 45%, var(--line));
-  background: color-mix(in srgb, var(--gold) 12%, var(--bg-raised));
-  border-radius: var(--radius);
-}
-
-.snapshot-banner p {
-  margin: 4px 0 0;
-  color: var(--muted);
-  max-width: 52ch;
-}
-
 .kebab-wrap {
   position: relative;
   display: inline-block;
@@ -1802,39 +1783,6 @@ tbody tr {
 
 .kebab-item.danger {
   color: var(--red);
-}
-
-.share-tree {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.share-semester {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 10px;
-  background: var(--surface-soft);
-}
-
-.share-semester summary {
-  cursor: pointer;
-  list-style: none;
-}
-
-.share-semester summary::-webkit-details-marker {
-  display: none;
-}
-
-.share-classes {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 8px 0 4px 22px;
-}
-
-.share-all {
-  margin-top: 6px;
 }
 
 .exam-impact-stats {

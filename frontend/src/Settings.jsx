@@ -306,40 +306,6 @@ export default function Settings({ appearance, onAppearanceChange }) {
               onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })}
             />
           </label>
-          <label className="muted" style={{ display: "block", marginTop: 16 }}>
-            Grade history interval
-            <select
-              className="select"
-              style={{ display: "block", marginTop: 6, width: "min(100%, 280px)" }}
-              value={data.snapshot_interval || "off"}
-              onChange={(e) => updateSettings({ snapshot_interval: e.target.value })}
-            >
-              <option value="off">Off</option>
-              <option value="weekly">Weekly reminder</option>
-              <option value="biweekly">Every two weeks</option>
-              <option value="monthly">Monthly reminder</option>
-            </select>
-          </label>
-          <p className="muted settings-note">
-            Reminds you to save each class’s current percent and letter. Nothing is recorded until you confirm.
-          </p>
-          <button
-            className="btn"
-            type="button"
-            style={{ marginTop: 8 }}
-            onClick={async () => {
-              if (!window.confirm("Record current grades for every class?")) return;
-              try {
-                await api.recordSnapshots();
-                setMessage("Recorded grade history");
-                setError("");
-              } catch (err) {
-                setError(err.message);
-              }
-            }}
-          >
-            Record grades now
-          </button>
         </section>
 
         <section className="panel">
