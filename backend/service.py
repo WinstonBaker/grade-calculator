@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import uuid
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +24,7 @@ from backend.engine import (
     ScaleRow,
     course_grade,
     course_level_band,
+    evaluate_course,
     exam_impact,
     fumble_delta,
     future_guess_delta,
@@ -35,6 +42,7 @@ from backend.models import (
     Course,
     Fumble,
     GradeScale,
+    GradeSnapshot,
     ScaleProfile,
     ScaleProfileRow,
     Semester,
@@ -53,6 +61,10 @@ def seed_if_needed(db: Session) -> None:
                 gpa_cap=None,
                 future_guess_json="{}",
                 default_scale_json=json.dumps(scale_as_dicts(DEFAULT_SCALE)),
+                appearance_json="{}",
+                recording_interval_days=7,
+                grade_prompt_snooze_until=None,
+                default_recording_semester_id=None,
             )
         )
         try:
@@ -365,6 +377,147 @@ def target_gp_from_settings(settings: Settings, db: Session | None = None) -> tu
     return best[0], best[2]
 
 
+def parse_dynamic_weighting(course: Course) -> dict:
+    try:
+        raw = json.loads(course.dynamic_weighting_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    options = raw.get("options")
+    if not isinstance(options, list):
+        options = []
+    cleaned = []
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        opt_id = str(opt.get("id") or uuid.uuid4())
+        weights_raw = opt.get("weights") if isinstance(opt.get("weights"), dict) else {}
+        weights: dict[str, float] = {}
+        for key, value in weights_raw.items():
+            try:
+                weights[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        cleaned.append({"id": opt_id, "weights": weights})
+    return {"options": cleaned}
+
+
+def dump_dynamic_weighting(payload: dict | None) -> str:
+    if not payload or not isinstance(payload, dict):
+        return "{}"
+    options = payload.get("options")
+    if not isinstance(options, list):
+        options = []
+    cleaned = []
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        opt_id = str(opt.get("id") or uuid.uuid4())
+        weights_raw = opt.get("weights") if isinstance(opt.get("weights"), dict) else {}
+        weights: dict[str, float] = {}
+        for key, value in weights_raw.items():
+            try:
+                weights[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        cleaned.append({"id": opt_id, "weights": weights})
+    return json.dumps({"options": cleaned})
+
+
+def seed_dynamic_option_from_course(course: Course) -> dict:
+    weights = {
+        str(cat.id): float(cat.weight or 0.0)
+        for cat in sorted(course.categories, key=lambda c: (c.sort_order, c.id))
+    }
+    return {"id": str(uuid.uuid4()), "weights": weights}
+
+
+def option_course_percent(course_input: CourseInput, weights: dict[str, float]) -> float | None:
+    """Course percent under a fixed-weight scheme (ignores weight_per_item)."""
+    alt_cats = [
+        replace(
+            cat,
+            weight=float(weights.get(str(cat.id), 0.0) or 0.0),
+            weight_per_item=None,
+        )
+        for cat in course_input.categories
+    ]
+    result = evaluate_course(replace(course_input, categories=alt_cats))
+    return result.percent
+
+
+def best_dynamic_option(course: Course) -> tuple[dict | None, list[dict]]:
+    """Return (winning option, options with computed percent)."""
+    payload = parse_dynamic_weighting(course)
+    options = payload["options"]
+    if not options:
+        return None, []
+    course_input = course_to_input(course)
+    scored = []
+    for opt in options:
+        percent = option_course_percent(course_input, opt["weights"])
+        scored.append({**opt, "percent": percent})
+    with_scores = [row for row in scored if row["percent"] is not None]
+    if not with_scores:
+        return None, scored
+    winner = max(with_scores, key=lambda row: row["percent"])
+    return winner, scored
+
+
+def apply_dynamic_weighting(course: Course) -> bool:
+    """Write the best option's weights onto categories. Returns True if anything changed."""
+    if not course.dynamic_weighting_enabled:
+        return False
+    sync_dynamic_weighting_categories(course)
+    winner, _ = best_dynamic_option(course)
+    if winner is None:
+        return False
+    weights = winner["weights"]
+    changed = False
+    for cat in course.categories:
+        next_weight = float(weights.get(str(cat.id), 0.0) or 0.0)
+        if cat.weight != next_weight:
+            cat.weight = next_weight
+            changed = True
+        if cat.weight_per_item is not None:
+            cat.weight_per_item = None
+            changed = True
+    return changed
+
+
+def sync_dynamic_weighting_categories(course: Course) -> bool:
+    """Ensure every option has an entry for each current category. Returns True if JSON changed."""
+    payload = parse_dynamic_weighting(course)
+    if not payload["options"]:
+        return False
+    cat_ids = {str(cat.id) for cat in course.categories}
+    changed = False
+    for opt in payload["options"]:
+        weights = opt["weights"]
+        for cid in cat_ids:
+            if cid not in weights:
+                weights[cid] = 0.0
+                changed = True
+        for cid in list(weights.keys()):
+            if cid not in cat_ids:
+                del weights[cid]
+                changed = True
+    if changed:
+        course.dynamic_weighting_json = dump_dynamic_weighting(payload)
+    return changed
+
+
+def refresh_course(db: Session, course: Course, target_gp: float) -> dict:
+    """Apply dynamic weighting if needed, then serialize."""
+    if apply_dynamic_weighting(course):
+        db.commit()
+        db.refresh(course)
+        for cat in course.categories:
+            db.refresh(cat)
+    return serialize_course(course, target_gp)
+
+
 def serialize_assignment(a: Assignment) -> dict:
     pct = None
     if a.earned is not None:
@@ -419,6 +572,16 @@ def serialize_course(course: Course, target_gp: float) -> dict:
                 ],
             }
         )
+    winner, scored_options = best_dynamic_option(course) if course.dynamic_weighting_enabled else (None, [])
+    dynamic_payload = parse_dynamic_weighting(course)
+    if course.dynamic_weighting_enabled and scored_options:
+        dynamic_payload = {
+            "options": [
+                {"id": opt["id"], "weights": opt["weights"], "percent": opt.get("percent")}
+                for opt in scored_options
+            ]
+        }
+    applied_option_id = winner["id"] if winner else None
     return {
         "id": course.id,
         "semester_id": course.semester_id,
@@ -445,6 +608,9 @@ def serialize_course(course: Course, target_gp: float) -> dict:
         "level_band": course_level_band(course.code),
         "test_category_id": course.test_category_id,
         "exam_category_id": course.exam_category_id,
+        "dynamic_weighting_enabled": bool(course.dynamic_weighting_enabled),
+        "dynamic_weighting": dynamic_payload,
+        "dynamic_weighting_applied_option_id": applied_option_id,
         "exam_impact": _exam_impact_payload(course, target_gp),
         "what_if": [
             {
@@ -502,6 +668,7 @@ def serialize_semester(sem: Semester, target_gp: float, gpa_cap: float | None = 
         "season": sem.season,
         "name": semester_name(sem),
         "included": sem.included,
+        "progression_locked": bool(sem.progression_locked),
         "term_gpa": gpa,
         "term_credits": credits,
         "term_score": score,
@@ -535,6 +702,13 @@ def build_gpa(db: Session) -> dict:
     settings = db.get(Settings, 1)
     target_letter, target_gp = target_gp_from_settings(settings, db)
     semesters = sort_semesters(db.query(Semester).all())
+    changed = False
+    for sem in semesters:
+        for course in sem.courses:
+            if apply_dynamic_weighting(course):
+                changed = True
+    if changed:
+        db.commit()
     terms = [serialize_semester(s, target_gp, settings.gpa_cap) for s in semesters]
 
     included_terms = [t for t in terms if t["included"]]
@@ -637,6 +811,8 @@ def build_gpa(db: Session) -> dict:
         "target_gp": target_gp,
         "semesters_remaining": settings.semesters_remaining,
         "gpa_cap": settings.gpa_cap,
+        "recording_interval_days": settings.recording_interval_days or 7,
+        "default_recording_semester_id": settings.default_recording_semester_id,
         "overall_gpa": overall,
         "overall_score": overall_score,
         "total_credits": total_credits,
@@ -743,3 +919,188 @@ def build_level_stats(courses: list[dict]) -> list[dict]:
             }
         )
     return out
+
+
+class ProgressionLockedError(ValueError):
+    """Raised when recording a snapshot on a locked semester."""
+
+
+def serialize_grade_snapshot(snapshot: GradeSnapshot) -> dict:
+    try:
+        courses = json.loads(snapshot.courses_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        courses = []
+    return {
+        "id": snapshot.id,
+        "semester_id": snapshot.semester_id,
+        "recorded_at": snapshot.recorded_at.isoformat() if snapshot.recorded_at else None,
+        "term_gpa": snapshot.term_gpa,
+        "courses": courses,
+    }
+
+
+def list_grade_snapshots(db: Session, semester_id: int) -> list[dict]:
+    rows = (
+        db.query(GradeSnapshot)
+        .filter(GradeSnapshot.semester_id == semester_id)
+        .order_by(GradeSnapshot.recorded_at.asc(), GradeSnapshot.id.asc())
+        .all()
+    )
+    return [serialize_grade_snapshot(row) for row in rows]
+
+
+def _snapshot_day(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
+
+
+def record_grade_snapshot(db: Session, semester: Semester, target_gp: float, gpa_cap: float | None) -> dict:
+    if semester.progression_locked:
+        raise ProgressionLockedError("Progression is locked for this semester")
+    payload = serialize_semester(semester, target_gp, gpa_cap)
+    courses = [
+        {
+            "course_id": course["id"],
+            "code": course["code"],
+            "percent": course["percent"],
+        }
+        for course in payload["courses"]
+    ]
+    now = _utcnow()
+    today = now.date()
+    snapshot = next(
+        (
+            row
+            for row in db.query(GradeSnapshot).filter(GradeSnapshot.semester_id == semester.id).all()
+            if _snapshot_day(row.recorded_at) == today
+        ),
+        None,
+    )
+    if snapshot is None:
+        snapshot = GradeSnapshot(
+            semester_id=semester.id,
+            recorded_at=now,
+            term_gpa=payload["term_gpa"],
+            courses_json=json.dumps(courses),
+        )
+        db.add(snapshot)
+    else:
+        snapshot.recorded_at = now
+        snapshot.term_gpa = payload["term_gpa"]
+        snapshot.courses_json = json.dumps(courses)
+    settings = db.get(Settings, 1)
+    if settings is not None:
+        settings.grade_prompt_snooze_until = None
+        settings.default_recording_semester_id = semester.id
+    db.commit()
+    db.refresh(snapshot)
+    return serialize_grade_snapshot(snapshot)
+
+
+def delete_grade_snapshots(db: Session, semester_id: int, snapshot_ids: list[int]) -> int:
+    ids = [int(item) for item in snapshot_ids if item is not None]
+    if not ids:
+        return 0
+    rows = (
+        db.query(GradeSnapshot)
+        .filter(GradeSnapshot.semester_id == semester_id, GradeSnapshot.id.in_(ids))
+        .all()
+    )
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return len(rows)
+
+
+def record_all_grade_snapshots(db: Session) -> list[dict]:
+    settings = db.get(Settings, 1)
+    target_letter, target_gp = target_gp_from_settings(settings, db)
+    gpa_cap = settings.gpa_cap if settings else None
+    results = []
+    for semester in sort_semesters(db.query(Semester).all()):
+        if semester.progression_locked:
+            continue
+        results.append(record_grade_snapshot(db, semester, target_gp, gpa_cap))
+    return results
+
+
+def latest_grade_snapshot_at(db: Session) -> datetime | None:
+    row = db.query(GradeSnapshot).order_by(GradeSnapshot.recorded_at.desc()).first()
+    return row.recorded_at if row else None
+
+
+def _semester_sort_key(sem: Semester) -> tuple:
+    return (sem.year, SEASON_ORDER.get(sem.season, 0), sem.id)
+
+
+def lock_older_unlocked_semesters(db: Session, new_sem: Semester) -> None:
+    new_key = _semester_sort_key(new_sem)
+    for other in db.query(Semester).all():
+        if other.id == new_sem.id or other.progression_locked:
+            continue
+        if _semester_sort_key(other) < new_key:
+            other.progression_locked = True
+
+
+def resolve_default_recording_semester_id(db: Session, settings: Settings | None) -> int | None:
+    ranked = sort_semesters(db.query(Semester).all())
+    if not ranked:
+        return None
+    ids = {sem.id for sem in ranked}
+    current = settings.default_recording_semester_id if settings else None
+    if current in ids:
+        return current
+    fallback = ranked[0].id
+    if settings is not None:
+        settings.default_recording_semester_id = fallback
+        db.commit()
+    return fallback
+
+
+def grade_prompt_status(db: Session) -> dict:
+    settings = db.get(Settings, 1)
+    interval = max(int(settings.recording_interval_days or 7), 1) if settings else 7
+    now = _utcnow()
+    snooze_until = settings.grade_prompt_snooze_until if settings else None
+    last_recorded = latest_grade_snapshot_at(db)
+    ranked = sort_semesters(db.query(Semester).all())
+    unlocked = [sem for sem in ranked if not sem.progression_locked]
+    due = bool(unlocked)
+    if due and snooze_until is not None and snooze_until > now:
+        due = False
+    elif due and last_recorded is not None:
+        due = now >= last_recorded + timedelta(days=interval)
+    default_id = resolve_default_recording_semester_id(db, settings)
+    return {
+        "due": due,
+        "recording_interval_days": interval,
+        "last_recorded_at": last_recorded.isoformat() if last_recorded else None,
+        "snooze_until": snooze_until.isoformat() if snooze_until else None,
+        "default_semester_id": default_id,
+        "semesters": [
+            {
+                "id": sem.id,
+                "name": semester_name(sem),
+                "progression_locked": bool(sem.progression_locked),
+            }
+            for sem in ranked
+        ],
+    }
+
+
+def snooze_grade_prompt(db: Session, days: int = 1) -> dict:
+    settings = db.get(Settings, 1)
+    if settings is None:
+        seed_if_needed(db)
+        settings = db.get(Settings, 1)
+    settings.grade_prompt_snooze_until = _utcnow() + timedelta(days=max(days, 1))
+    db.commit()
+    return grade_prompt_status(db)

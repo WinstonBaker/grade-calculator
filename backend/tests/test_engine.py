@@ -46,6 +46,11 @@ def test_avg_drop_x_keeps_one():
     assert avg_drop_x([70], 5) == 70
 
 
+def test_avg_drop_x_drops_all_but_one():
+    assert avg_drop_x([70, 80, 90], 3) == 90
+    assert avg_drop_x([70, 80, 90], 10) == 90
+
+
 def test_resolve_legacy_modes():
     dropped = resolve_category_policy("drop_lowest", 0)
     assert dropped.aggregation == "average"

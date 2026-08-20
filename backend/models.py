@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -14,8 +16,12 @@ class Semester(Base):
     year: Mapped[int] = mapped_column(Integer)
     season: Mapped[str] = mapped_column(String(16))
     included: Mapped[bool] = mapped_column(Boolean, default=True)
+    progression_locked: Mapped[bool] = mapped_column(Boolean, default=False)
 
     courses: Mapped[list[Course]] = relationship(
+        back_populates="semester", cascade="all, delete-orphan"
+    )
+    grade_snapshots: Mapped[list[GradeSnapshot]] = relationship(
         back_populates="semester", cascade="all, delete-orphan"
     )
 
@@ -36,6 +42,9 @@ class Course(Base):
     )
     test_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exam_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dynamic_weighting_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # JSON: {"options":[{"id":"...","weights":{"<category_id>":0.2}}]}
+    dynamic_weighting_json: Mapped[str] = mapped_column(Text, default="{}")
 
     semester: Mapped[Semester] = relationship(back_populates="courses")
     categories: Mapped[list[Category]] = relationship(
@@ -130,6 +139,23 @@ class Settings(Base):
     gpa_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
     future_guess_json: Mapped[str] = mapped_column(Text, default="{}")
     default_scale_json: Mapped[str] = mapped_column(Text, default="[]")
+    appearance_json: Mapped[str] = mapped_column(Text, default="{}")
+    recording_interval_days: Mapped[int] = mapped_column(Integer, default=7)
+    grade_prompt_snooze_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    default_recording_semester_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class GradeSnapshot(Base):
+    __tablename__ = "grade_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    semester_id: Mapped[int] = mapped_column(ForeignKey("semesters.id"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    term_gpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # JSON: [{"course_id":1,"code":"MAE 310","percent":92.5}]
+    courses_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    semester: Mapped[Semester] = relationship(back_populates="grade_snapshots")
 
 
 class Fumble(Base):

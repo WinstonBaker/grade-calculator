@@ -55,8 +55,19 @@ export const api = {
   patchAssignment: (id, body) => req(`/api/assignments/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
   deleteAssignment: (id) => req(`/api/assignments/${id}`, { method: "DELETE" }),
   gpa: () => req("/api/gpa"),
+  appearance: () => req("/api/appearance"),
+  putAppearance: (body) => req("/api/appearance", { method: "PUT", headers, body: JSON.stringify(body) }),
+  semesterSnapshots: (id) => req(`/api/semesters/${id}/snapshots`),
+  recordSemesterSnapshot: (id) => req(`/api/semesters/${id}/snapshots`, { method: "POST" }),
+  deleteSemesterSnapshots: (id, ids) =>
+    req(`/api/semesters/${id}/snapshots`, { method: "DELETE", headers, body: JSON.stringify({ ids }) }),
+  recordAllSnapshots: () => req("/api/snapshots/record-all", { method: "POST" }),
+  gradePrompt: () => req("/api/grade-prompt"),
+  snoozeGradePrompt: () => req("/api/grade-prompt/snooze", { method: "POST" }),
   updates: () => req("/api/updates"),
-  downloadUpdate: () => req("/api/updates/download", { method: "POST" }),
+  applyUpdate: () => req("/api/updates/apply", { method: "POST" }),
+  downloadUpdate: () => req("/api/updates/apply", { method: "POST" }),
+  dismissUpdate: (body) => req("/api/updates/dismiss", { method: "POST", headers, body: JSON.stringify(body) }),
   patchSettings: (body) => req("/api/settings", { method: "PATCH", headers, body: JSON.stringify(body) }),
   createFumble: (body) => req("/api/fumbles", { method: "POST", headers, body: JSON.stringify(body) }),
   deleteFumble: (id) => req(`/api/fumbles/${id}`, { method: "DELETE" }),
@@ -70,6 +81,36 @@ export function fmtPct(n, digits = 2) {
 export function fmtGpa(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
   return Number(n).toFixed(3);
+}
+
+const FALLBACK_GP_OPTIONS = [
+  ["A+", 4.333],
+  ["A", 4.0],
+  ["A-", 3.667],
+  ["B+", 3.333],
+  ["B", 3.0],
+  ["B-", 2.667],
+  ["C+", 2.333],
+  ["C", 2.0],
+  ["C-", 1.667],
+  ["D+", 1.333],
+  ["D", 1.0],
+  ["D-", 0.667],
+  ["F", 0.0],
+];
+
+/** Letter → quality-point options for a course GP override dropdown. */
+export function gpOptions(course) {
+  if (course?.scale?.length) {
+    return course.scale.map((row) => [row.letter, row.quality_points]);
+  }
+  return FALLBACK_GP_OPTIONS;
+}
+
+export function gpSelectValue(gp, options) {
+  if (gp === null || gp === undefined) return "";
+  const match = options.find(([, v]) => Math.abs(v - Number(gp)) < 1e-6);
+  return match ? String(match[1]) : String(gp);
 }
 
 export function fmtScore(n) {

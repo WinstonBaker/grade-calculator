@@ -413,3 +413,140 @@ def test_exam_impact(tmp_path):
     finally:
         teardown()
 
+
+def test_appearance_persists(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        assert client.get("/api/appearance").json() is None
+        saved = client.put(
+            "/api/appearance",
+            json={
+                "gradeColors": False,
+                "showScore": True,
+                "gradeScale": "spectrum",
+                "primary": "#112233",
+                "secondary": "#445566",
+                "tertiary": "#778899",
+                "themeScale": "custom",
+                "autoContrastText": False,
+                "textColor": "#abcdef",
+            },
+        ).json()
+        assert saved["gradeScale"] == "spectrum"
+        assert saved["textColor"] == "#abcdef"
+        loaded = client.get("/api/appearance").json()
+        assert loaded["gradeColors"] is False
+        assert loaded["autoContrastText"] is False
+    finally:
+        teardown()
+
+
+def test_grade_snapshots_and_prompt(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CSC 101", "credits": 3},
+        ).json()
+        cat = client.post(
+            "/api/categories",
+            json={"course_id": course["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        ).json()
+        assignment = client.post(
+            "/api/assignments", json={"category_id": cat["id"], "name": "Midterm", "score": "90"}
+        ).json()
+        assignment_id = next(
+            item["id"]
+            for category in assignment["categories"]
+            for item in category["assignments"]
+            if item["name"] == "Midterm"
+        )
+
+        prompt = client.get("/api/grade-prompt").json()
+        assert prompt["due"] is True
+        assert prompt["recording_interval_days"] == 7
+        assert any(s["id"] == sem_id for s in prompt["semesters"])
+        assert prompt["default_semester_id"] in {s["id"] for s in prompt["semesters"]}
+
+        snap = client.post(f"/api/semesters/{sem_id}/snapshots").json()
+        assert snap["term_gpa"] is not None
+        assert snap["courses"][0]["code"] == "CSC 101"
+        assert snap["courses"][0]["percent"] == 90
+
+        listed = client.get(f"/api/semesters/{sem_id}/snapshots").json()
+        assert len(listed) == 1
+
+        client.patch(f"/api/assignments/{assignment_id}", json={"score": "80"})
+        updated = client.post(f"/api/semesters/{sem_id}/snapshots").json()
+        listed_again = client.get(f"/api/semesters/{sem_id}/snapshots").json()
+        assert len(listed_again) == 1
+        assert listed_again[0]["id"] == snap["id"]
+        assert listed_again[0]["courses"][0]["percent"] == 80
+        assert updated["id"] == snap["id"]
+
+        prompt_after = client.get("/api/grade-prompt").json()
+        assert prompt_after["due"] is False
+
+        snoozed = client.post("/api/grade-prompt/snooze").json()
+        assert snoozed["snooze_until"] is not None
+
+        removed = client.request(
+            "DELETE",
+            f"/api/semesters/{sem_id}/snapshots",
+            json={"ids": [snap["id"]]},
+        ).json()
+        assert removed["deleted"] == 1
+        assert client.get(f"/api/semesters/{sem_id}/snapshots").json() == []
+
+        patched = client.patch("/api/settings", json={"recording_interval_days": 14}).json()
+        assert patched["recording_interval_days"] == 14
+    finally:
+        teardown()
+
+
+def test_progression_lock_and_default_semester(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        first = client.get("/api/semesters").json()[0]
+        first_id = first["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": first_id, "code": "CSC 101", "credits": 3},
+        ).json()
+        cat = client.post(
+            "/api/categories",
+            json={"course_id": course["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        ).json()
+        client.post("/api/assignments", json={"category_id": cat["id"], "name": "Midterm", "score": "90"})
+
+        client.patch("/api/settings", json={"default_recording_semester_id": first_id})
+        locked = client.patch(f"/api/semesters/{first_id}", json={"progression_locked": True}).json()
+        assert locked["progression_locked"] is True
+        denied = client.post(f"/api/semesters/{first_id}/snapshots")
+        assert denied.status_code == 409
+
+        prompt = client.get("/api/grade-prompt").json()
+        assert prompt["due"] is False
+        assert prompt["default_semester_id"] == first_id
+        assert any(s["id"] == first_id and s["progression_locked"] for s in prompt["semesters"])
+
+        client.patch(f"/api/semesters/{first_id}", json={"progression_locked": False})
+        prompt_open = client.get("/api/grade-prompt").json()
+        assert prompt_open["due"] is True
+
+        created = client.post(
+            "/api/semesters",
+            json={"year": first["year"] + 1, "season": "spring", "included": True, "lock_previous": True},
+        )
+        assert created.status_code == 200
+        after = {s["id"]: s for s in client.get("/api/semesters").json()}
+        assert after[first_id]["progression_locked"] is True
+        assert after[created.json()["id"]]["progression_locked"] is False
+        listed = client.get("/api/grade-prompt").json()
+        assert {s["id"] for s in listed["semesters"]} == set(after)
+        assert listed["due"] is True
+        assert listed["default_semester_id"] == first_id
+    finally:
+        teardown()
+

@@ -30,10 +30,23 @@ def _fatal(message: str) -> None:
     raise SystemExit(1)
 
 
+DESKTOP_PORT = 18765
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _server_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", DESKTOP_PORT))
+            return DESKTOP_PORT
+        except OSError:
+            logging.warning("Desktop port %s is busy; using a random port", DESKTOP_PORT)
+            return _free_port()
 
 
 def _wait_for_server(url: str, attempts: int = 80) -> None:
@@ -64,7 +77,7 @@ def main() -> None:
     import webview
     from backend.main import app
 
-    port = _free_port()
+    port = _server_port()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

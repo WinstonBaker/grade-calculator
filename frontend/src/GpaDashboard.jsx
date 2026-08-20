@@ -723,7 +723,7 @@ function CourseLevelStats({ rows }) {
   );
 }
 
-export default function GpaDashboard() {
+export default function GpaDashboard({ onChange }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
   const [data, setData] = useState(null);
@@ -741,6 +741,11 @@ export default function GpaDashboard() {
 
   async function load() {
     setData(await api.gpa());
+  }
+
+  async function apply(next) {
+    setData(next);
+    await onChange?.();
   }
 
   useEffect(() => {
@@ -837,12 +842,12 @@ export default function GpaDashboard() {
     next[ch] = { ...(next[ch] || next[String(ch)] || {}) };
     next[ch][letter] = Number(value) || 0;
     setGuessDraft(next);
-    setData(await api.patchSettings({ future_guess: next }));
+    await apply(await api.patchSettings({ future_guess: next }));
   }
 
   async function clearGuess() {
     setGuessDraft({});
-    setData(await api.patchSettings({ future_guess: {} }));
+    await apply(await api.patchSettings({ future_guess: {} }));
   }
 
   function toggleTerm(id) {
@@ -873,7 +878,7 @@ export default function GpaDashboard() {
                   className="select"
                   style={{ display: "block", marginTop: 4 }}
                   value={data.target_letter}
-                  onChange={async (e) => setData(await api.patchSettings({ target_letter: e.target.value }))}
+                  onChange={async (e) => apply(await api.patchSettings({ target_letter: e.target.value }))}
                 >
                   {letters.map((l) => (
                     <option key={l}>{l}</option>
@@ -887,7 +892,7 @@ export default function GpaDashboard() {
                   style={{ display: "block", marginTop: 4, width: 90 }}
                   defaultValue={data.semesters_remaining}
                   onBlur={async (e) =>
-                    setData(await api.patchSettings({ semesters_remaining: Number(e.target.value) }))
+                    apply(await api.patchSettings({ semesters_remaining: Number(e.target.value) }))
                   }
                 />
               </label>
@@ -1052,6 +1057,7 @@ export default function GpaDashboard() {
                             onChange={async (e) => {
                               await api.patchSemester(term.id, { included: e.target.checked });
                               await load();
+                              await onChange?.();
                             }}
                           />
                           Include
@@ -1116,7 +1122,7 @@ export default function GpaDashboard() {
               className="btn primary"
               onClick={async () => {
                 if (!fumbleCourse) return;
-                setData(
+                await apply(
                   await api.createFumble({
                     course_id: Number(fumbleCourse),
                     should_have_been_gp: Number(fumbleGp),
@@ -1147,7 +1153,7 @@ export default function GpaDashboard() {
                     <td className={`mono ${scoreClass(f.delta)}`}>{fmtScore(f.delta)}</td>
                   ) : null}
                   <td>
-                    <button className="btn small danger" onClick={async () => setData(await api.deleteFumble(f.id))}>
+                    <button className="btn small danger" onClick={async () => apply(await api.deleteFumble(f.id))}>
                       ×
                     </button>
                   </td>

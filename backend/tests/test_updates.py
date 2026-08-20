@@ -1,4 +1,16 @@
-from backend.updates import is_newer, parse_version
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.main import app
+from backend.updates import (
+    _validate_release_url,
+    apply_update,
+    dismiss_update,
+    is_newer,
+    load_update_state,
+    parse_version,
+    should_show_update_toast,
+)
 
 
 def test_parse_version():
@@ -8,3 +20,138 @@ def test_parse_version():
     assert is_newer("v2.0.0", "1.9.9")
     assert not is_newer("1.0.0", "1.0.0")
     assert not is_newer("1.0.0", "1.1.0")
+
+
+def test_should_show_update_toast():
+    assert should_show_update_toast(True, "1.3.0", None)
+    assert not should_show_update_toast(False, "1.3.0", None)
+    assert not should_show_update_toast(True, "1.3.0", "1.3.0")
+    assert should_show_update_toast(True, "1.4.0", "1.3.0")
+    assert not should_show_update_toast(True, "1.2.0", "1.3.0")
+
+
+def test_dismissed_version_hides_toast_until_newer(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    dismiss_update("v1.3.0")
+    state = load_update_state()
+    assert state["dismissed_update_version"] == "1.3.0"
+    assert not should_show_update_toast(True, "1.3.0", state["dismissed_update_version"])
+    assert should_show_update_toast(True, "1.4.0", state["dismissed_update_version"])
+
+
+def test_dismiss_update_requires_version():
+    with pytest.raises(ValueError, match="required"):
+        dismiss_update("  ")
+
+
+class _FakeReleaseResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeGithubClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url):
+        return _FakeReleaseResponse(
+            200,
+            {
+                "tag_name": "v9.9.9",
+                "body": "notes",
+                "html_url": "https://github.com/WinstonBaker/grade-calculator/releases/tag/v9.9.9",
+            },
+        )
+
+
+def test_check_for_updates_records_state_and_toast_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.updates.httpx.Client", _FakeGithubClient)
+    from backend.updates import check_for_updates
+
+    payload = check_for_updates()
+    assert payload["update_available"] is True
+    assert payload["show_toast"] is True
+    assert payload["latest_version"] == "9.9.9"
+    assert payload["last_update_check_at"]
+    assert payload["can_apply"] is False
+
+    dismiss_update("9.9.9")
+    hidden = check_for_updates()
+    assert hidden["show_toast"] is False
+    assert hidden["dismissed_update_version"] == "9.9.9"
+
+
+def test_validate_release_url():
+    url = _validate_release_url(
+        "https://github.com/WinstonBaker/grade-calculator/releases/download/v1.3.0/GradeCalculator-Windows.exe"
+    )
+    assert url.endswith("GradeCalculator-Windows.exe")
+    with pytest.raises(ValueError, match="Unexpected"):
+        _validate_release_url("https://evil.example/GradeCalculator-Windows.exe")
+
+
+def _latest_info(**overrides):
+    payload = {
+        "download_url": (
+            "https://github.com/WinstonBaker/grade-calculator/releases/download/"
+            "v9.0.0/GradeCalculator-macOS.dmg"
+        ),
+        "asset_name": "GradeCalculator-macOS.dmg",
+        "latest_version": "9.0.0",
+        "release_url": "https://github.com/WinstonBaker/grade-calculator/releases/tag/v9.0.0",
+        "update_available": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_apply_update_skips_when_not_frozen(monkeypatch):
+    monkeypatch.setattr("backend.updates.frozen", lambda: False)
+    monkeypatch.setattr("backend.updates.check_for_updates", _latest_info)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("should not download when not frozen")
+
+    monkeypatch.setattr("backend.updates._download_file", boom)
+    result = apply_update()
+    assert result["restarting"] is False
+    assert result["frozen"] is False
+    assert result["version"] == "9.0.0"
+    assert result["download_url"].endswith("GradeCalculator-macOS.dmg")
+
+
+def test_apply_update_rejects_unexpected_url(monkeypatch):
+    monkeypatch.setattr("backend.updates.frozen", lambda: True)
+    monkeypatch.setattr("backend.updates.current_platform", lambda: "windows")
+    monkeypatch.setattr(
+        "backend.updates.check_for_updates",
+        lambda: _latest_info(download_url="https://evil.example/installer.exe", asset_name="installer.exe"),
+    )
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("should not download an unexpected URL")
+
+    monkeypatch.setattr("backend.updates._download_file", boom)
+    with pytest.raises(ValueError, match="Unexpected"):
+        apply_update()
+
+
+def test_dismiss_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    client = TestClient(app)
+    body = client.post("/api/updates/dismiss", json={"version": "v1.9.0"}).json()
+    assert body["ok"] is True
+    assert body["dismissed_update_version"] == "1.9.0"
+    missing = client.post("/api/updates/dismiss", json={"version": " "})
+    assert missing.status_code == 400

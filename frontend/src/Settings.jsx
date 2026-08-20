@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
-import { api, fmtGpa, fmtScore, letterClass, scoreClass } from "./api";
+import { api, letterClass } from "./api";
 import { ScaleRowsEditor, scalesMatch } from "./ScaleEditor.jsx";
 import {
   CREDIT_LABEL_OPTIONS,
-  DEFAULT_COLORS,
   DEFAULT_CUSTOM_GRADE_COLORS,
+  DEFAULT_COLORS,
   GRADE_SCALES,
+  MAX_CUSTOM_PRESETS,
+  THEME_PRESETS,
+  appearanceFromThemePreset,
+  getActiveGradeColors,
+  getGradeScale,
+  themePresetFromAppearance,
 } from "./theme";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 
@@ -42,7 +48,7 @@ const CUSTOM_LETTERS = [
   ["F", "f"],
 ];
 
-export default function Settings({ appearance, onAppearanceChange }) {
+export default function Settings({ appearance, onAppearanceChange, onChange }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
   const [data, setData] = useState(null);
@@ -54,6 +60,12 @@ export default function Settings({ appearance, onAppearanceChange }) {
   const [updateError, setUpdateError] = useState("");
   const [updateMessage, setUpdateMessage] = useState("");
   const [profileDrafts, setProfileDrafts] = useState({});
+  const [themePresetName, setThemePresetName] = useState("");
+  const [gradeScalePresetName, setGradeScalePresetName] = useState("");
+  const savedThemePresets = appearance.themePresets || [];
+  const savedGradeScalePresets = appearance.gradeScalePresets || [];
+  const themePresetLimitReached = savedThemePresets.length >= MAX_CUSTOM_PRESETS;
+  const gradeScalePresetLimitReached = savedGradeScalePresets.length >= MAX_CUSTOM_PRESETS;
 
   function applyGpa(next) {
     setData(next);
@@ -76,10 +88,18 @@ export default function Settings({ appearance, onAppearanceChange }) {
     api.meta().then(setMeta).catch(() => {});
   }, []);
 
+  async function refreshAll() {
+    const [gpa, nextMeta] = await Promise.all([api.gpa(), api.meta().catch(() => null)]);
+    applyGpa(gpa);
+    if (nextMeta) setMeta(nextMeta);
+    await onChange?.();
+  }
+
   async function runUpdate() {
     setUpdateBusy(true);
     setUpdateError("");
     setUpdateMessage("");
+    let restarting = false;
     try {
       const info = await api.updates();
       setUpdateInfo(info);
@@ -91,31 +111,33 @@ export default function Settings({ appearance, onAppearanceChange }) {
         );
         return;
       }
-      try {
-        const result = await api.downloadUpdate();
-        setUpdateMessage(
-          `Downloaded version ${result.version}. Quit this app and open the new file in Downloads to finish updating.`
-        );
-      } catch (err) {
-        const fallback = info.download_url || meta?.release_url;
-        if (fallback) {
-          window.open(fallback, "_blank", "noopener,noreferrer");
-          setUpdateMessage(`Version ${info.latest_version} is available. Opened the download in your browser.`);
-        } else {
-          setUpdateError(err.message);
-        }
+      const result = await api.applyUpdate();
+      if (result.restarting) {
+        restarting = true;
+        setUpdateMessage("Installing over this app and restarting…");
+        return;
+      }
+      const fallback = result.download_url || result.release_url || info.download_url || meta?.release_url;
+      if (fallback) {
+        window.open(fallback, "_blank", "noopener,noreferrer");
+        setUpdateMessage(`Version ${info.latest_version} is available. Opened the download in your browser.`);
       }
     } catch (err) {
       setUpdateError(err.message);
     } finally {
-      setUpdateBusy(false);
+      if (!restarting) setUpdateBusy(false);
+      try {
+        await refreshAll();
+      } catch (err) {
+        setError(err.message);
+      }
     }
   }
 
   async function updateSettings(patch) {
     try {
-      const next = await api.patchSettings(patch);
-      applyGpa(next);
+      applyGpa(await api.patchSettings(patch));
+      await onChange?.();
       setMessage("Saved");
       setError("");
       window.setTimeout(() => setMessage(""), 1400);
@@ -126,7 +148,7 @@ export default function Settings({ appearance, onAppearanceChange }) {
 
   async function refreshProfiles(okMessage = "Saved") {
     try {
-      applyGpa(await api.gpa());
+      await refreshAll();
       setMessage(okMessage);
       setError("");
       window.setTimeout(() => setMessage(""), 1400);
@@ -221,6 +243,9 @@ export default function Settings({ appearance, onAppearanceChange }) {
         <h2>Updates</h2>
         <p className="muted settings-note" style={{ marginTop: 0 }}>
           Current version <span className="mono">{meta?.version || "…"}</span>
+          {meta?.frozen
+            ? " — installs over this app and restarts."
+            : " — this development build cannot replace itself; Update opens the GitHub release."}
         </p>
         <div className="update-actions">
           <button className="btn primary" type="button" disabled={updateBusy} onClick={runUpdate}>
@@ -239,95 +264,479 @@ export default function Settings({ appearance, onAppearanceChange }) {
         ) : null}
       </section>
 
-      <div className="settings-grid">
-        <section className="panel">
-          <h2>GPA calculation</h2>
-          <div className="settings-fields">
-            <label className="muted">
-              Target letter
-              <select
-                className={`select letter-select ${letterClass(data.target_letter)}`}
-                value={data.target_letter}
-                onChange={(e) => updateSettings({ target_letter: e.target.value })}
-              >
-                {targets.map((letter) => (
-                  <option key={letter} className={letterClass(letter)}>
-                    {letter}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="muted">
-              Semesters remaining
+      <section className="panel">
+        <h2>Appearance</h2>
+        <div className="appearance-settings">
+          <label className="muted" style={{ display: "block" }}>
+            Credit name
+            <select
+              className="select"
+              style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
+              value={appearance.creditLabelId || "credits"}
+              onChange={(e) =>
+                onAppearanceChange((current) => ({
+                  ...current,
+                  creditLabelId: e.target.value,
+                }))
+              }
+            >
+              {CREDIT_LABEL_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {appearance.creditLabelId === "other" ? (
+            <label className="muted" style={{ display: "block", marginTop: 10 }}>
+              Custom name
               <input
                 className="input"
-                type="number"
-                min="0"
-                step="0.5"
-                defaultValue={data.semesters_remaining}
-                onBlur={(e) => updateSettings({ semesters_remaining: Number(e.target.value) })}
+                style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
+                value={appearance.creditLabelCustom || ""}
+                placeholder="e.g. Units"
+                onChange={(e) =>
+                  onAppearanceChange((current) => ({
+                    ...current,
+                    creditLabelCustom: e.target.value,
+                  }))
+                }
               />
             </label>
-          </div>
-          <p className="muted settings-note">
-            {showScore
-              ? "Score measures performance relative to the selected target. Semesters remaining controls the pace shown on the GPA dashboard."
-              : "Target letter and remaining semesters are used when Score is turned on."}
-          </p>
-          <label className="appearance-toggle" style={{ marginTop: 12 }}>
+          ) : null}
+          <label className="appearance-toggle">
             <span>
-              <strong>Show Score</strong>
-              <small>
-                Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay
-                visible.
-              </small>
+              <strong>Color grades by letter</strong>
+              <small>Color individual assignment scores in each class using the A+ through F color key.</small>
             </span>
             <input
               type="checkbox"
               role="switch"
-              checked={appearance.showScore !== false}
+              checked={appearance.gradeColors}
               onChange={(e) =>
-                onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))
+                onAppearanceChange((current) => ({ ...current, gradeColors: e.target.checked }))
               }
             />
           </label>
-          <label className="appearance-toggle" style={{ marginTop: 12 }}>
-            <span>
-              <strong>Cap GPA at 4.000</strong>
-              <small>
-                Caps semester and cumulative GPA only.
-                {showScore ? " A+ quality points still count toward Score." : ""}
-              </small>
-            </span>
-            <input
-              type="checkbox"
-              role="switch"
-              checked={data.gpa_cap === 4}
-              onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })}
-            />
-          </label>
-        </section>
-
-        <section className="panel">
-          <h2>Current totals</h2>
-          <div className="settings-summary">
-            <div>
-              <span className="muted">GPA</span>
-              <strong className="mono">{fmtGpa(data.overall_gpa)}</strong>
-            </div>
-            {showScore ? (
-              <div>
-                <span className="muted">Score</span>
-                <strong className={`mono ${scoreClass(data.overall_score)}`}>{fmtScore(data.overall_score)}</strong>
+        </div>
+        <div className="grade-scale-picker">
+          <p className="muted settings-note" style={{ marginTop: 14, marginBottom: 10 }}>
+            Grade color scale
+          </p>
+          <div className="grade-scale-options">
+            {GRADE_SCALES.map((scale) => {
+              const selected = appearance.gradeScale === scale.id;
+              return (
+                <button
+                  key={scale.id}
+                  type="button"
+                  className={`grade-scale-option ${selected ? "active" : ""}`}
+                  onClick={() => onAppearanceChange((current) => ({ ...current, gradeScale: scale.id }))}
+                >
+                  <span className="grade-scale-option-head">
+                    <strong>{scale.name}</strong>
+                    {scale.id === "classic" ? <span className="muted">Default</span> : null}
+                  </span>
+                  <small className="muted">{scale.description}</small>
+                  <span className="grade-scale-swatches">
+                    {PREVIEW_LETTERS.map(([letter, key]) => (
+                      <span
+                        key={letter}
+                        className="grade-scale-swatch"
+                        style={{ background: scale.colors[key] }}
+                        title={letter}
+                      />
+                    ))}
+                  </span>
+                </button>
+              );
+            })}
+            {savedGradeScalePresets.map((preset) => {
+              const selected = appearance.gradeScale === preset.id;
+              return (
+                <div key={preset.id} className={`grade-scale-option saved-theme-option ${selected ? "active" : ""}`}>
+                  <button
+                    type="button"
+                    className="saved-theme-select"
+                    onClick={() =>
+                      onAppearanceChange((current) => ({
+                        ...current,
+                        gradeScale: preset.id,
+                      }))
+                    }
+                  >
+                    <span className="grade-scale-option-head">
+                      <strong>{preset.name}</strong>
+                      <span className="muted">Saved</span>
+                    </span>
+                    <span className="grade-scale-swatches">
+                      {PREVIEW_LETTERS.map(([letter, key]) => (
+                        <span
+                          key={letter}
+                          className="grade-scale-swatch"
+                          style={{ background: preset.colors[key] }}
+                          title={letter}
+                        />
+                      ))}
+                    </span>
+                  </button>
+                  <button
+                    className="btn small danger saved-theme-delete"
+                    type="button"
+                    onClick={() =>
+                      onAppearanceChange((current) => {
+                        const gradeScalePresets = (current.gradeScalePresets || []).filter(
+                          (item) => item.id !== preset.id
+                        );
+                        const selectedStill = current.gradeScale === preset.id;
+                        return {
+                          ...current,
+                          gradeScalePresets,
+                          gradeScale: selectedStill ? "custom" : current.gradeScale,
+                        };
+                      })
+                    }
+                  >
+                    Delete
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className={`custom-grade-scale ${appearance.gradeScale === "custom" ? "active" : ""}`}>
+            <div className="custom-grade-scale-head">
+              <span>
+                <strong>{appearance.gradeScale === "custom" ? "Custom palette" : "Palette"}</strong>
+                <small>
+                  {appearance.gradeScale === "custom"
+                    ? "Choose an exact color for every letter grade."
+                    : `${getGradeScale(appearance.gradeScale, savedGradeScalePresets).name} colors. Use custom to edit this palette.`}
+                </small>
+              </span>
+              <div className="row">
+                {appearance.gradeScale === "custom" ? (
+                  <button
+                    className="btn small"
+                    type="button"
+                    onClick={() =>
+                      onAppearanceChange((current) => ({
+                        ...current,
+                        customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
+                      }))
+                    }
+                  >
+                    Reset
+                  </button>
+                ) : null}
+                <button
+                  className={`btn small ${appearance.gradeScale === "custom" ? "" : "primary"}`}
+                  type="button"
+                  onClick={() =>
+                    onAppearanceChange((current) => ({
+                      ...current,
+                      gradeScale: "custom",
+                      customGradeColors: getActiveGradeColors(current),
+                    }))
+                  }
+                >
+                  {appearance.gradeScale === "custom" ? "In use" : "Use custom"}
+                </button>
               </div>
-            ) : null}
-            <div>
-              <span className="muted">{creditTerms.label}</span>
-              <strong className="mono">{data.total_credits}</strong>
+            </div>
+            <div className="custom-grade-colors">
+              {CUSTOM_LETTERS.map(([letter, key]) => {
+                const custom = appearance.gradeScale === "custom";
+                const colors = getActiveGradeColors(appearance);
+                return (
+                  <label className={`custom-grade-color ${custom ? "" : "locked"}`} key={key}>
+                    <input
+                      type="color"
+                      value={colors[key]}
+                      disabled={!custom}
+                      onChange={(e) =>
+                        onAppearanceChange((current) => ({
+                          ...current,
+                          customGradeColors: {
+                            ...getActiveGradeColors(current),
+                            [key]: e.target.value,
+                          },
+                        }))
+                      }
+                      aria-label={`${letter} color`}
+                    />
+                    <span>{letter}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
-        </section>
-      </div>
+          <div className="theme-preset-save">
+            <input
+              className="input"
+              value={gradeScalePresetName}
+              placeholder="Preset name"
+              aria-label="Grade color preset name"
+              onChange={(e) => setGradeScalePresetName(e.target.value)}
+            />
+            <button
+              className="btn"
+              type="button"
+              disabled={gradeScalePresetLimitReached}
+              title={gradeScalePresetLimitReached ? `Maximum ${MAX_CUSTOM_PRESETS} saved presets` : undefined}
+              onClick={() => {
+                if (gradeScalePresetLimitReached) return;
+                const name = gradeScalePresetName.trim() || "My palette";
+                const id = `grade-${Date.now()}`;
+                onAppearanceChange((current) => ({
+                  ...current,
+                  gradeScale: id,
+                  gradeScalePresets: [
+                    ...(current.gradeScalePresets || []),
+                    {
+                      id,
+                      name,
+                      colors: getActiveGradeColors(current),
+                    },
+                  ],
+                }));
+                setGradeScalePresetName("");
+              }}
+            >
+              Save preset
+            </button>
+            <button
+              className="btn"
+              type="button"
+              onClick={() =>
+                onAppearanceChange((current) => ({
+                  ...current,
+                  gradeScale: "classic",
+                }))
+              }
+            >
+              Reset scale
+            </button>
+          </div>
+        </div>
+        <p className="muted settings-note" style={{ marginTop: 18, marginBottom: 10 }}>
+          App Colors
+        </p>
+        <div className="grade-scale-options">
+          {THEME_PRESETS.map((preset) => {
+            const selected = appearance.themeScale === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                className={`grade-scale-option ${selected ? "active" : ""}`}
+                onClick={() =>
+                  onAppearanceChange((current) => ({
+                    ...current,
+                    ...appearanceFromThemePreset(preset),
+                  }))
+                }
+              >
+                <span className="grade-scale-option-head">
+                  <strong>{preset.name}</strong>
+                  {preset.id === "classic" ? <span className="muted">Default</span> : null}
+                </span>
+                <small className="muted">{preset.description}</small>
+                <span className="grade-scale-swatches">
+                  {["primary", "secondary", "tertiary"].map((key) => (
+                    <span
+                      key={key}
+                      className="grade-scale-swatch"
+                      style={{ background: preset[key] }}
+                      title={key}
+                    />
+                  ))}
+                </span>
+              </button>
+            );
+          })}
+          {(appearance.themePresets || []).map((preset) => {
+            const selected = appearance.themeScale === preset.id;
+            return (
+              <div key={preset.id} className={`grade-scale-option saved-theme-option ${selected ? "active" : ""}`}>
+                <button
+                  type="button"
+                  className="saved-theme-select"
+                  onClick={() =>
+                    onAppearanceChange((current) => ({
+                      ...current,
+                      ...appearanceFromThemePreset(preset),
+                    }))
+                  }
+                >
+                  <span className="grade-scale-option-head">
+                    <strong>{preset.name}</strong>
+                    <span className="muted">Saved</span>
+                  </span>
+                  <span className="grade-scale-swatches">
+                    {["primary", "secondary", "tertiary"].map((key) => (
+                      <span
+                        key={key}
+                        className="grade-scale-swatch"
+                        style={{ background: preset[key] }}
+                        title={key}
+                      />
+                    ))}
+                  </span>
+                </button>
+                <button
+                  className="btn small danger saved-theme-delete"
+                  type="button"
+                  onClick={() =>
+                    onAppearanceChange((current) => {
+                      const themePresets = (current.themePresets || []).filter((item) => item.id !== preset.id);
+                      const selectedStill = current.themeScale === preset.id;
+                      return {
+                        ...current,
+                        themePresets,
+                        themeScale: selectedStill ? "custom" : current.themeScale,
+                      };
+                    })
+                  }
+                >
+                  Delete
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div className="theme-colors">
+          {COLOR_FIELDS.map(([key, label, hint]) => (
+            <label className="theme-color" key={key}>
+              <span>
+                <strong>{label}</strong>
+                <small>{hint}</small>
+              </span>
+              <span className="theme-color-controls">
+                <input
+                  type="color"
+                  value={appearance[key]}
+                  onChange={(e) =>
+                    onAppearanceChange((current) => ({
+                      ...current,
+                      themeScale: "custom",
+                      [key]: e.target.value,
+                    }))
+                  }
+                  aria-label={label}
+                />
+                <input
+                  className="input mono"
+                  value={appearance[key]}
+                  onChange={(e) =>
+                    onAppearanceChange((current) => ({
+                      ...current,
+                      themeScale: "custom",
+                      [key]: e.target.value,
+                    }))
+                  }
+                  spellCheck={false}
+                />
+              </span>
+            </label>
+          ))}
+        </div>
+        <label className="appearance-toggle appearance-subtoggle">
+          <span>
+            <strong>Auto-contrast text</strong>
+            <small>
+              When the background is light, switch body text to dark. Turn off to pick a fixed text color
+              instead.
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            checked={appearance.autoContrastText !== false}
+            onChange={(e) =>
+              onAppearanceChange((current) => ({
+                ...current,
+                autoContrastText: e.target.checked,
+                textColor: current.textColor || DEFAULT_COLORS.text,
+              }))
+            }
+          />
+        </label>
+        {appearance.autoContrastText === false ? (
+          <label className="theme-color appearance-subtoggle">
+            <span>
+              <strong>Text</strong>
+              <small>Body text color when auto-contrast is off.</small>
+            </span>
+            <span className="theme-color-controls">
+              <input
+                type="color"
+                value={appearance.textColor || DEFAULT_COLORS.text}
+                onChange={(e) =>
+                  onAppearanceChange((current) => ({
+                    ...current,
+                    textColor: e.target.value,
+                  }))
+                }
+                aria-label="Text color"
+              />
+              <input
+                className="input mono"
+                value={appearance.textColor || DEFAULT_COLORS.text}
+                onChange={(e) =>
+                  onAppearanceChange((current) => ({
+                    ...current,
+                    textColor: e.target.value,
+                  }))
+                }
+                spellCheck={false}
+              />
+            </span>
+          </label>
+        ) : null}
+        <div className="theme-preset-save">
+          <input
+            className="input"
+            value={themePresetName}
+            placeholder="Preset name"
+            aria-label="Site color preset name"
+            onChange={(e) => setThemePresetName(e.target.value)}
+          />
+          <button
+            className="btn"
+            type="button"
+            disabled={themePresetLimitReached}
+            title={themePresetLimitReached ? `Maximum ${MAX_CUSTOM_PRESETS} saved presets` : undefined}
+            onClick={() => {
+              if (themePresetLimitReached) return;
+              const name = themePresetName.trim() || "My theme";
+              const id = `theme-${Date.now()}`;
+              onAppearanceChange((current) => ({
+                ...current,
+                themeScale: id,
+                themePresets: [
+                  ...(current.themePresets || []),
+                  themePresetFromAppearance(current, id, name),
+                ],
+              }));
+              setThemePresetName("");
+            }}
+          >
+            Save preset
+          </button>
+          <button
+            className="btn"
+            type="button"
+            onClick={() =>
+              onAppearanceChange((current) => ({
+                ...current,
+                ...appearanceFromThemePreset(THEME_PRESETS[0]),
+              }))
+            }
+          >
+            Reset colors
+          </button>
+        </div>
+      </section>
 
       <section className="panel" style={{ marginTop: 16 }}>
         <h2>Default grade scales</h2>
@@ -430,189 +839,92 @@ export default function Settings({ appearance, onAppearanceChange }) {
       </section>
 
       <section className="panel" style={{ marginTop: 16 }}>
-        <h2>Appearance</h2>
-        <div className="appearance-settings">
-          <label className="muted" style={{ display: "block" }}>
-            Credit name
-            <select
-              className="select"
-              style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
-              value={appearance.creditLabelId || "credits"}
-              onChange={(e) =>
-                onAppearanceChange((current) => ({
-                  ...current,
-                  creditLabelId: e.target.value,
-                }))
-              }
-            >
-              {CREDIT_LABEL_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {appearance.creditLabelId === "other" ? (
-            <label className="muted" style={{ display: "block", marginTop: 10 }}>
-              Custom name
+        <h2>GPA calculation</h2>
+          <div className="settings-fields">
+            <label className="muted">
+              Target letter
+              <select
+                className={`select letter-select ${letterClass(data.target_letter)}`}
+                value={data.target_letter}
+                onChange={(e) => updateSettings({ target_letter: e.target.value })}
+              >
+                {targets.map((letter) => (
+                  <option key={letter} className={letterClass(letter)}>
+                    {letter}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="muted">
+              Semesters remaining
               <input
                 className="input"
-                style={{ display: "block", width: "min(100%, 280px)", marginTop: 6 }}
-                value={appearance.creditLabelCustom || ""}
-                placeholder="e.g. Units"
-                onChange={(e) =>
-                  onAppearanceChange((current) => ({
-                    ...current,
-                    creditLabelCustom: e.target.value,
-                  }))
-                }
+                type="number"
+                min="0"
+                step="0.5"
+                defaultValue={data.semesters_remaining}
+                onBlur={(e) => updateSettings({ semesters_remaining: Number(e.target.value) })}
               />
             </label>
-          ) : null}
-          <p className="muted settings-note" style={{ marginTop: 8 }}>
-            Used for labels like “{creditTerms.label} taken” across the app.
+          </div>
+          <p className="muted settings-note">
+            {showScore
+              ? "Score measures performance relative to the selected target. Semesters remaining controls the pace shown on the GPA dashboard."
+              : "Target letter and remaining semesters are used when Score is turned on."}
           </p>
-          <label className="appearance-toggle">
+          <label className="appearance-toggle" style={{ marginTop: 12 }}>
             <span>
-              <strong>Color grades by letter</strong>
-              <small>Color individual assignment scores in each class using the A+ through F key.</small>
+              <strong>Show Score</strong>
+              <small>
+                Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay
+                visible.
+              </small>
             </span>
             <input
               type="checkbox"
               role="switch"
-              checked={appearance.gradeColors}
+              checked={appearance.showScore !== false}
               onChange={(e) =>
-                onAppearanceChange((current) => ({ ...current, gradeColors: e.target.checked }))
+                onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))
               }
             />
           </label>
-        </div>
-        <div className="grade-scale-picker">
-          <p className="muted settings-note" style={{ marginTop: 14, marginBottom: 10 }}>
-            Grade color scale
-          </p>
-          <div className="grade-scale-options">
-            {GRADE_SCALES.map((scale) => {
-              const selected = appearance.gradeScale === scale.id;
-              return (
-                <button
-                  key={scale.id}
-                  type="button"
-                  className={`grade-scale-option ${selected ? "active" : ""}`}
-                  onClick={() => onAppearanceChange((current) => ({ ...current, gradeScale: scale.id }))}
-                >
-                  <span className="grade-scale-option-head">
-                    <strong>{scale.name}</strong>
-                    {scale.id === "classic" ? <span className="muted">Default</span> : null}
-                  </span>
-                  <small className="muted">{scale.description}</small>
-                  <span className="grade-scale-swatches">
-                    {PREVIEW_LETTERS.map(([letter, key]) => (
-                      <span
-                        key={letter}
-                        className="grade-scale-swatch"
-                        style={{ background: scale.colors[key] }}
-                        title={letter}
-                      />
-                    ))}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className={`custom-grade-scale ${appearance.gradeScale === "custom" ? "active" : ""}`}>
-            <div className="custom-grade-scale-head">
-              <span>
-                <strong>Custom palette</strong>
-                <small>Choose an exact color for every letter grade.</small>
-              </span>
-              <div className="row">
-                <button
-                  className="btn small"
-                  type="button"
-                  onClick={() =>
-                    onAppearanceChange((current) => ({
-                      ...current,
-                      customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
-                    }))
-                  }
-                >
-                  Reset
-                </button>
-                <button
-                  className={`btn small ${appearance.gradeScale === "custom" ? "" : "primary"}`}
-                  type="button"
-                  onClick={() => onAppearanceChange((current) => ({ ...current, gradeScale: "custom" }))}
-                >
-                  {appearance.gradeScale === "custom" ? "In use" : "Use custom"}
-                </button>
-              </div>
-            </div>
-            <div className="custom-grade-colors">
-              {CUSTOM_LETTERS.map(([letter, key]) => (
-                <label className="custom-grade-color" key={key}>
-                  <input
-                    type="color"
-                    value={appearance.customGradeColors?.[key] || DEFAULT_CUSTOM_GRADE_COLORS[key]}
-                    onChange={(e) =>
-                      onAppearanceChange((current) => ({
-                        ...current,
-                        gradeScale: "custom",
-                        customGradeColors: {
-                          ...DEFAULT_CUSTOM_GRADE_COLORS,
-                          ...current.customGradeColors,
-                          [key]: e.target.value,
-                        },
-                      }))
-                    }
-                    aria-label={`${letter} color`}
-                  />
-                  <span>{letter}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="theme-colors">
-          {COLOR_FIELDS.map(([key, label, hint]) => (
-            <label className="theme-color" key={key}>
-              <span>
-                <strong>{label}</strong>
-                <small>{hint}</small>
-              </span>
-              <span className="theme-color-controls">
-                <input
-                  type="color"
-                  value={appearance[key]}
-                  onChange={(e) => onAppearanceChange((current) => ({ ...current, [key]: e.target.value }))}
-                  aria-label={label}
-                />
-                <input
-                  className="input mono"
-                  value={appearance[key]}
-                  onChange={(e) => onAppearanceChange((current) => ({ ...current, [key]: e.target.value }))}
-                  spellCheck={false}
-                />
-              </span>
-            </label>
-          ))}
-        </div>
-        <button
-          className="btn"
-          type="button"
-          style={{ marginTop: 12 }}
-          onClick={() =>
-            onAppearanceChange((current) => ({
-              ...current,
-              primary: DEFAULT_COLORS.primary,
-              secondary: DEFAULT_COLORS.secondary,
-              tertiary: DEFAULT_COLORS.tertiary,
-            }))
-          }
-        >
-          Reset colors
-        </button>
+          <label className="appearance-toggle" style={{ marginTop: 12 }}>
+            <span>
+              <strong>Cap GPA at 4.000</strong>
+              <small>
+                Caps semester and cumulative GPA only.
+                {showScore ? " A+ quality points still count toward Score." : ""}
+              </small>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={data.gpa_cap === 4}
+              onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })}
+            />
+          </label>
+          <label className="muted" style={{ display: "block", marginTop: 14 }}>
+            Grade recording interval (days)
+            <input
+              className="input"
+              style={{ display: "block", width: "min(100%, 160px)", marginTop: 6 }}
+              type="number"
+              min="1"
+              step="1"
+              defaultValue={data.recording_interval_days ?? 7}
+              onBlur={(e) => {
+                const value = Math.max(1, Math.floor(Number(e.target.value) || 7));
+                e.target.value = String(value);
+                updateSettings({ recording_interval_days: value });
+              }}
+            />
+            <small className="settings-note" style={{ display: "block", marginTop: 6 }}>
+              How often to ask you to record class percents and semester GPA for progression charts.
+            </small>
+          </label>
       </section>
+
     </>
   );
 }

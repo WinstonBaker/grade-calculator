@@ -7,12 +7,14 @@ class SemesterCreate(BaseModel):
     year: int
     season: str
     included: bool = True
+    lock_previous: bool = False
 
 
 class SemesterUpdate(BaseModel):
     year: int | None = None
     season: str | None = None
     included: bool | None = None
+    progression_locked: bool | None = None
 
 
 class CourseCreate(BaseModel):
@@ -33,6 +35,8 @@ class CourseUpdate(BaseModel):
     grade_rounding: int | None = Field(default=None, ge=0, le=3)
     test_category_id: int | None = None
     exam_category_id: int | None = None
+    dynamic_weighting_enabled: bool | None = None
+    dynamic_weighting: dict | None = None
 
 
 class CategoryCreate(BaseModel):
@@ -109,6 +113,16 @@ class SettingsUpdate(BaseModel):
     gpa_cap: float | None = None
     future_guess: dict[str, dict[str, int]] | None = None
     default_scale: list[ScaleRowIn] | None = None
+    recording_interval_days: int | None = None
+    default_recording_semester_id: int | None = None
+
+
+class SnapshotDelete(BaseModel):
+    ids: list[int]
+
+
+class UpdateDismiss(BaseModel):
+    version: str
 
 
 class FumbleCreate(BaseModel):

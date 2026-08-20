@@ -4,6 +4,7 @@ export const DEFAULT_COLORS = {
   primary: "#e4b86d",
   secondary: "#12131a",
   tertiary: "#8bb4e8",
+  text: "#e8e4d9",
 };
 
 export const DEFAULT_GRADE_SCALE = "classic";
@@ -175,26 +176,6 @@ export const GRADE_SCALES = [
     },
   },
   {
-    id: "mono",
-    name: "Mono",
-    description: "Neutral grayscale with subtle contrast by letter",
-    colors: {
-      ap: "#f8fafc",
-      a: "#e2e8f0",
-      am: "#cbd5e1",
-      bp: "#94a3b8",
-      b: "#64748b",
-      bm: "#475569",
-      cp: "#334155",
-      c: "#1e293b",
-      cm: "#0f172a",
-      dp: "#0f172a",
-      d: "#0f172a",
-      dm: "#020617",
-      f: "#020617",
-    },
-  },
-  {
     id: "forest",
     name: "Forest",
     description: "Emerald highs flowing through moss, amber, and earth",
@@ -214,90 +195,213 @@ export const GRADE_SCALES = [
       f: "#29200d",
     },
   },
+];
+
+export const DEFAULT_THEME_SCALE = "classic";
+export const MAX_CUSTOM_PRESETS = 5;
+
+export const THEME_PRESETS = [
   {
-    id: "pastel",
-    name: "Pastel",
-    description: "Soft mint, sky, lilac, peach, and rose tones",
-    colors: {
-      ap: "#6ee7b7",
-      a: "#93c5fd",
-      am: "#a5b4fc",
-      bp: "#c4b5fd",
-      b: "#d8b4fe",
-      bm: "#f0abfc",
-      cp: "#f9a8d4",
-      c: "#fda4af",
-      cm: "#fca5a5",
-      dp: "#fdba74",
-      d: "#fb923c",
-      dm: "#f97316",
-      f: "#ea580c",
-    },
+    id: "classic",
+    name: "Classic",
+    description: "Gold accents on a near-black canvas",
+    primary: "#e4b86d",
+    secondary: "#12131a",
+    tertiary: "#8bb4e8",
+  },
+  {
+    id: "light",
+    name: "Light",
+    description: "Warm paper background with amber and blue",
+    primary: "#a87526",
+    secondary: "#f4f1e9",
+    tertiary: "#356da8",
+  },
+  {
+    id: "midnight",
+    name: "Midnight",
+    description: "Deep navy with cool silver highlights",
+    primary: "#c9d4e8",
+    secondary: "#0b1020",
+    tertiary: "#6ea8ff",
+  },
+  {
+    id: "ocean",
+    name: "Ocean",
+    description: "Teal primary over a dark sea-green base",
+    primary: "#3dd6c6",
+    secondary: "#0e1a1c",
+    tertiary: "#7eb6d9",
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    description: "Copper and rust on a charcoal ground",
+    primary: "#e08a4a",
+    secondary: "#16120f",
+    tertiary: "#d4a574",
   },
 ];
 
-export function loadAppearance() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        gradeColors: parsed.gradeColors !== false,
-        showScore: parsed.showScore !== false,
-        gradeScale: resolveGradeScaleId(parsed.gradeScale),
-        customGradeColors: normalizeGradeColors(parsed.customGradeColors),
-        creditLabelId: CREDIT_LABEL_OPTIONS.some((item) => item.id === parsed.creditLabelId)
-          ? parsed.creditLabelId
-          : DEFAULT_CREDIT_LABEL,
-        creditLabelCustom: String(parsed.creditLabelCustom || "").trim(),
-        primary: normalizeHex(parsed.primary) || DEFAULT_COLORS.primary,
-        secondary: normalizeHex(parsed.secondary) || DEFAULT_COLORS.secondary,
-        tertiary: normalizeHex(parsed.tertiary) || DEFAULT_COLORS.tertiary,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
+export function parseAppearance(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  const themePresets = normalizeThemePresets(parsed.themePresets);
+  const gradeScalePresets = normalizeGradeScalePresets(parsed.gradeScalePresets);
+  const primary = normalizeHex(parsed.primary) || DEFAULT_COLORS.primary;
+  const secondary = normalizeHex(parsed.secondary) || DEFAULT_COLORS.secondary;
+  const tertiary = normalizeHex(parsed.tertiary) || DEFAULT_COLORS.tertiary;
+  return {
+    gradeColors: parsed.gradeColors !== false,
+    showScore: parsed.showScore !== false,
+    gradeScale: resolveGradeScaleId(parsed.gradeScale, gradeScalePresets),
+    customGradeColors: normalizeGradeColors(parsed.customGradeColors),
+    gradeScalePresets,
+    creditLabelId: CREDIT_LABEL_OPTIONS.some((item) => item.id === parsed.creditLabelId)
+      ? parsed.creditLabelId
+      : DEFAULT_CREDIT_LABEL,
+    creditLabelCustom: String(parsed.creditLabelCustom || "").trim(),
+    primary,
+    secondary,
+    tertiary,
+    themeScale: resolveThemeScaleId(parsed.themeScale, { primary, secondary, tertiary }, themePresets),
+    themePresets,
+    autoContrastText: parsed.autoContrastText !== false,
+    textColor: normalizeHex(parsed.textColor) || DEFAULT_COLORS.text,
+  };
+}
 
-  // Migrate older light-mode preference into a light secondary palette once.
+function defaultAppearance() {
   const legacyLight = window.localStorage.getItem("grade-calculator-light-mode") === "true";
+  const primary = legacyLight ? "#a87526" : DEFAULT_COLORS.primary;
+  const secondary = legacyLight ? "#f4f1e9" : DEFAULT_COLORS.secondary;
+  const tertiary = legacyLight ? "#356da8" : DEFAULT_COLORS.tertiary;
   return {
     gradeColors: window.localStorage.getItem("grade-calculator-grade-colors") !== "false",
     showScore: true,
     gradeScale: DEFAULT_GRADE_SCALE,
     customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
+    gradeScalePresets: [],
     creditLabelId: DEFAULT_CREDIT_LABEL,
     creditLabelCustom: "",
-    primary: legacyLight ? "#a87526" : DEFAULT_COLORS.primary,
-    secondary: legacyLight ? "#f4f1e9" : DEFAULT_COLORS.secondary,
-    tertiary: legacyLight ? "#356da8" : DEFAULT_COLORS.tertiary,
+    primary,
+    secondary,
+    tertiary,
+    themeScale: legacyLight ? "light" : DEFAULT_THEME_SCALE,
+    themePresets: [],
+    autoContrastText: true,
+    textColor: DEFAULT_COLORS.text,
   };
 }
 
+export function appearancePayload(appearance) {
+  return {
+    gradeColors: appearance.gradeColors,
+    showScore: appearance.showScore !== false,
+    gradeScale: resolveGradeScaleId(appearance.gradeScale, appearance.gradeScalePresets),
+    customGradeColors: normalizeGradeColors(appearance.customGradeColors),
+    gradeScalePresets: normalizeGradeScalePresets(appearance.gradeScalePresets),
+    creditLabelId: appearance.creditLabelId || DEFAULT_CREDIT_LABEL,
+    creditLabelCustom: String(appearance.creditLabelCustom || "").trim(),
+    primary: appearance.primary,
+    secondary: appearance.secondary,
+    tertiary: appearance.tertiary,
+    themeScale: appearance.themeScale || DEFAULT_THEME_SCALE,
+    themePresets: normalizeThemePresets(appearance.themePresets),
+    autoContrastText: appearance.autoContrastText !== false,
+    textColor: normalizeHex(appearance.textColor) || DEFAULT_COLORS.text,
+  };
+}
+
+export function loadAppearance() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = parseAppearance(JSON.parse(raw));
+      if (parsed) return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return defaultAppearance();
+}
+
 export function saveAppearance(appearance) {
-  window.localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({
-      gradeColors: appearance.gradeColors,
-      showScore: appearance.showScore !== false,
-      gradeScale: resolveGradeScaleId(appearance.gradeScale),
-      customGradeColors: normalizeGradeColors(appearance.customGradeColors),
-      creditLabelId: appearance.creditLabelId || DEFAULT_CREDIT_LABEL,
-      creditLabelCustom: String(appearance.creditLabelCustom || "").trim(),
-      primary: appearance.primary,
-      secondary: appearance.secondary,
-      tertiary: appearance.tertiary,
-    })
+  const payload = appearancePayload(appearance);
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    window.localStorage.removeItem("grade-calculator-light-mode");
+    window.localStorage.removeItem("grade-calculator-grade-colors");
+  } catch (err) {
+    console.warn("Failed to save appearance to localStorage", err);
+  }
+  return payload;
+}
+
+export function getGradeScale(id, userPresets = []) {
+  return (
+    GRADE_SCALES.find((scale) => scale.id === id) ||
+    normalizeGradeScalePresets(userPresets).find((scale) => scale.id === id) ||
+    GRADE_SCALES[0]
   );
-  window.localStorage.removeItem("grade-calculator-light-mode");
-  window.localStorage.removeItem("grade-calculator-grade-colors");
 }
 
-export function getGradeScale(id) {
-  return GRADE_SCALES.find((scale) => scale.id === id) || GRADE_SCALES[0];
+export function getActiveGradeColors(appearance = {}) {
+  const userPresets = normalizeGradeScalePresets(appearance.gradeScalePresets);
+  const scaleId = resolveGradeScaleId(appearance.gradeScale, userPresets);
+  if (scaleId === "custom") return normalizeGradeColors(appearance.customGradeColors);
+  return { ...getGradeScale(scaleId, userPresets).colors };
 }
 
-export function applyThemeColors({ primary, secondary, tertiary, gradeScale, customGradeColors }) {
+export function getThemePreset(id, userPresets = []) {
+  return (
+    THEME_PRESETS.find((preset) => preset.id === id) ||
+    normalizeThemePresets(userPresets).find((preset) => preset.id === id) ||
+    THEME_PRESETS[0]
+  );
+}
+
+export function themePresetFromAppearance(appearance, id, name) {
+  const preset = {
+    id,
+    name,
+    primary: appearance.primary,
+    secondary: appearance.secondary,
+    tertiary: appearance.tertiary,
+  };
+  if (appearance.autoContrastText === false) {
+    preset.autoContrastText = false;
+    const textColor = normalizeHex(appearance.textColor);
+    if (textColor) preset.textColor = textColor;
+  }
+  return preset;
+}
+
+export function appearanceFromThemePreset(preset) {
+  const next = {
+    themeScale: preset.id,
+    primary: preset.primary,
+    secondary: preset.secondary,
+    tertiary: preset.tertiary,
+    autoContrastText: true,
+    textColor: DEFAULT_COLORS.text,
+  };
+  if (preset.autoContrastText === false) {
+    next.autoContrastText = false;
+    next.textColor = normalizeHex(preset.textColor) || DEFAULT_COLORS.text;
+  }
+  return next;
+}
+
+export function applyThemeColors({
+  primary,
+  secondary,
+  tertiary,
+  gradeScale,
+  customGradeColors,
+  gradeScalePresets,
+  autoContrastText,
+  textColor,
+}) {
   const root = document.documentElement;
   const primaryHex = normalizeHex(primary) || DEFAULT_COLORS.primary;
   const secondaryHex = normalizeHex(secondary) || DEFAULT_COLORS.secondary;
@@ -305,9 +409,17 @@ export function applyThemeColors({ primary, secondary, tertiary, gradeScale, cus
   const secondaryRgb = hexToRgb(secondaryHex);
   const primaryRgb = hexToRgb(primaryHex);
   const tertiaryRgb = hexToRgb(tertiaryHex);
-  const isLight = luminance(secondaryRgb) > 0.48;
-  const text = isLight ? "#29261f" : "#e8e4d9";
-  const muted = isLight ? mixHex(secondaryHex, "#2a261f", 0.42) : mixHex(secondaryHex, "#e8e4d9", 0.55);
+  const lightBackground = luminance(secondaryRgb) > 0.48;
+  const autoContrast = autoContrastText !== false;
+  const isLight = autoContrast && lightBackground;
+  const text = autoContrast
+    ? isLight
+      ? "#29261f"
+      : DEFAULT_COLORS.text
+    : normalizeHex(textColor) || DEFAULT_COLORS.text;
+  const muted = isLight
+    ? mixHex(secondaryHex, "#2a261f", 0.42)
+    : mixHex(secondaryHex, text, 0.55);
   const raised = isLight ? mixHex(secondaryHex, "#ffffff", 0.72) : mixHex(secondaryHex, "#ffffff", 0.08);
   const hover = isLight ? mixHex(secondaryHex, "#2a261f", 0.1) : mixHex(secondaryHex, "#ffffff", 0.14);
   const lineAlpha = isLight ? 0.14 : 0.12;
@@ -348,13 +460,14 @@ export function applyThemeColors({ primary, secondary, tertiary, gradeScale, cus
   root.style.setProperty("--btn-on-primary", isLight ? "#1a1408" : contrastText(primaryRgb));
   root.dataset.tone = isLight ? "light" : "dark";
 
-  applyGradeScale(resolveGradeScaleId(gradeScale), customGradeColors);
+  applyGradeScale({ gradeScale, customGradeColors, gradeScalePresets });
 }
 
-function applyGradeScale(scaleId, customGradeColors) {
+function applyGradeScale({ gradeScale, customGradeColors, gradeScalePresets }) {
+  const userPresets = normalizeGradeScalePresets(gradeScalePresets);
+  const scaleId = resolveGradeScaleId(gradeScale, userPresets);
+  const colors = getActiveGradeColors({ gradeScale, customGradeColors, gradeScalePresets: userPresets });
   const root = document.documentElement;
-  const colors =
-    scaleId === "custom" ? normalizeGradeColors(customGradeColors) : getGradeScale(scaleId).colors;
   root.dataset.gradeScale = scaleId;
   for (const key of GRADE_LETTER_KEYS) {
     const hex = colors[key];
@@ -364,8 +477,72 @@ function applyGradeScale(scaleId, customGradeColors) {
   }
 }
 
-function resolveGradeScaleId(id) {
-  return id === "custom" || GRADE_SCALES.some((scale) => scale.id === id) ? id : DEFAULT_GRADE_SCALE;
+function resolveGradeScaleId(id, userPresets = []) {
+  if (id === "custom") return "custom";
+  if (GRADE_SCALES.some((scale) => scale.id === id)) return id;
+  if (normalizeGradeScalePresets(userPresets).some((preset) => preset.id === id)) return id;
+  return DEFAULT_GRADE_SCALE;
+}
+
+function themeColorsMatch(colors, preset) {
+  return (
+    normalizeHex(colors?.primary) === normalizeHex(preset.primary) &&
+    normalizeHex(colors?.secondary) === normalizeHex(preset.secondary) &&
+    normalizeHex(colors?.tertiary) === normalizeHex(preset.tertiary)
+  );
+}
+
+function resolveThemeScaleId(id, colors, userPresets = []) {
+  if (id === "custom") return "custom";
+  if (THEME_PRESETS.some((preset) => preset.id === id)) return id;
+  if (userPresets.some((preset) => preset.id === id)) return id;
+  const builtin = THEME_PRESETS.find((preset) => themeColorsMatch(colors, preset));
+  if (builtin) return builtin.id;
+  const saved = userPresets.find((preset) => themeColorsMatch(colors, preset));
+  if (saved) return saved.id;
+  return colors && (colors.primary || colors.secondary || colors.tertiary) ? "custom" : DEFAULT_THEME_SCALE;
+}
+
+function normalizeThemePresets(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  return raw
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      const name = String(item?.name || "").trim();
+      const primary = normalizeHex(item?.primary);
+      const secondary = normalizeHex(item?.secondary);
+      const tertiary = normalizeHex(item?.tertiary);
+      if (!id || !name || !primary || !secondary || !tertiary) return null;
+      if (THEME_PRESETS.some((preset) => preset.id === id) || seen.has(id)) return null;
+      seen.add(id);
+      const preset = { id, name, primary, secondary, tertiary };
+      if (item.autoContrastText === false) {
+        preset.autoContrastText = false;
+        const textColor = normalizeHex(item.textColor);
+        if (textColor) preset.textColor = textColor;
+      }
+      return preset;
+    })
+    .filter(Boolean)
+    .slice(0, MAX_CUSTOM_PRESETS);
+}
+
+function normalizeGradeScalePresets(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  return raw
+    .map((item) => {
+      const id = String(item?.id || "").trim();
+      const name = String(item?.name || "").trim();
+      const colors = normalizeGradeColors(item?.colors);
+      if (!id || !name) return null;
+      if (GRADE_SCALES.some((preset) => preset.id === id) || seen.has(id)) return null;
+      seen.add(id);
+      return { id, name, colors };
+    })
+    .filter(Boolean)
+    .slice(0, MAX_CUSTOM_PRESETS);
 }
 
 function normalizeGradeColors(colors) {
