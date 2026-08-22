@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
+import { api, fmtDelta, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
 import { useAnimatedNumber } from "./useAnimatedNumber";
-import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
+import { ExamImpactStats } from "./ExamImpact.jsx";
 import { TERM_SEQUENCE } from "./seasons.js";
 
 function AnimatedValue({ value, format }) {
@@ -13,6 +13,127 @@ function AnimatedValue({ value, format }) {
 
 const fmtAnimatedScore = (value) => fmtScore(value == null ? null : Math.round(value));
 const fmtAnimatedTenth = (value) => fmtScore(value == null ? null : Number(Number(value).toFixed(1)));
+
+function fumblesBySemester(terms, fumbles) {
+  const groups = [];
+  const seen = new Set();
+  for (const term of terms || []) {
+    const rows = (fumbles || []).filter((row) => row.semester_id === term.id);
+    if (!rows.length) continue;
+    groups.push({ term, rows });
+    for (const row of rows) seen.add(row.id);
+  }
+  const leftover = (fumbles || []).filter((row) => !seen.has(row.id));
+  if (leftover.length) {
+    groups.push({ term: { id: "other", name: "Other" }, rows: leftover });
+  }
+  return groups;
+}
+
+function FumbleCourseSelect({ terms, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState(() => new Set());
+  const rootRef = useRef(null);
+  const groups = useMemo(
+    () => (terms || []).filter((term) => term.courses?.length),
+    [terms]
+  );
+  const selected = groups.flatMap((term) => term.courses).find((course) => String(course.id) === String(value));
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onPointerDown(event) {
+      if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+    }
+    function onKeyDown(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setOpenGroups((current) => {
+      if (current.size) return current;
+      const selectedTerm = groups.find((term) =>
+        term.courses.some((course) => String(course.id) === String(value))
+      );
+      const first = selectedTerm || groups[0];
+      return first ? new Set([first.id]) : current;
+    });
+  }, [open, groups, value]);
+
+  function toggleGroup(id) {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div className="fumble-course-select" ref={rootRef}>
+      <button
+        type="button"
+        className="select exam-multi-trigger"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <span className={selected ? "" : "muted"}>{selected?.code || "Class"}</span>
+      </button>
+      {open ? (
+        <div className="exam-multi-menu fumble-course-menu" role="listbox">
+          {groups.length === 0 ? (
+            <div className="muted exam-multi-empty">No classes</div>
+          ) : (
+            groups.map((term) => {
+              const expanded = openGroups.has(term.id);
+              return (
+                <div key={term.id} className="fumble-course-group">
+                  <button
+                    type="button"
+                    className="fumble-course-term"
+                    aria-expanded={expanded}
+                    onClick={() => toggleGroup(term.id)}
+                  >
+                    <span className={`term-accordion-chevron ${expanded ? "open" : ""}`}>▸</span>
+                    {term.name}
+                  </button>
+                  {expanded
+                    ? term.courses.map((course) => (
+                        <button
+                          key={course.id}
+                          type="button"
+                          role="option"
+                          aria-selected={String(course.id) === String(value)}
+                          className={`exam-multi-option fumble-course-option ${
+                            String(course.id) === String(value) ? "is-selected" : ""
+                          }`}
+                          onClick={() => {
+                            onChange(String(course.id));
+                            setOpen(false);
+                          }}
+                        >
+                          {course.code}
+                        </button>
+                      ))
+                    : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 const fmtAnimatedCredits = (value) => (value == null ? "—" : Number(Number(value).toFixed(2)));
 
 const FALLBACK_LETTERS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
@@ -1099,16 +1220,11 @@ export default function GpaDashboard({ onChange }) {
           <h2>Fumbles</h2>
           <p className="muted">What if a class had been a higher letter.</p>
           <div className="row" style={{ marginBottom: 10 }}>
-            <select className="select" value={fumbleCourse} onChange={(e) => setFumbleCourse(e.target.value)}>
-              <option value="">Class</option>
-              {data.terms.flatMap((t) =>
-                t.courses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.code}
-                  </option>
-                ))
-              )}
-            </select>
+            <FumbleCourseSelect
+              terms={data.terms}
+              value={fumbleCourse}
+              onChange={setFumbleCourse}
+            />
             <select className="select" value={fumbleGp} onChange={(e) => setFumbleGp(e.target.value)}>
               {data.default_scale
                 .filter((s) => s.letter !== "F")
@@ -1133,7 +1249,7 @@ export default function GpaDashboard({ onChange }) {
               Add
             </button>
           </div>
-          <table>
+          <table className="fumble-table">
             <thead>
               <tr>
                 <th>Class</th>
@@ -1143,33 +1259,44 @@ export default function GpaDashboard({ onChange }) {
                 <th />
               </tr>
             </thead>
-            <tbody>
-              {data.fumbles.map((f) => (
-                <tr key={f.id}>
-                  <td>{f.code}</td>
-                  <td className="mono">{fmtGpa(f.did_get)}</td>
-                  <td className="mono">{fmtGpa(f.should_have_been_gp)}</td>
-                  {showScore ? (
-                    <td className={`mono ${scoreClass(f.delta)}`}>{fmtScore(f.delta)}</td>
-                  ) : null}
-                  <td>
-                    <button className="btn small danger" onClick={async () => apply(await api.deleteFumble(f.id))}>
-                      ×
-                    </button>
-                  </td>
+            {fumblesBySemester(data.terms, data.fumbles).map((group) => (
+              <tbody key={group.term.id}>
+                <tr className="fumble-semester-head">
+                  <th colSpan={showScore ? 5 : 4}>{group.term.name}</th>
                 </tr>
-              ))}
-            </tbody>
+                {group.rows.map((f) => (
+                  <tr key={f.id}>
+                    <td>{f.code}</td>
+                    <td className="mono">{fmtGpa(f.did_get)}</td>
+                    <td className="mono">{fmtGpa(f.should_have_been_gp)}</td>
+                    {showScore ? (
+                      <td className={`mono ${scoreClass(f.delta)}`}>{fmtScore(f.delta)}</td>
+                    ) : null}
+                    <td>
+                      <button className="btn small danger" onClick={async () => apply(await api.deleteFumble(f.id))}>
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            ))}
           </table>
-          <p className="muted" style={{ marginTop: 10 }}>
+          <div className="fumble-adjusted">
+            <div className="label">Adjusted</div>
+            <div className="fumble-adjusted-row">
+              <span className="label">GPA</span>
+              <span className="value mono">{fmtGpa(data.gpa_with_fumbles)}</span>
+            </div>
             {showScore ? (
-              <>
-                Score with fumbles {fmtScore(data.score_with_fumbles)} → GPA {fmtGpa(data.gpa_with_fumbles)}
-              </>
-            ) : (
-              <>GPA with fumbles {fmtGpa(data.gpa_with_fumbles)}</>
-            )}
-          </p>
+              <div className="fumble-adjusted-row">
+                <span className="label">Score</span>
+                <span className={`value mono ${scoreClass(data.score_with_fumbles)}`}>
+                  {fmtScore(data.score_with_fumbles)}
+                </span>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -1184,26 +1311,30 @@ export default function GpaDashboard({ onChange }) {
             Included semesters. Δ is exam percent minus the test-category average.
           </p>
           <ExamImpactStats summary={data.exam_impact.cumulative} />
-          {(data.exam_impact.terms || [])
-            .filter((term) => term.rows?.length)
-            .map((term) => (
-              <div key={term.semester_id} style={{ marginTop: 16 }}>
-                <h3 style={{ margin: "0 0 8px" }}>{term.name}</h3>
-                <ExamImpactStats summary={term} />
-                <ExamImpactTable
-                  courses={term.rows.map((row) => ({
-                    ...row,
-                    id: row.course_id,
-                    categories: [],
-                    test_category_id: row.test_category_id,
-                    test_category_ids: row.test_category_ids
-                      || (row.test_category_id != null ? [row.test_category_id] : []),
-                    exam_category_id: row.exam_category_id,
-                    exam_impact: row,
-                  }))}
-                />
-              </div>
-            ))}
+          <table className="exam-impact-term-table">
+            <thead>
+              <tr>
+                <th>Semester</th>
+                <th>Avg exam vs tests</th>
+                <th>Letters up</th>
+                <th>Letters down</th>
+                <th>Unchanged</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.exam_impact.terms || [])
+                .filter((term) => term.included && term.rows?.length)
+                .map((term) => (
+                  <tr key={term.semester_id}>
+                    <td>{term.name}</td>
+                    <td className={`mono ${scoreClass(term.avg_delta)}`}>{fmtDelta(term.avg_delta)}</td>
+                    <td className="mono pos">{term.letter_up || 0}</td>
+                    <td className="mono neg">{term.letter_down || 0}</td>
+                    <td className="mono">{term.letter_same || 0}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
         </section>
       ) : null}
 

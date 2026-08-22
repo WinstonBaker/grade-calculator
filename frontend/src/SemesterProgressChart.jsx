@@ -23,6 +23,28 @@ function mmdd(iso) {
   return `${month}/${day}`;
 }
 
+function courseKey(snapshotId, courseId) {
+  return `c:${snapshotId}:${courseId}`;
+}
+
+function gpaKey(snapshotId) {
+  return `g:${snapshotId}`;
+}
+
+function parseSelectedKeys(keys) {
+  const course_points = [];
+  const gpa_snapshot_ids = [];
+  for (const key of keys) {
+    if (key.startsWith("c:")) {
+      const [, snapshotId, courseId] = key.split(":");
+      course_points.push({ snapshot_id: Number(snapshotId), course_id: Number(courseId) });
+    } else if (key.startsWith("g:")) {
+      gpa_snapshot_ids.push(Number(key.slice(2)));
+    }
+  }
+  return { course_points, gpa_snapshot_ids };
+}
+
 export default function SemesterProgressChart({ semesterId, locked = false, onLock, onToast }) {
   const [snapshots, setSnapshots] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -30,6 +52,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [view, setView] = useState("classes");
+  const [focused, setFocused] = useState(null);
 
   async function load() {
     if (!semesterId) return;
@@ -40,6 +63,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   useEffect(() => {
     setDeleting(false);
     setSelected(new Set());
+    setFocused(null);
     setView("classes");
     load().catch((err) => onToast?.(err.message));
     function onUpdated() {
@@ -56,36 +80,46 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       await api.recordSemesterSnapshot(semesterId);
       await load();
     } catch (err) {
-      onToast?.(err.message);
+      onToast?.(err.message || "Could not record grades");
     } finally {
       setBusy(false);
     }
   }
 
-  function togglePoint(snapshotId) {
+  function togglePoint(key) {
     if (!deleting) return;
     setSelected((current) => {
       const next = new Set(current);
-      if (next.has(snapshotId)) next.delete(snapshotId);
-      else next.add(snapshotId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
+  }
+
+  function onPointClick(event, key, point) {
+    event.stopPropagation();
+    if (deleting) {
+      togglePoint(key);
+      return;
+    }
+    setFocused(point);
   }
 
   async function onDeleteModeClick() {
     if (!deleting) {
       setDeleting(true);
       setSelected(new Set());
+      setFocused(null);
       return;
     }
-    const ids = [...selected];
-    if (!ids.length) {
+    const { course_points, gpa_snapshot_ids } = parseSelectedKeys(selected);
+    if (!course_points.length && !gpa_snapshot_ids.length) {
       setDeleting(false);
       return;
     }
     setBusy(true);
     try {
-      await api.deleteSemesterSnapshots(semesterId, ids);
+      await api.deleteSemesterSnapshots(semesterId, { course_points, gpa_snapshot_ids });
       setDeleting(false);
       setSelected(new Set());
       await load();
@@ -167,10 +201,10 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const subtitle = locked
     ? "Progression locked. Unlock to record new checkpoints."
     : deleting
-      ? "Click checkpoints to highlight them, then Save to delete."
+      ? "Click individual points to select them, then Save to delete."
       : showClasses
-        ? "Class percents over recorded checkpoints."
-        : "Semester GPA over recorded checkpoints.";
+        ? "Class percents over recorded checkpoints. Click a point to see its score."
+        : "Semester GPA over recorded checkpoints. Click a point to see its score.";
 
   return (
     <section className={`panel grade-progress ${deleting ? "is-deleting" : ""}`} aria-label="Grade progression">
@@ -185,7 +219,10 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                 role="tab"
                 aria-selected={showClasses}
                 className={showClasses ? "active" : ""}
-                onClick={() => setView("classes")}
+                onClick={() => {
+                  setView("classes");
+                  setFocused(null);
+                }}
               >
                 Class grades
               </button>
@@ -194,7 +231,10 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                 role="tab"
                 aria-selected={!showClasses}
                 className={!showClasses ? "active" : ""}
-                onClick={() => setView("gpa")}
+                onClick={() => {
+                  setView("gpa");
+                  setFocused(null);
+                }}
               >
                 Semester GPA
               </button>
@@ -294,10 +334,11 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                   <polyline className="gpa-trend-line cumulative grade-progress-gpa" points={gpaLine} fill="none" />
                 )}
               {snapshots.map((snap, index) => {
-                const marked = selected.has(snap.id);
-                const radius = marked || hover === index ? 8 : 6.5;
+                const gpaMarked = selected.has(gpaKey(snap.id));
+                const gpaFocused = focused?.kind === "gpa" && focused.snapshotId === snap.id;
+                const gpaRadius = gpaMarked || gpaFocused || hover === index ? 8 : 6.5;
                 return (
-                <g key={snap.id} className={marked ? "grade-progress-point is-selected" : "grade-progress-point"}>
+                <g key={snap.id} className="grade-progress-point">
                   <line
                     className="gpa-trend-hit"
                     x1={x(index)}
@@ -305,33 +346,55 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                     y1={margin.top}
                     y2={margin.top + plotHeight}
                     onMouseEnter={() => setHover(index)}
-                    onClick={() => togglePoint(snap.id)}
                   />
                   {showClasses
                     ? series.map((item) => {
                         const course = (snap.courses || []).find((row) => row.course_id === item.courseId);
                         if (course?.percent == null || !Number.isFinite(Number(course.percent))) return null;
+                        const key = courseKey(snap.id, item.courseId);
+                        const marked = selected.has(key);
+                        const isFocused =
+                          focused?.kind === "course"
+                          && focused.snapshotId === snap.id
+                          && focused.courseId === item.courseId;
+                        const radius = marked || isFocused || hover === index ? 8 : 6.5;
                         return (
                           <circle
                             key={item.courseId}
-                            className={`grade-progress-dot ${marked ? "is-selected" : ""}`}
+                            className={`grade-progress-dot ${marked || isFocused ? "is-selected" : ""}`}
                             cx={x(index)}
                             cy={yPct(Number(course.percent))}
                             r={radius}
                             fill={item.color}
                             onMouseEnter={() => setHover(index)}
-                            onClick={() => togglePoint(snap.id)}
+                            onClick={(event) =>
+                              onPointClick(event, key, {
+                                kind: "course",
+                                snapshotId: snap.id,
+                                courseId: item.courseId,
+                                code: item.code,
+                                recordedAt: snap.recorded_at,
+                                value: Number(course.percent),
+                              })
+                            }
                           />
                         );
                       })
                     : snap.term_gpa != null && Number.isFinite(Number(snap.term_gpa)) ? (
                       <circle
-                        className={`grade-progress-dot gpa ${marked ? "is-selected" : ""}`}
+                        className={`grade-progress-dot gpa ${gpaMarked || gpaFocused ? "is-selected" : ""}`}
                         cx={x(index)}
                         cy={yGpa(Number(snap.term_gpa))}
-                        r={radius}
+                        r={gpaRadius}
                         onMouseEnter={() => setHover(index)}
-                        onClick={() => togglePoint(snap.id)}
+                        onClick={(event) =>
+                          onPointClick(event, gpaKey(snap.id), {
+                            kind: "gpa",
+                            snapshotId: snap.id,
+                            recordedAt: snap.recorded_at,
+                            value: Number(snap.term_gpa),
+                          })
+                        }
                       />
                     ) : null}
                   <text className="gpa-trend-axis term" x={x(index)} y={height - 20} textAnchor="middle">
@@ -343,7 +406,17 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
             </svg>
           </div>
           <div className="gpa-trends-detail" aria-live="polite">
-            {active ? (
+            {focused ? (
+              <>
+                <strong>{mmdd(focused.recordedAt)}</strong>
+                <span>
+                  {focused.kind === "gpa" ? "Semester GPA" : focused.code}{" "}
+                  <b className="mono">
+                    {focused.kind === "gpa" ? fmtGpa(focused.value) : fmtPct(focused.value)}
+                  </b>
+                </span>
+              </>
+            ) : active ? (
               <>
                 <strong>{mmdd(active.recorded_at)}</strong>
                 {showClasses ? (
@@ -362,7 +435,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
               </>
             ) : (
               <span className="muted">
-                {deleting ? "Click a checkpoint to select it" : "Hover a checkpoint for exact values"}
+                {deleting ? "Click a point to select it" : "Click a point to see its score, or hover for values"}
               </span>
             )}
           </div>

@@ -168,6 +168,37 @@ def test_course_completed_only_and_bonus():
     assert result.categories[2].percent is None
 
 
+def test_points_based_ignores_category_weights():
+    cats = [
+        CategoryInput(id=1, name="HW", weight=0.5, assignments=[P(10, 10)]),
+        CategoryInput(id=2, name="Final", weight=0.5, assignments=[P(0, 90)]),
+    ]
+    weighted = course_grade(CourseInput(code="ENG 331", credits=3, categories=cats))
+    points = course_grade(
+        CourseInput(code="ENG 331", credits=3, grading_mode="points", categories=cats)
+    )
+    assert abs(weighted.percent - 50.0) < 1e-9
+    assert abs(points.percent - 10.0) < 1e-9
+
+
+def test_points_based_exam_needed():
+    course = CourseInput(
+        code="ENG 331",
+        credits=3,
+        grading_mode="points",
+        scale=[ScaleRow(*row) for row in DEFAULT_SCALE],
+        categories=[
+            CategoryInput(id=1, name="HW", weight=0.5, assignments=[P(10, 10)]),
+            CategoryInput(id=2, name="Final", weight=0.5, assignments=[]),
+        ],
+    )
+    needed = exam_score_needed(course, 2, 90.0)
+    # (10 + exam) / (10 + 100) = 0.90 → exam = 89
+    assert abs(needed - 89.0) < 1e-6
+    projected = project_from_exam(course, 2, 89.0)
+    assert abs(projected.percent - 90.0) < 1e-6
+
+
 def test_what_if_needed_on_final():
     course = CourseInput(
         code="MAE 310",
@@ -249,6 +280,8 @@ def test_gp_override():
     result = course_grade(course)
     assert result.quality_points == 4.333
     assert result.letter == "A+"
+    assert result.natural_letter == "C-"
+    assert result.natural_quality_points == 1.667
 
 
 def test_grade_rounding_lifts_letter_at_half():

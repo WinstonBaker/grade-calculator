@@ -277,50 +277,53 @@ a {
   color: var(--muted);
 }
 
+.gradebook-header-title .gradebook-title-row {
+  margin-top: 4px;
+  gap: 22px;
+}
+
 .gradebook-header-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr);
-  gap: 16px;
-  align-items: stretch;
+  display: block;
 }
 
 .grade-hero {
   display: flex;
   flex-direction: row;
   align-items: center;
-  justify-content: center;
   gap: 14px;
-  padding: 12px 16px;
-  height: 100%;
-  min-height: 0;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .letter.letter-hero-circle {
   flex-shrink: 0;
-  min-width: 3.5rem;
-  min-height: 3.5rem;
+  min-width: 2.6rem;
+  min-height: 2.6rem;
   padding: 0;
-  font-size: 1.4rem;
+  font-size: 1.15rem;
   font-weight: 600;
   align-items: center;
   justify-content: center;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 28%, transparent);
 }
 
-.grade-hero-stats {
+.grade-hero-meta {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
+.grade-hero-gp-score {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.2;
+}
+
 .grade-hero-pct {
-  font-size: clamp(1.6rem, 2.5vw, 2.1rem);
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
   font-weight: 600;
   line-height: 1.1;
 }
@@ -328,6 +331,44 @@ a {
 .grade-hero-gpa {
   font-size: 0.85rem;
   color: var(--muted);
+}
+
+.grade-hero-score {
+  font-size: 0.85rem;
+}
+
+.grade-hero-override-label {
+  margin-top: 1px;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.grade-hero-meta.is-struck .grade-hero-gpa,
+.grade-hero-meta.is-struck .grade-hero-score {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.letter.letter-hero-circle.is-struck-letter {
+  position: relative;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muted) 28%, transparent);
+  text-decoration: none;
+}
+
+.letter.letter-hero-circle.is-struck-letter::after {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 50%;
+  height: 2px;
+  background: var(--muted);
+  transform: rotate(-32deg);
+  pointer-events: none;
 }
 
 .panel.course-settings {
@@ -371,6 +412,17 @@ a {
 }
 
 .course-settings-class .input {
+  grid-row: 2;
+  grid-column: 1;
+  width: 100%;
+  min-width: 0;
+}
+
+.panel.course-settings .course-settings-grading {
+  grid-template-columns: 1fr;
+}
+
+.panel.course-settings .course-settings-grading .select {
   grid-row: 2;
   grid-column: 1;
   width: 100%;
@@ -941,10 +993,48 @@ th button.active {
 .cat-head-left {
   flex: 1;
   min-width: 160px;
+  flex-wrap: nowrap;
 }
 
 .cat-name {
   font-weight: 600;
+  min-width: 0;
+}
+
+.cat-drag-handle {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+  border-radius: 6px;
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.cat-drag-handle:hover,
+.cat-drag-handle:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cat-drag-handle:active,
+.cat-card.is-dragging .cat-drag-handle {
+  cursor: grabbing;
+}
+
+.cards.is-reordering {
+  user-select: none;
+}
+
+.cat-card.is-dragging {
+  opacity: 0.72;
 }
 
 .cat-head-meta {
@@ -1064,6 +1154,17 @@ th button.active {
 
 .mono {
   font-family: "IBM Plex Mono", monospace;
+}
+
+.gradebook-cat-toolbar {
+  margin-bottom: 8px;
+}
+
+.gradebook-cat-toolbar .exam-needed-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .split {
@@ -1702,7 +1803,6 @@ th button.active {
 }
 
 @media (max-width: 1000px) {
-  .gradebook-header-toolbar,
   .split {
     grid-template-columns: 1fr;
   }
@@ -1822,8 +1922,9 @@ th button.active {
 
 .toast {
   pointer-events: auto;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  background: var(--gold);
+  color: var(--btn-on-primary);
+  border: 1px solid color-mix(in srgb, var(--btn-on-primary) 18%, transparent);
   border-radius: 12px;
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -1831,7 +1932,7 @@ th button.active {
 }
 
 .toast-warning {
-  border-color: color-mix(in srgb, var(--gold) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--btn-on-primary) 28%, transparent);
 }
 
 .toast-body {
@@ -1850,11 +1951,12 @@ th button.active {
   display: block;
   margin-bottom: 2px;
   font-size: 0.92rem;
+  color: var(--btn-on-primary);
 }
 
 .toast-message {
   margin: 0;
-  color: var(--text);
+  color: var(--btn-on-primary);
   font-size: 0.88rem;
   line-height: 1.4;
 }
@@ -1883,37 +1985,38 @@ th button.active {
 .toast-action {
   width: 28px;
   height: 28px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--btn-on-primary) 28%, transparent);
   border-radius: 8px;
   background: transparent;
-  color: var(--text);
+  color: var(--btn-on-primary);
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
 }
 
 .toast-action:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--btn-on-primary) 12%, transparent);
 }
 
 .toast-confirm {
-  color: var(--grade-ap, var(--green));
+  color: var(--btn-on-primary);
 }
 
 .toast-dismiss {
-  color: var(--muted);
+  color: var(--btn-on-primary);
+  opacity: 0.72;
 }
 
 .toast-timer {
   height: 3px;
-  background: color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--btn-on-primary) 22%, transparent);
 }
 
 .toast-timer-bar {
   display: block;
   height: 100%;
   width: 100%;
-  background: var(--gold);
+  background: var(--btn-on-primary);
   transform-origin: left center;
   animation-name: toast-timer;
   animation-timing-function: linear;
@@ -2008,6 +2111,7 @@ th button.active {
   stroke: var(--bg);
   stroke-width: 2.5;
   vector-effect: non-scaling-stroke;
+  cursor: pointer;
 }
 
 .grade-progress-dot.gpa {
@@ -2461,6 +2565,10 @@ tbody tr {
   margin: 12px 0;
 }
 
+.exam-impact-term-table {
+  margin-top: 4px;
+}
+
 .exam-impact-table .select {
   width: 132px;
 }
@@ -2516,8 +2624,104 @@ tbody tr {
   background: var(--bg-hover);
 }
 
-.exam-multi-empty {
-  padding: 8px;
+.fumble-course-select {
+  position: relative;
+  min-width: 148px;
+  flex: 1 1 160px;
+}
+
+.fumble-course-menu {
+  min-width: 220px;
+  max-height: 280px;
+}
+
+.fumble-course-group + .fumble-course-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.fumble-course-term {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fumble-course-term:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.fumble-course-option {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.fumble-course-option.is-selected {
+  color: var(--gold);
+}
+
+.fumble-table {
+  width: 100%;
+}
+
+.fumble-semester-head th {
+  padding-top: 14px;
+  padding-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: transparent;
+}
+
+.fumble-table tbody:first-of-type .fumble-semester-head th {
+  padding-top: 8px;
+}
+
+.fumble-adjusted {
+  margin-top: 16px;
+}
+
+.fumble-adjusted > .label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fumble-adjusted-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.fumble-adjusted-row .label {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.fumble-adjusted-row .value {
+  font-size: 1.45rem;
+  line-height: 1.1;
 }
 
 @media (prefers-reduced-motion: reduce) {

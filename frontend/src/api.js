@@ -50,6 +50,12 @@ export const api = {
   deleteScaleProfile: (id) => req(`/api/scale-profiles/${id}`, { method: "DELETE" }),
   createCategory: (body) => req("/api/categories", { method: "POST", headers, body: JSON.stringify(body) }),
   patchCategory: (id, body) => req(`/api/categories/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
+  reorderCategories: (courseId, categoryIds) =>
+    req(`/api/courses/${courseId}/categories/order`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ category_ids: categoryIds }),
+    }),
   deleteCategory: (id) => req(`/api/categories/${id}`, { method: "DELETE" }),
   createAssignment: (body) => req("/api/assignments", { method: "POST", headers, body: JSON.stringify(body) }),
   patchAssignment: (id, body) => req(`/api/assignments/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
@@ -59,8 +65,14 @@ export const api = {
   putAppearance: (body) => req("/api/appearance", { method: "PUT", headers, body: JSON.stringify(body) }),
   semesterSnapshots: (id) => req(`/api/semesters/${id}/snapshots`),
   recordSemesterSnapshot: (id) => req(`/api/semesters/${id}/snapshots`, { method: "POST" }),
-  deleteSemesterSnapshots: (id, ids) =>
-    req(`/api/semesters/${id}/snapshots`, { method: "DELETE", headers, body: JSON.stringify({ ids }) }),
+  patchSemesterSnapshot: (semesterId, snapshotId, body) =>
+    req(`/api/semesters/${semesterId}/snapshots/${snapshotId}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(body),
+    }),
+  deleteSemesterSnapshots: (id, body) =>
+    req(`/api/semesters/${id}/snapshots`, { method: "DELETE", headers, body: JSON.stringify(body) }),
   recordAllSnapshots: () => req("/api/snapshots/record-all", { method: "POST" }),
   gradePrompt: () => req("/api/grade-prompt"),
   snoozeGradePrompt: () => req("/api/grade-prompt/snooze", { method: "POST" }),
@@ -117,6 +129,24 @@ export function fmtScore(n) {
   if (n === null || n === undefined) return "—";
   const v = Number(n);
   return v > 0 ? `+${v}` : String(v);
+}
+
+/** Term score: round((GPA − target) × credits × 3). */
+export function termScore(qualityPoints, credits, targetGp = 4.0) {
+  if (qualityPoints == null || credits == null || Number.isNaN(Number(qualityPoints))) return null;
+  return Math.round((Number(qualityPoints) - Number(targetGp)) * Number(credits) * 3);
+}
+
+/** Letter/GPA/score from the course percent, ignoring GP override. */
+export function trueGradeFromCourse(course, targetGp = 4.0) {
+  const grade = gradeFromPercent(course?.percent, course?.scale, course?.grade_rounding ?? null);
+  const letter = grade.letter ?? course?.natural_letter ?? null;
+  const qualityPoints = grade.quality_points ?? course?.natural_quality_points ?? null;
+  const score =
+    course?.natural_score != null && grade.letter != null
+      ? course.natural_score
+      : termScore(qualityPoints, course?.credits, targetGp);
+  return { letter, qualityPoints, score };
 }
 
 export function fmtDelta(n) {
@@ -227,10 +257,51 @@ export function replaceMinWithPercent(cat, replacement) {
   return scores.reduce((sum, n) => sum + n, 0) / scores.length;
 }
 
+function assignmentPossible(item) {
+  const possible = Number(item?.possible);
+  if (Number.isFinite(possible) && possible !== 0) return possible;
+  return 100;
+}
+
+/** Points-based overall if the exam category scores `examPercent` (out of 100). */
+function projectPointsPercentFromExam(course, examCategoryId, examPercent) {
+  const examPct = Number(examPercent);
+  if (!Number.isFinite(examPct)) return null;
+  let earned = 0;
+  let possible = 0;
+  let bonus = 0;
+  let anyRow = false;
+  for (const cat of course.categories || []) {
+    if (cat.id === examCategoryId) {
+      const scored = (cat.assignments || []).filter((item) => !item.is_bonus && item.earned != null);
+      const n = Math.max(scored.length, 1);
+      earned += examPct * n;
+      possible += 100 * n;
+      anyRow = true;
+      continue;
+    }
+    for (const item of cat.assignments || []) {
+      if (item.is_bonus) {
+        if (cat.include_bonus && item.earned != null) bonus += Number(item.earned);
+        continue;
+      }
+      if (item.earned == null || !Number.isFinite(Number(item.earned))) continue;
+      anyRow = true;
+      earned += Number(item.earned);
+      possible += assignmentPossible(item);
+    }
+  }
+  if (!anyRow || possible === 0) return null;
+  return (100 * (earned + bonus)) / possible + (Number(course.bonus_points) || 0);
+}
+
 /** Overall course percent if `examCategoryId` scores `examPercent`. */
 export function projectPercentFromExam(course, examCategoryId, examPercent) {
   if (course == null || examCategoryId == null || examPercent == null || Number.isNaN(Number(examPercent))) {
     return null;
+  }
+  if ((course.grading_mode || "weighted") === "points") {
+    return projectPointsPercentFromExam(course, examCategoryId, examPercent);
   }
   const examPct = Number(examPercent);
   const used = [];
@@ -312,6 +383,8 @@ export function defaultExamCategoryId(categories) {
     (cat) => cat.percent == null && (cat.weight || cat.weight_per_item)
   );
   if (empty) return empty.id;
+  const unscored = categories.find((cat) => cat.percent == null);
+  if (unscored) return unscored.id;
   return categories[categories.length - 1].id;
 }
 

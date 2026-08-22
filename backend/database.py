@@ -73,6 +73,9 @@ def ensure_schema() -> None:
         if "exam_category_id" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE courses ADD COLUMN exam_category_id INTEGER"))
+        if "grading_mode" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE courses ADD COLUMN grading_mode VARCHAR(16) DEFAULT 'weighted'"))
         if "dynamic_weighting_enabled" not in cols:
             with engine.begin() as conn:
                 conn.execute(

@@ -14,6 +14,7 @@ import {
   letterFromPercent,
   projectPercentFromExam,
   scoreClass,
+  trueGradeFromCourse,
 } from "./api";
 import { ScaleRowsEditor } from "./ScaleEditor.jsx";
 import { useCreditTerms, useShowScore } from "./creditLabel.jsx";
@@ -79,6 +80,43 @@ function draftToPayload(draft) {
   };
 }
 
+function valuesDiffer(a, b) {
+  if (a == null && b == null) return false;
+  if (a == null || b == null) return true;
+  if (typeof a === "number" || typeof b === "number") {
+    return Math.abs(Number(a) - Number(b)) > 1e-6;
+  }
+  return a !== b;
+}
+
+function courseHasOverride(course, trueGrade) {
+  if (course?.gp_override == null) return false;
+  return (
+    valuesDiffer(course.letter, trueGrade.letter)
+    || valuesDiffer(course.quality_points, trueGrade.qualityPoints)
+    || valuesDiffer(course.score, trueGrade.score)
+  );
+}
+
+function GradeHeroMeta({ letter, qualityPoints, score, showScore, struck = false, overrideLabel = false }) {
+  return (
+    <div className={`grade-hero-meta ${struck ? "is-struck" : ""}`}>
+      <span className={`letter letter-hero-circle ${struck ? "is-struck-letter" : letterClass(letter)}`}>
+        {letter || "—"}
+      </span>
+      <div className="grade-hero-gp-score">
+        <span className="mono grade-hero-gpa">{fmtGpa(qualityPoints)}</span>
+        {showScore ? (
+          <span className={`grade-hero-score ${struck ? "" : scoreClass(score)}`}>
+            Score: <span className="mono">{fmtScore(score)}</span>
+          </span>
+        ) : null}
+        {overrideLabel ? <span className="grade-hero-override-label">Override</span> : null}
+      </div>
+    </div>
+  );
+}
+
 export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
@@ -89,10 +127,25 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
   const [error, setError] = useState("");
   const [showScale, setShowScale] = useState(false);
   const [showDynamic, setShowDynamic] = useState(false);
+  const [showExamCalc, setShowExamCalc] = useState(false);
   const [openCats, setOpenCats] = useState({});
   const [profiles, setProfiles] = useState([]);
   const [aggOptions, setAggOptions] = useState(DEFAULT_AGG_OPTIONS);
   const [categoryModal, setCategoryModal] = useState(null);
+  const [dragCatId, setDragCatId] = useState(null);
+  const dragCatIdRef = useRef(null);
+  const dragStartOrderRef = useRef(null);
+  const categoriesRef = useRef([]);
+
+  function suppressNextClick() {
+    const stop = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.removeEventListener("click", stop, true);
+    };
+    window.addEventListener("click", stop, true);
+    window.setTimeout(() => window.removeEventListener("click", stop, true), 500);
+  }
 
   async function load() {
     const [c, s, m] = await Promise.all([api.course(id), api.semesters(), api.meta()]);
@@ -118,6 +171,64 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
       return next;
     });
   }, [course?.categories]);
+
+  categoriesRef.current = course?.categories || [];
+
+  function beforeCategoryId(clientY, draggingId) {
+    const nodes = document.querySelectorAll(".cards .cat-card[data-cat-id]");
+    for (const node of nodes) {
+      const id = Number(node.dataset.catId);
+      if (id === draggingId) continue;
+      const rect = node.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return id;
+    }
+    return null;
+  }
+
+  function onCategoryDragStart(event, catId) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragCatIdRef.current = catId;
+    dragStartOrderRef.current = (course.categories || []).map((c) => c.id);
+    setDragCatId(catId);
+    suppressNextClick();
+  }
+
+  function onCategoryDragMove(event) {
+    const draggingId = dragCatIdRef.current;
+    if (draggingId == null) return;
+    const beforeId = beforeCategoryId(event.clientY, draggingId);
+    setCourse((current) => {
+      if (!current) return current;
+      const categories = moveCategoryBefore(current.categories, draggingId, beforeId);
+      if (categories === current.categories) return current;
+      categoriesRef.current = categories;
+      return { ...current, categories };
+    });
+  }
+
+  async function onCategoryDragEnd() {
+    if (dragCatIdRef.current == null) return;
+    dragCatIdRef.current = null;
+    setDragCatId(null);
+    const start = dragStartOrderRef.current;
+    dragStartOrderRef.current = null;
+    const ids = categoriesRef.current.map((c) => c.id);
+    if (!start || (ids.length === start.length && ids.every((catId, index) => catId === start[index]))) {
+      return;
+    }
+    try {
+      const next = await api.reorderCategories(Number(id), ids);
+      setCourse(next);
+      onChange?.();
+      setError("");
+    } catch (err) {
+      setError(err.message);
+      load().catch((loadErr) => setError(loadErr.message));
+    }
+  }
 
   async function saveCourse(patch) {
     setCourse(await api.patchCourse(id, patch));
@@ -152,23 +263,31 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
     setOpenCats(Object.fromEntries(course.categories.map((c) => [c.id, false])));
   }
 
-  const [examCatId, setExamCatId] = useState(null);
+  const [examCatId, setExamCatId] = useState(undefined);
   const [examScoreRaw, setExamScoreRaw] = useState("");
 
   useEffect(() => {
     setExamScoreRaw("");
-    setExamCatId(null);
+    setExamCatId(undefined);
   }, [id]);
 
   useEffect(() => {
     if (!course?.categories) return;
     const ids = new Set(course.categories.map((c) => c.id));
-    if (examCatId == null || !ids.has(examCatId)) {
+    if (examCatId === undefined) {
       setExamCatId(defaultExamCategoryId(course.categories));
+      return;
+    }
+    if (examCatId != null && !ids.has(examCatId)) {
+      setExamCatId(null);
     }
   }, [course, examCatId]);
 
   if (!course) return <p className="muted">{error || "Loading…"}</p>;
+
+  const trueGrade = trueGradeFromCourse(course);
+  const hasOverride = courseHasOverride(course, trueGrade);
+  const pctLetter = trueGrade.letter || course.letter;
 
   return (
     <>
@@ -180,7 +299,39 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
             </Link>{" "}
             / {course.code}
           </p>
-          <h1>{course.code}</h1>
+          <div className="gradebook-title-row">
+            <h1>{course.code}</h1>
+            <div className="grade-hero">
+              {hasOverride ? (
+                <>
+                  <GradeHeroMeta
+                    letter={trueGrade.letter}
+                    qualityPoints={trueGrade.qualityPoints}
+                    score={trueGrade.score}
+                    showScore={showScore}
+                    struck
+                  />
+                  <GradeHeroMeta
+                    letter={course.letter}
+                    qualityPoints={course.quality_points}
+                    score={course.score}
+                    showScore={showScore}
+                    overrideLabel
+                  />
+                </>
+              ) : (
+                <GradeHeroMeta
+                  letter={course.letter}
+                  qualityPoints={course.quality_points}
+                  score={course.score}
+                  showScore={showScore}
+                />
+              )}
+              <strong className={`mono grade-hero-pct ${letterClass(pctLetter)}`}>
+                {fmtPct(course.percent)}%
+              </strong>
+            </div>
+          </div>
         </div>
 
         <div className="gradebook-header-toolbar">
@@ -213,17 +364,51 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
                 onBlur={(e) => saveCourse({ bonus_points: Number(e.target.value) })}
               />
             </label>
+            <label className="muted course-settings-grading">
+              <span>Grading</span>
+              <span className="course-settings-class-sizer" aria-hidden="true">
+                Weighted Categories
+              </span>
+              <select
+                className="select"
+                value={course.grading_mode === "points" ? "points" : "weighted"}
+                onChange={(e) => {
+                  const mode = e.target.value;
+                  if (mode === "points") setShowDynamic(false);
+                  saveCourse({ grading_mode: mode });
+                }}
+              >
+                <option value="weighted">Weighted Categories</option>
+                <option value="points">Points Based</option>
+              </select>
+            </label>
             <div className="course-settings-actions">
-              <button className="btn course-settings-cutoffs" type="button" onClick={() => setShowScale((v) => !v)}>
+              <button
+                className={`btn course-settings-cutoffs ${showScale ? "primary" : ""}`}
+                type="button"
+                aria-pressed={showScale}
+                aria-expanded={showScale}
+                onClick={() => {
+                  setShowScale((v) => !v);
+                  setShowDynamic(false);
+                }}
+              >
                 Cutoffs
               </button>
+              {course.grading_mode === "points" ? null : (
               <button
-                className="btn course-settings-cutoffs"
+                className={`btn course-settings-cutoffs ${showDynamic ? "primary" : ""}`}
                 type="button"
-                onClick={() => setShowDynamic((v) => !v)}
+                aria-pressed={showDynamic}
+                aria-expanded={showDynamic}
+                onClick={() => {
+                  setShowDynamic((v) => !v);
+                  setShowScale(false);
+                }}
               >
                 Dynamic Weighting
               </button>
+              )}
               <button
                 className="btn danger course-settings-delete"
                 type="button"
@@ -236,18 +421,6 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
               >
                 Delete class
               </button>
-            </div>
-          </div>
-
-          <div className={`grade-hero ${letterClass(course.letter)}`}>
-            <span className={`letter letter-hero-circle ${letterClass(course.letter)}`}>
-              {course.letter || "—"}
-            </span>
-            <div className="grade-hero-stats">
-              <strong className={`mono grade-hero-pct ${letterClass(course.letter)}`}>
-                {fmtPct(course.percent)}%
-              </strong>
-              <span className="mono grade-hero-gpa">{fmtGpa(course.quality_points)}</span>
             </div>
           </div>
         </div>
@@ -279,7 +452,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
         />
       ) : null}
 
-      {showDynamic ? (
+      {showDynamic && course.grading_mode !== "points" ? (
         <DynamicWeightingEditor
           course={course}
           onChange={async (next) => {
@@ -290,18 +463,30 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
         />
       ) : null}
 
-      <div className="split">
-        <div className="cards">
-          {course.categories.length > 0 ? (
-            <div className="row" style={{ marginBottom: 4 }}>
-              <button className="btn small" type="button" onClick={expandAllCategories}>
-                Expand all
-              </button>
-              <button className="btn small" type="button" onClick={collapseAllCategories}>
-                Collapse all
-              </button>
-            </div>
-          ) : null}
+      <div className="row gradebook-cat-toolbar">
+        {course.categories.length > 0 ? (
+          <>
+            <button className="btn small" type="button" onClick={expandAllCategories}>
+              Expand all
+            </button>
+            <button className="btn small" type="button" onClick={collapseAllCategories}>
+              Collapse all
+            </button>
+          </>
+        ) : null}
+        <button
+          className={`btn small exam-needed-toggle ${showExamCalc ? "primary" : ""}`}
+          type="button"
+          aria-pressed={showExamCalc}
+          aria-expanded={showExamCalc}
+          onClick={() => setShowExamCalc((v) => !v)}
+        >
+          <span className={`term-accordion-chevron ${showExamCalc ? "open" : ""}`}>▸</span>
+          Exam Grade Needed Table
+        </button>
+      </div>
+      <div className={showExamCalc ? "split" : undefined}>
+        <div className={`cards ${dragCatId != null ? "is-reordering" : ""}`}>
           {course.categories.map((cat) => (
             <CategoryCard
               key={cat.id}
@@ -309,9 +494,14 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
               scale={course.scale}
               colorAssignmentGrades={colorAssignmentGrades}
               weightsLocked={!!course.dynamic_weighting_enabled}
+              hideWeights={course.grading_mode === "points"}
+              dragging={dragCatId === cat.id}
               open={!!openCats[cat.id]}
               onToggle={() => setOpenCats((prev) => ({ ...prev, [cat.id]: !prev[cat.id] }))}
               onEdit={() => setCategoryModal({ mode: "edit", cat })}
+              onDragStart={(event) => onCategoryDragStart(event, cat.id)}
+              onDragMove={onCategoryDragMove}
+              onDragEnd={onCategoryDragEnd}
               onChange={async (next) => {
                 setCourse(next);
                 onChange?.();
@@ -322,13 +512,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
             Add category
           </button>
         </div>
-        <ExamCalc
-          course={course}
-          examCatId={examCatId}
-          examScoreRaw={examScoreRaw}
-          onExamCatId={setExamCatId}
-          onExamScoreRaw={setExamScoreRaw}
-        />
+        {showExamCalc ? (
+          <ExamCalc
+            course={course}
+            examCatId={examCatId}
+            examScoreRaw={examScoreRaw}
+            onExamCatId={setExamCatId}
+            onExamScoreRaw={setExamScoreRaw}
+          />
+        ) : null}
       </div>
       {categoryModal ? (
         <CategorySettingsModal
@@ -337,6 +529,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true }) {
           categories={course.categories}
           aggOptions={aggOptions}
           weightsLocked={!!course.dynamic_weighting_enabled}
+          hideWeights={course.grading_mode === "points"}
           onClose={() => setCategoryModal(null)}
           onSubmit={saveCategorySettings}
           onDelete={deleteCategoryFromModal}
@@ -625,20 +818,32 @@ function ScaleEditor({ course, profiles, onSave, onApply, onRoundingChange }) {
 
 function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw }) {
   const rounding = course.grade_rounding ?? null;
-  const resolvedId = examCatId ?? defaultExamCategoryId(course.categories);
+  const resolvedId = examCatId ?? null;
+  const selected = resolvedId != null;
   const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
   const projected = useMemo(
-    () => projectPercentFromExam(course, resolvedId, examPct),
-    [course, resolvedId, examPct]
+    () => (selected ? projectPercentFromExam(course, resolvedId, examPct) : null),
+    [course, resolvedId, examPct, selected]
   );
   const grade = gradeFromPercent(projected, course.scale, rounding);
-  const needed = useMemo(() => examNeededRows(course, resolvedId), [course, resolvedId]);
+  const needed = useMemo(
+    () => (selected ? examNeededRows(course, resolvedId) : []),
+    [course, resolvedId, selected]
+  );
+  const blankRows = useMemo(
+    () => (course.scale || []).filter((row) => row.letter !== "F").map((row) => ({ letter: row.letter })),
+    [course.scale]
+  );
   const examCat = course.categories.find((c) => c.id === resolvedId);
-  const hasWeight = examCat ? examCat.weight || examCat.weight_per_item || examCat.effective_weight : false;
+  const hasWeight =
+    course.grading_mode === "points"
+      ? Boolean(examCat)
+      : Boolean(examCat && (examCat.weight || examCat.weight_per_item || examCat.effective_weight));
+  const tableRows = selected ? needed : blankRows;
 
   return (
     <div className="panel">
-      <h2>Final from exam</h2>
+      <h2>Exam grade needed table</h2>
       <p className="muted">
         Course grade if this exam scores a given percent, and what you need for each cutoff.
         {rounding != null
@@ -656,8 +861,9 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                 className="select"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
                 value={resolvedId ?? ""}
-                onChange={(e) => onExamCatId(Number(e.target.value))}
+                onChange={(e) => onExamCatId(e.target.value ? Number(e.target.value) : null)}
               >
+                <option value="">None</option>
                 {course.categories.map((cat) => (
                   <option key={cat.id} value={cat.id}>
                     {cat.name}
@@ -677,18 +883,22 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
               />
             </label>
           </div>
-          {examScoreRaw.trim() && projected != null ? (
+          {selected && examScoreRaw.trim() && projected != null ? (
             <div className="exam-preview">
               <span className={`letter ${letterClass(grade.letter)}`}>{grade.letter || "—"}</span>
               <strong className={`mono exam-pct ${letterClass(grade.letter)}`}>{fmtPct(projected)}%</strong>
               <span className="mono">{fmtGpa(grade.quality_points)}</span>
             </div>
-          ) : examScoreRaw.trim() && projected == null ? (
-            <p className="muted">Enter a valid score and give this category a weight.</p>
+          ) : selected && examScoreRaw.trim() && projected == null ? (
+            <p className="muted">
+              {course.grading_mode === "points"
+                ? "Enter a valid score to preview the course grade."
+                : "Enter a valid score and give this category a weight."}
+            </p>
           ) : null}
-          {!hasWeight ? (
+          {selected && !hasWeight ? (
             <p className="muted">This category has no weight, so it cannot change the course grade.</p>
-          ) : needed.length === 0 ? (
+          ) : tableRows.length === 0 ? (
             <p className="muted">Add grade cutoffs to see exam targets.</p>
           ) : (
             <table className="exam-cutoff-table">
@@ -699,10 +909,14 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                 </tr>
               </thead>
               <tbody>
-                {needed.map((row) => (
+                {tableRows.map((row) => (
                   <tr key={row.letter}>
-                    <td className={`mono exam-cutoff-exam-cell ${row.needed > 100 ? "neg" : row.needed < 0 ? "pos" : ""}`}>
-                      {fmtPct(row.needed)}
+                    <td
+                      className={`mono exam-cutoff-exam-cell ${
+                        row.needed > 100 ? "neg" : row.needed < 0 ? "pos" : ""
+                      }`}
+                    >
+                      {row.needed == null ? "" : fmtPct(row.needed)}
                     </td>
                     <td className="exam-cutoff-letter-cell">
                       <span className={`letter ${letterClass(row.letter)}`}>{row.letter}</span>
@@ -724,6 +938,7 @@ function CategorySettingsModal({
   categories,
   aggOptions,
   weightsLocked = false,
+  hideWeights = false,
   onClose,
   onSubmit,
   onDelete,
@@ -753,7 +968,7 @@ function CategorySettingsModal({
       setError("Name is required.");
       return;
     }
-    if (weightsLocked) {
+    if (weightsLocked || hideWeights) {
       delete payload.weight;
       delete payload.weight_per_item;
     }
@@ -793,7 +1008,7 @@ function CategorySettingsModal({
           {mode === "create" ? "New category" : "Category settings"}
         </h2>
         <div className="modal-fields">
-          {weightsLocked ? (
+          {hideWeights ? null : weightsLocked ? (
             <p className="muted modal-field-wide" style={{ margin: 0 }}>
               Weights are controlled by Dynamic Weighting.
             </p>
@@ -807,6 +1022,7 @@ function CategorySettingsModal({
               autoFocus
             />
           </label>
+          {hideWeights ? null : (
           <label className="muted modal-field-wide category-weight-field">
             Weight
             <div className="category-weight-row">
@@ -829,6 +1045,7 @@ function CategorySettingsModal({
               />
             </div>
           </label>
+          )}
           <label className="muted">
             Aggregation
             <select
@@ -936,15 +1153,32 @@ function droppedAssignmentIds(cat) {
   return new Set(sorted.slice(0, toDrop).map((a) => a.id));
 }
 
+function moveCategoryBefore(categories, fromId, beforeId) {
+  const from = categories.findIndex((cat) => cat.id === fromId);
+  if (from < 0) return categories;
+  const next = categories.slice();
+  const [item] = next.splice(from, 1);
+  let to = beforeId == null ? next.length : next.findIndex((cat) => cat.id === beforeId);
+  if (to < 0) to = next.length;
+  next.splice(to, 0, item);
+  if (next.every((cat, index) => cat.id === categories[index].id)) return categories;
+  return next;
+}
+
 function CategoryCard({
   cat,
   scale,
   colorAssignmentGrades,
   weightsLocked = false,
+  hideWeights = false,
+  dragging = false,
   onChange,
   open,
   onToggle,
   onEdit,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
 }) {
   const [scoreDrafts, setScoreDrafts] = useState({});
   const saveTimers = useRef({});
@@ -992,7 +1226,10 @@ function CategoryCard({
   }
 
   return (
-    <section className={`cat-card ${open ? "is-open" : "is-collapsed"}`}>
+    <section
+      className={`cat-card ${open ? "is-open" : "is-collapsed"}${dragging ? " is-dragging" : ""}`}
+      data-cat-id={cat.id}
+    >
       <div
         className="cat-head"
         onClick={onToggle}
@@ -1019,12 +1256,30 @@ function CategoryCard({
             <span className={`term-accordion-chevron ${open ? "open" : ""}`}>▸</span>
           </button>
           <strong className="cat-name">{cat.name}</strong>
+          <button
+            type="button"
+            className="cat-drag-handle"
+            aria-label="Reorder category"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onLostPointerCapture={onDragEnd}
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M2.5 4h11v1.5h-11zm0 3.25h11v1.5h-11zm0 3.25h11V12h-11z"
+              />
+            </svg>
+          </button>
         </div>
         <div className="row cat-head-meta">
           <span className="mono">
             Section: {cat.percent == null ? "—" : `${fmtPct(cat.percent)}%`}
           </span>
-          {weightsLocked ? (
+          {hideWeights ? null : weightsLocked ? (
             <label className="muted cat-weight-box" onClick={(e) => e.stopPropagation()}>
               Weight
               <input

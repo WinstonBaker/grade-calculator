@@ -30,7 +30,7 @@ function isGradeSort(sort) {
 export default function CourseList({ semesters, onChange }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
-  const { warning } = useToasts();
+  const { warning, push } = useToasts();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const semesterId = params.get("semester");
@@ -137,11 +137,23 @@ export default function CourseList({ semesters, onChange }) {
     }
   }
 
-  async function removeCourse(id) {
-    if (!window.confirm("Delete this class?")) return;
-    await api.deleteCourse(id);
-    await load();
-    onChange?.();
+  function removeCourse(course) {
+    push({
+      id: `delete-course-${course.id}`,
+      type: "persistent",
+      title: "Delete class?",
+      message: `Delete ${course.code}? This cannot be undone.`,
+      confirmLabel: "Delete",
+      onConfirm: async () => {
+        try {
+          await api.deleteCourse(course.id);
+          await load();
+          onChange?.();
+        } catch (err) {
+          warning(err.message);
+        }
+      },
+    });
   }
 
   async function setOverride(courseId, raw) {
@@ -206,11 +218,24 @@ export default function CourseList({ semesters, onChange }) {
           </label>
           <button
             className="btn danger"
-            onClick={async () => {
-              if (!window.confirm(`Delete ${current.name} and its classes?`)) return;
-              await api.deleteSemester(current.id);
-              onChange?.();
-              navigate("/gpa");
+            onClick={() => {
+              const semester = current;
+              push({
+                id: `delete-semester-${semester.id}`,
+                type: "persistent",
+                title: "Delete semester?",
+                message: `Delete ${semester.name} and its classes? This cannot be undone.`,
+                confirmLabel: "Delete",
+                onConfirm: async () => {
+                  try {
+                    await api.deleteSemester(semester.id);
+                    onChange?.();
+                    navigate("/gpa");
+                  } catch (err) {
+                    warning(err.message);
+                  }
+                },
+              });
             }}
           >
             Delete semester
@@ -307,7 +332,7 @@ export default function CourseList({ semesters, onChange }) {
                       course={c}
                       semesters={semesters}
                       onMove={(semesterId) => moveCourse(c.id, semesterId)}
-                      onDelete={() => removeCourse(c.id)}
+                      onDelete={() => removeCourse(c)}
                     />
                   </td>
                 </tr>

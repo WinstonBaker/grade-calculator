@@ -44,6 +44,8 @@ class Course(Base):
     # JSON list of category ids averaged for the "tests" side of exam impact.
     test_category_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     exam_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # "weighted" (category weights) or "points" (earned/possible across the course).
+    grading_mode: Mapped[str] = mapped_column(String(16), default="weighted")
     dynamic_weighting_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # JSON: {"options":[{"id":"...","weights":{"<category_id>":0.2}}]}
     dynamic_weighting_json: Mapped[str] = mapped_column(Text, default="{}")

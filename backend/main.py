@@ -29,6 +29,7 @@ from backend.schemas import (
     AssignmentCreate,
     AssignmentUpdate,
     CategoryCreate,
+    CategoryOrderUpdate,
     CategoryUpdate,
     CourseCreate,
     CourseUpdate,
@@ -41,6 +42,7 @@ from backend.schemas import (
     SemesterUpdate,
     SettingsUpdate,
     SnapshotDelete,
+    SnapshotUpdate,
     UpdateDismiss,
 )
 from backend.service import (
@@ -57,9 +59,11 @@ from backend.service import (
     list_grade_snapshots,
     list_scale_profiles,
     lock_older_unlocked_semesters,
+    NoGradesToRecordError,
     parse_default_scale,
     parse_dynamic_weighting,
     ProgressionLockedError,
+    patch_grade_snapshot,
     record_all_grade_snapshots,
     record_grade_snapshot,
     refresh_course,
@@ -341,8 +345,17 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         set_course_test_category_ids(course, [owned] if owned is not None else [])
     if "exam_category_id" in body.model_fields_set:
         course.exam_category_id = _owned_category_id(course, body.exam_category_id)
+    if "grading_mode" in body.model_fields_set:
+        mode = (body.grading_mode or "weighted").strip().lower()
+        if mode not in {"weighted", "points"}:
+            raise HTTPException(400, "grading_mode must be weighted or points")
+        course.grading_mode = mode
+        if mode == "points":
+            course.dynamic_weighting_enabled = False
     if "dynamic_weighting_enabled" in body.model_fields_set:
         course.dynamic_weighting_enabled = bool(body.dynamic_weighting_enabled)
+        if (course.grading_mode or "weighted") == "points":
+            course.dynamic_weighting_enabled = False
         if course.dynamic_weighting_enabled:
             payload = parse_dynamic_weighting(course)
             if not payload["options"]:
@@ -548,6 +561,21 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
     return _course_payload(db, cat.course_id)
 
 
+@app.put("/api/courses/{course_id}/categories/order")
+def reorder_categories(course_id: int, body: CategoryOrderUpdate, db: Session = Depends(get_db)):
+    course = _course_or_404(db, course_id)
+    owned = {cat.id: cat for cat in course.categories}
+    ids = body.category_ids
+    if len(ids) != len(set(ids)):
+        raise HTTPException(400, "category_ids must be unique")
+    if set(ids) != set(owned):
+        raise HTTPException(400, "category_ids must include every category in this class")
+    for index, cid in enumerate(ids):
+        owned[cid].sort_order = index
+    db.commit()
+    return _course_payload(db, course_id)
+
+
 @app.delete("/api/categories/{category_id}")
 def delete_category(category_id: int, db: Session = Depends(get_db)):
     cat = db.get(Category, category_id)
@@ -639,6 +667,36 @@ def create_semester_snapshot(semester_id: int, db: Session = Depends(get_db)):
         return record_grade_snapshot(db, sem, _target(db), _gpa_cap(db))
     except ProgressionLockedError as exc:
         raise HTTPException(409, str(exc)) from exc
+    except NoGradesToRecordError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.patch("/api/semesters/{semester_id}/snapshots/{snapshot_id}")
+def update_semester_snapshot(
+    semester_id: int,
+    snapshot_id: int,
+    body: SnapshotUpdate,
+    db: Session = Depends(get_db),
+):
+    sem = db.get(Semester, semester_id)
+    if sem is None:
+        raise HTTPException(404, "Semester not found")
+    try:
+        updated = patch_grade_snapshot(
+            db,
+            semester_id,
+            snapshot_id,
+            course_id=body.course_id,
+            percent=body.percent,
+            clear_course=body.clear_course,
+            term_gpa=body.term_gpa,
+            clear_term_gpa=body.clear_term_gpa,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if updated is None:
+        raise HTTPException(404, "Snapshot not found")
+    return updated
 
 
 @app.delete("/api/semesters/{semester_id}/snapshots")
@@ -646,9 +704,15 @@ def delete_semester_snapshots(semester_id: int, body: SnapshotDelete, db: Sessio
     sem = db.get(Semester, semester_id)
     if sem is None:
         raise HTTPException(404, "Semester not found")
-    if not body.ids:
-        raise HTTPException(400, "Provide snapshot ids to delete")
-    deleted = delete_grade_snapshots(db, semester_id, body.ids)
+    if not body.ids and not body.course_points and not body.gpa_snapshot_ids:
+        raise HTTPException(400, "Provide snapshot ids or points to delete")
+    deleted = delete_grade_snapshots(
+        db,
+        semester_id,
+        snapshot_ids=body.ids,
+        course_points=[(point.snapshot_id, point.course_id) for point in body.course_points],
+        gpa_snapshot_ids=body.gpa_snapshot_ids,
+    )
     return {"deleted": deleted}
 
 

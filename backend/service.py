@@ -384,6 +384,7 @@ def course_to_input(course: Course) -> CourseInput:
         bonus_points=course.bonus_points or 0.0,
         gp_override=course.gp_override,
         grade_rounding=course.grade_rounding,
+        grading_mode=course.grading_mode or "weighted",
         categories=[
             CategoryInput(
                 id=cat.id,
@@ -515,6 +516,8 @@ def best_dynamic_option(course: Course) -> tuple[dict | None, list[dict]]:
 
 def apply_dynamic_weighting(course: Course) -> bool:
     """Write the best option's weights onto categories. Returns True if anything changed."""
+    if (course.grading_mode or "weighted") == "points":
+        return False
     if not course.dynamic_weighting_enabled:
         return False
     sync_dynamic_weighting_categories(course)
@@ -643,6 +646,9 @@ def serialize_course(course: Course, target_gp: float) -> dict:
         "letter": result.letter,
         "quality_points": result.quality_points,
         "score": result.score,
+        "natural_letter": result.natural_letter,
+        "natural_quality_points": result.natural_quality_points,
+        "natural_score": result.natural_score,
         "categories": categories,
         "scale": [
             {
@@ -657,6 +663,7 @@ def serialize_course(course: Course, target_gp: float) -> dict:
         "test_category_id": course.test_category_id,
         "test_category_ids": course_test_category_ids(course),
         "exam_category_id": course.exam_category_id,
+        "grading_mode": course.grading_mode or "weighted",
         "dynamic_weighting_enabled": bool(course.dynamic_weighting_enabled),
         "dynamic_weighting": dynamic_payload,
         "dynamic_weighting_applied_option_id": applied_option_id,
@@ -808,11 +815,17 @@ def build_gpa(db: Session) -> dict:
 
     fumble_rows = []
     fumble_total = 0
-    by_id = {c["id"]: c for t in terms for c in t["courses"]}
+    by_id = {}
+    course_term = {}
+    for term in terms:
+        for course in term["courses"]:
+            by_id[course["id"]] = course
+            course_term[course["id"]] = term
     for fumble in db.query(Fumble).all():
         course = by_id.get(fumble.course_id)
         if not course or course["quality_points"] is None:
             continue
+        term = course_term.get(fumble.course_id) or {}
         delta = fumble_delta(
             course["quality_points"],
             fumble.should_have_been_gp,
@@ -830,6 +843,8 @@ def build_gpa(db: Session) -> dict:
                 "should_have_been_gp": fumble.should_have_been_gp,
                 "credits": course["credits"],
                 "delta": delta,
+                "semester_id": term["id"],
+                "semester_name": term["name"],
             }
         )
 
@@ -976,11 +991,12 @@ class ProgressionLockedError(ValueError):
     """Raised when recording a snapshot on a locked semester."""
 
 
+class NoGradesToRecordError(ValueError):
+    """Raised when every class in the semester has no percent."""
+
+
 def serialize_grade_snapshot(snapshot: GradeSnapshot) -> dict:
-    try:
-        courses = json.loads(snapshot.courses_json or "[]")
-    except (json.JSONDecodeError, TypeError):
-        courses = []
+    courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
     return {
         "id": snapshot.id,
         "semester_id": snapshot.semester_id,
@@ -1013,6 +1029,36 @@ def _snapshot_day(value) -> date | None:
         return None
 
 
+def _parse_snapshot_courses(snapshot: GradeSnapshot) -> list[dict]:
+    try:
+        courses = json.loads(snapshot.courses_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return courses if isinstance(courses, list) else []
+
+
+def _course_has_percent(course: dict) -> bool:
+    percent = course.get("percent")
+    if percent is None:
+        return False
+    try:
+        return percent == percent and abs(float(percent)) != float("inf")
+    except (TypeError, ValueError):
+        return False
+
+
+def _snapshot_is_empty(snapshot: GradeSnapshot) -> bool:
+    courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
+    return not courses and snapshot.term_gpa is None
+
+
+def _prune_empty_snapshot(db: Session, snapshot: GradeSnapshot) -> bool:
+    if not _snapshot_is_empty(snapshot):
+        return False
+    db.delete(snapshot)
+    return True
+
+
 def record_grade_snapshot(db: Session, semester: Semester, target_gp: float, gpa_cap: float | None) -> dict:
     if semester.progression_locked:
         raise ProgressionLockedError("Progression is locked for this semester")
@@ -1024,7 +1070,10 @@ def record_grade_snapshot(db: Session, semester: Semester, target_gp: float, gpa
             "percent": course["percent"],
         }
         for course in payload["courses"]
+        if _course_has_percent(course)
     ]
+    if not courses:
+        raise NoGradesToRecordError("No class grades to record")
     now = _utcnow()
     today = now.date()
     snapshot = next(
@@ -1056,19 +1105,101 @@ def record_grade_snapshot(db: Session, semester: Semester, target_gp: float, gpa
     return serialize_grade_snapshot(snapshot)
 
 
-def delete_grade_snapshots(db: Session, semester_id: int, snapshot_ids: list[int]) -> int:
-    ids = [int(item) for item in snapshot_ids if item is not None]
-    if not ids:
-        return 0
-    rows = (
-        db.query(GradeSnapshot)
-        .filter(GradeSnapshot.semester_id == semester_id, GradeSnapshot.id.in_(ids))
-        .all()
-    )
-    for row in rows:
-        db.delete(row)
+def patch_grade_snapshot(
+    db: Session,
+    semester_id: int,
+    snapshot_id: int,
+    *,
+    course_id: int | None = None,
+    percent: float | None = None,
+    clear_course: bool = False,
+    term_gpa: float | None = None,
+    clear_term_gpa: bool = False,
+) -> dict | None:
+    snapshot = db.get(GradeSnapshot, snapshot_id)
+    if snapshot is None or snapshot.semester_id != semester_id:
+        return None
+    if clear_term_gpa:
+        snapshot.term_gpa = None
+    elif term_gpa is not None:
+        snapshot.term_gpa = float(term_gpa)
+    if course_id is not None:
+        courses = _parse_snapshot_courses(snapshot)
+        if clear_course:
+            courses = [row for row in courses if int(row.get("course_id") or 0) != int(course_id)]
+        else:
+            if percent is None:
+                raise ValueError("percent is required to edit a class point")
+            updated = False
+            for row in courses:
+                if int(row.get("course_id") or 0) != int(course_id):
+                    continue
+                row["percent"] = float(percent)
+                updated = True
+                break
+            if not updated:
+                raise ValueError("Class point not found on this checkpoint")
+        snapshot.courses_json = json.dumps(courses)
+    if _prune_empty_snapshot(db, snapshot):
+        db.commit()
+        return {"id": snapshot_id, "deleted": True}
     db.commit()
-    return len(rows)
+    db.refresh(snapshot)
+    return serialize_grade_snapshot(snapshot)
+
+
+def delete_grade_snapshots(
+    db: Session,
+    semester_id: int,
+    snapshot_ids: list[int] | None = None,
+    course_points: list[tuple[int, int]] | None = None,
+    gpa_snapshot_ids: list[int] | None = None,
+) -> int:
+    removed = 0
+    ids = [int(item) for item in (snapshot_ids or []) if item is not None]
+    if ids:
+        rows = (
+            db.query(GradeSnapshot)
+            .filter(GradeSnapshot.semester_id == semester_id, GradeSnapshot.id.in_(ids))
+            .all()
+        )
+        for row in rows:
+            db.delete(row)
+            removed += 1
+
+    by_snapshot: dict[int, set[int]] = {}
+    for snap_id, course_id in course_points or []:
+        by_snapshot.setdefault(int(snap_id), set()).add(int(course_id))
+    gpa_ids = {int(item) for item in (gpa_snapshot_ids or []) if item is not None}
+
+    touched_ids = set(by_snapshot) | gpa_ids
+    if touched_ids:
+        rows = (
+            db.query(GradeSnapshot)
+            .filter(GradeSnapshot.semester_id == semester_id, GradeSnapshot.id.in_(touched_ids))
+            .all()
+        )
+        for row in rows:
+            changed = False
+            drop_ids = by_snapshot.get(row.id)
+            if drop_ids:
+                courses = [
+                    item
+                    for item in _parse_snapshot_courses(row)
+                    if int(item.get("course_id") or 0) not in drop_ids
+                ]
+                row.courses_json = json.dumps(courses)
+                removed += len(drop_ids)
+                changed = True
+            if row.id in gpa_ids and row.term_gpa is not None:
+                row.term_gpa = None
+                removed += 1
+                changed = True
+            if changed and _prune_empty_snapshot(db, row):
+                continue
+
+    db.commit()
+    return removed
 
 
 def record_all_grade_snapshots(db: Session) -> list[dict]:
@@ -1079,7 +1210,10 @@ def record_all_grade_snapshots(db: Session) -> list[dict]:
     for semester in sort_semesters(db.query(Semester).all()):
         if semester.progression_locked:
             continue
-        results.append(record_grade_snapshot(db, semester, target_gp, gpa_cap))
+        try:
+            results.append(record_grade_snapshot(db, semester, target_gp, gpa_cap))
+        except NoGradesToRecordError:
+            continue
     return results
 
 

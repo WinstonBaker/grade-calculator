@@ -505,6 +505,78 @@ def test_grade_snapshots_and_prompt(tmp_path):
         teardown()
 
 
+def test_snapshot_skips_ungraded_and_edits_points(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        graded = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CSC 101", "credits": 3},
+        ).json()
+        empty = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CSC 202", "credits": 3},
+        ).json()
+        cat = client.post(
+            "/api/categories",
+            json={"course_id": graded["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        ).json()
+        client.post("/api/assignments", json={"category_id": cat["id"], "name": "Midterm", "score": "90"})
+        client.post(
+            "/api/categories",
+            json={"course_id": empty["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        )
+
+        recorded = client.post(f"/api/semesters/{sem_id}/snapshots")
+        snap = recorded.json()
+        assert recorded.status_code == 200
+        codes = [row["code"] for row in snap["courses"]]
+        assert codes == ["CSC 101"]
+        assert snap["courses"][0]["percent"] == 90
+
+        other = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "CSC 303", "credits": 3},
+        ).json()
+        other_cat = client.post(
+            "/api/categories",
+            json={"course_id": other["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        ).json()
+        client.post("/api/assignments", json={"category_id": other_cat["id"], "name": "Midterm", "score": "80"})
+        snap = client.post(f"/api/semesters/{sem_id}/snapshots").json()
+        by_code = {row["code"]: row for row in snap["courses"]}
+        assert set(by_code) == {"CSC 101", "CSC 303"}
+
+        edited = client.patch(
+            f"/api/semesters/{sem_id}/snapshots/{snap['id']}",
+            json={"course_id": by_code["CSC 101"]["course_id"], "percent": 94.5},
+        ).json()
+        edited_codes = {row["code"]: row["percent"] for row in edited["courses"]}
+        assert edited_codes["CSC 101"] == 94.5
+        assert edited_codes["CSC 303"] == 80
+
+        removed = client.request(
+            "DELETE",
+            f"/api/semesters/{sem_id}/snapshots",
+            json={"course_points": [{"snapshot_id": snap["id"], "course_id": by_code["CSC 303"]["course_id"]}]},
+        ).json()
+        assert removed["deleted"] >= 1
+        leftover = client.get(f"/api/semesters/{sem_id}/snapshots").json()
+        assert len(leftover) == 1
+        assert [row["code"] for row in leftover[0]["courses"]] == ["CSC 101"]
+
+        empty_sem = client.post("/api/semesters", json={"year": 2020, "season": "fall"}).json()
+        client.post(
+            "/api/courses",
+            json={"semester_id": empty_sem["id"], "code": "CSC 404", "credits": 3},
+        )
+        none = client.post(f"/api/semesters/{empty_sem['id']}/snapshots")
+        assert none.status_code == 400
+        assert "No class grades" in none.json()["detail"]
+    finally:
+        teardown()
+
+
 def test_progression_lock_and_default_semester(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -547,6 +619,77 @@ def test_progression_lock_and_default_semester(tmp_path):
         assert {s["id"] for s in listed["semesters"]} == set(after)
         assert listed["due"] is True
         assert listed["default_semester_id"] == first_id
+    finally:
+        teardown()
+
+
+def test_grading_mode_points_based(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "ENG 331", "credits": 3},
+        ).json()
+        cid = course["id"]
+        assert course["grading_mode"] == "weighted"
+        hw = client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "HW", "weight": 0.5, "aggregation": "average"},
+        ).json()
+        final = client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "Final", "weight": 0.5, "aggregation": "average"},
+        ).json()
+        client.post("/api/assignments", json={"category_id": hw["id"], "score": "10/10"})
+        client.post("/api/assignments", json={"category_id": final["id"], "score": "0/90"})
+
+        weighted = client.get(f"/api/courses/{cid}").json()
+        assert abs(weighted["percent"] - 50.0) < 1e-6
+
+        points = client.patch(f"/api/courses/{cid}", json={"grading_mode": "points"}).json()
+        assert points["grading_mode"] == "points"
+        assert abs(points["percent"] - 10.0) < 1e-6
+        assert points["dynamic_weighting_enabled"] is False
+
+        denied = client.patch(
+            f"/api/courses/{cid}",
+            json={"dynamic_weighting_enabled": True},
+        ).json()
+        assert denied["dynamic_weighting_enabled"] is False
+
+        bad = client.patch(f"/api/courses/{cid}", json={"grading_mode": "curve"})
+        assert bad.status_code == 400
+    finally:
+        teardown()
+
+
+def test_reorder_categories(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "ENG 331", "credits": 3},
+        ).json()
+        cid = course["id"]
+        client.post("/api/categories", json={"course_id": cid, "name": "Project 1", "weight": 0.3})
+        client.post("/api/categories", json={"course_id": cid, "name": "Project 2", "weight": 0.3})
+        client.post("/api/categories", json={"course_id": cid, "name": "Project 3", "weight": 0.4})
+        names = [c["name"] for c in client.get(f"/api/courses/{cid}").json()["categories"]]
+        assert names == ["Project 1", "Project 2", "Project 3"]
+        ids = [c["id"] for c in client.get(f"/api/courses/{cid}").json()["categories"]]
+        reordered = client.put(
+            f"/api/courses/{cid}/categories/order",
+            json={"category_ids": [ids[2], ids[0], ids[1]]},
+        ).json()
+        assert [c["name"] for c in reordered["categories"]] == ["Project 3", "Project 1", "Project 2"]
+        assert [c["sort_order"] for c in reordered["categories"]] == [0, 1, 2]
+        missing = client.put(
+            f"/api/courses/{cid}/categories/order",
+            json={"category_ids": ids[:2]},
+        )
+        assert missing.status_code == 400
     finally:
         teardown()
 

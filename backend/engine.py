@@ -385,6 +385,7 @@ class CourseInput:
     grade_rounding: int | None = None
     categories: list[CategoryInput] = field(default_factory=list)
     scale: list[ScaleRow] = field(default_factory=list)
+    grading_mode: str = "weighted"
 
 
 @dataclass
@@ -417,6 +418,9 @@ class CourseResult:
     score: int | None
     categories: list[CategoryResult]
     what_if: list[WhatIfRow]
+    natural_letter: str | None = None
+    natural_quality_points: float | None = None
+    natural_score: int | None = None
 
 
 def parse_score(raw: str | None) -> tuple[float | None, float | None]:
@@ -560,6 +564,38 @@ def effective_weight(category: CategoryInput) -> float:
     return category.weight
 
 
+def _assignment_possible(item: AssignmentInput) -> float:
+    if item.possible not in (None, 0):
+        return float(item.possible)
+    return 100.0
+
+
+def course_points_percent(course: CourseInput) -> float | None:
+    """Overall percent from total earned / possible, ignoring category weights."""
+    earned = 0.0
+    possible = 0.0
+    bonus = 0.0
+    any_row = False
+    for cat in course.categories:
+        for item in cat.assignments:
+            if item.is_bonus:
+                if cat.include_bonus and item.earned is not None:
+                    bonus += item.earned
+                continue
+            if item.earned is None:
+                continue
+            any_row = True
+            earned += item.earned
+            possible += _assignment_possible(item)
+    if not any_row or possible == 0:
+        return None
+    return 100.0 * (earned + bonus) / possible
+
+
+def is_points_based(course: CourseInput) -> bool:
+    return (course.grading_mode or "weighted") == "points"
+
+
 def round_half_up(percent: float | None, decimals: int | None) -> float | None:
     """Percent as the professor would round it (92.5 → 93 at 0 decimals)."""
     if percent is None or decimals is None:
@@ -615,13 +651,17 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
         )
 
     used = [(c.effective_weight, c.percent) for c in cat_results if c.percent is not None and c.effective_weight]
-    if used:
+    if is_points_based(course):
+        raw = course_points_percent(course)
+        percent = (raw + (course.bonus_points or 0.0)) if raw is not None else None
+    elif used:
         raw = sum(w * p for w, p in used) / sum(w for w, _ in used)
         percent = raw + (course.bonus_points or 0.0)
     else:
         percent = None
 
     letter, gp = letter_from_percent(round_half_up(percent, course.grade_rounding), scale)
+    natural_letter, natural_gp = letter, gp
     valid_qp = quality_points_set(scale) or VALID_QUALITY_POINTS
     if course.gp_override is not None and course.gp_override in valid_qp:
         gp = course.gp_override
@@ -630,12 +670,16 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
         # Invalid override is ignored, matching the spreadsheet MATCH check.
         pass
 
+    natural_score = term_score(natural_gp, course.credits, target_gp) if natural_gp is not None else None
     score = term_score(gp, course.credits, target_gp) if gp is not None else None
     return CourseResult(
         percent=percent,
         letter=letter,
         quality_points=gp,
         score=score,
+        natural_letter=natural_letter,
+        natural_quality_points=natural_gp,
+        natural_score=natural_score,
         categories=cat_results,
         what_if=[],
     )
@@ -737,7 +781,8 @@ def what_if_needed(
     _current_percent: float | None,
 ) -> list[WhatIfRow]:
     """Score needed on incomplete (or final) categories to hit each letter cutoff."""
-    remaining = [c for c in cat_results if c.percent is None and c.effective_weight]
+    points_based = is_points_based(course)
+    remaining = [c for c in cat_results if c.percent is None and (points_based or c.effective_weight)]
     if not remaining:
         remaining = [c for c in cat_results if "final" in c.name.lower()]
     if not remaining and cat_results:
@@ -746,6 +791,24 @@ def what_if_needed(
     bonus = course.bonus_points or 0.0
     rows: list[WhatIfRow] = []
     for target in remaining:
+        if points_based:
+            if target.id is None:
+                continue
+            for letter, cutoff, qp in [(r.letter, r.min_percent, r.quality_points) for r in scale]:
+                if letter == "F":
+                    continue
+                needed = exam_score_needed(course, target.id, cutoff_with_rounding(cutoff, course.grade_rounding))
+                rows.append(
+                    WhatIfRow(
+                        category_id=target.id,
+                        category_name=target.name,
+                        letter=letter,
+                        cutoff_percent=cutoff,
+                        quality_points=qp,
+                        needed=needed,
+                    )
+                )
+            continue
         others = [c for c in cat_results if c.id != target.id and c.percent is not None and c.effective_weight]
         other_weighted = sum((c.effective_weight * c.percent) for c in others)
         other_weight = sum(c.effective_weight for c in others)

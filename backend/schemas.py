@@ -36,6 +36,7 @@ class CourseUpdate(BaseModel):
     test_category_id: int | None = None
     test_category_ids: list[int] | None = None
     exam_category_id: int | None = None
+    grading_mode: str | None = None
     dynamic_weighting_enabled: bool | None = None
     dynamic_weighting: dict | None = None
 
@@ -59,6 +60,10 @@ class CategoryUpdate(BaseModel):
     drop_count: int | None = Field(default=None, ge=0)
     include_bonus: bool | None = None
     replace_with_category_id: int | None = None
+
+
+class CategoryOrderUpdate(BaseModel):
+    category_ids: list[int]
 
 
 class AssignmentCreate(BaseModel):
@@ -118,8 +123,23 @@ class SettingsUpdate(BaseModel):
     default_recording_semester_id: int | None = None
 
 
+class SnapshotCoursePoint(BaseModel):
+    snapshot_id: int
+    course_id: int
+
+
 class SnapshotDelete(BaseModel):
-    ids: list[int]
+    ids: list[int] = Field(default_factory=list)
+    course_points: list[SnapshotCoursePoint] = Field(default_factory=list)
+    gpa_snapshot_ids: list[int] = Field(default_factory=list)
+
+
+class SnapshotUpdate(BaseModel):
+    course_id: int | None = None
+    percent: float | None = None
+    clear_course: bool = False
+    term_gpa: float | None = None
+    clear_term_gpa: bool = False
 
 
 class UpdateDismiss(BaseModel):
