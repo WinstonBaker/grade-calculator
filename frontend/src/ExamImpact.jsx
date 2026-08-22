@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { fmtDelta, fmtPct, letterClass, scoreClass } from "./api";
 
@@ -27,6 +28,81 @@ export function ExamImpactStats({ summary }) {
   );
 }
 
+function testCategoryIds(course) {
+  if (Array.isArray(course?.test_category_ids) && course.test_category_ids.length) {
+    return course.test_category_ids.map(Number);
+  }
+  if (course?.test_category_id != null) return [Number(course.test_category_id)];
+  return [];
+}
+
+function TestCategoryMultiSelect({ course, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const categories = course.categories || [];
+  const selected = new Set(value.map(Number));
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onPointerDown(event) {
+      if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+    }
+    function onKeyDown(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const label = categories
+    .filter((cat) => selected.has(cat.id))
+    .map((cat) => cat.name)
+    .join(", ");
+
+  function toggle(id) {
+    const next = selected.has(id)
+      ? value.filter((item) => Number(item) !== Number(id))
+      : [...value, Number(id)];
+    onChange(next);
+  }
+
+  return (
+    <div className="exam-multi-select" ref={rootRef}>
+      <button
+        type="button"
+        className="select exam-multi-trigger"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <span className={label ? "" : "muted"}>{label || "Select"}</span>
+      </button>
+      {open ? (
+        <div className="exam-multi-menu" role="listbox" aria-multiselectable="true">
+          {categories.length === 0 ? (
+            <div className="muted exam-multi-empty">No categories</div>
+          ) : (
+            categories.map((cat) => (
+              <label key={cat.id} className="exam-multi-option">
+                <input
+                  type="checkbox"
+                  checked={selected.has(cat.id)}
+                  onChange={() => toggle(cat.id)}
+                />
+                <span>{cat.name}</span>
+              </label>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ExamImpactTable({ courses, onPatch, empty = "Pick test and exam categories to compare." }) {
   if (!courses?.length) return <div className="empty">{empty}</div>;
   const editable = typeof onPatch === "function";
@@ -51,6 +127,12 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
           {courses.map((course) => {
             const impact = course.exam_impact;
             const change = impact?.letter_change;
+            const selectedTests = testCategoryIds(course);
+            const hasBothPercents =
+              impact?.test_percent != null &&
+              !Number.isNaN(Number(impact.test_percent)) &&
+              impact?.exam_percent != null &&
+              !Number.isNaN(Number(impact.exam_percent));
             return (
               <tr key={course.id}>
                 <td>
@@ -58,23 +140,17 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
                 </td>
                 <td>
                   {editable ? (
-                    <select
-                      className="select"
-                      value={course.test_category_id || ""}
-                      onChange={(e) =>
-                        onPatch(course.id, { test_category_id: e.target.value ? Number(e.target.value) : null })
-                      }
-                    >
-                      <option value="">Select</option>
-                      {(course.categories || []).map((cat) => (
-                        <option key={cat.id} value={cat.id}>
-                          {cat.name}
-                        </option>
-                      ))}
-                    </select>
+                    <TestCategoryMultiSelect
+                      course={course}
+                      value={selectedTests}
+                      onChange={(ids) => onPatch(course.id, { test_category_ids: ids })}
+                    />
                   ) : (
                     impact?.test_name
-                    || (course.categories || []).find((c) => c.id === course.test_category_id)?.name
+                    || selectedTests
+                      .map((id) => (course.categories || []).find((c) => c.id === id)?.name)
+                      .filter(Boolean)
+                      .join(", ")
                     || "—"
                   )}
                 </td>
@@ -104,17 +180,25 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
                 <td className="mono">{fmtPct(impact?.exam_percent)}</td>
                 <td className={`mono ${scoreClass(impact?.delta)}`}>{fmtDelta(impact?.delta)}</td>
                 <td>
-                  <span className={`letter ${letterClass(impact?.letter_before)}`}>
-                    {impact?.letter_before || "—"}
-                  </span>
+                  {hasBothPercents ? (
+                    <span className={`letter ${letterClass(impact?.letter_before)}`}>
+                      {impact?.letter_before || "—"}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td>
-                  <span className={`letter ${letterClass(impact?.letter_after)}`}>
-                    {impact?.letter_after || "—"}
-                  </span>
+                  {hasBothPercents ? (
+                    <span className={`letter ${letterClass(impact?.letter_after)}`}>
+                      {impact?.letter_after || "—"}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </td>
-                <td className={change === "up" ? "pos" : change === "down" ? "neg" : "muted"}>
-                  {CHANGE_LABEL[change] || "—"}
+                <td className={hasBothPercents ? (change === "up" ? "pos" : change === "down" ? "neg" : "muted") : "muted"}>
+                  {hasBothPercents ? CHANGE_LABEL[change] || "—" : "—"}
                 </td>
               </tr>
             );

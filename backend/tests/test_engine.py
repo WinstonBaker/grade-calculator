@@ -415,7 +415,7 @@ def test_exam_impact_delta_and_letter_change():
         ],
         scale=scale_rows_from_tuples(DEFAULT_SCALE),
     )
-    impact = exam_impact(course, 2, 3)
+    impact = exam_impact(course, [2], 3)
     assert impact is not None
     assert impact["test_percent"] == 80
     assert impact["exam_percent"] == 95
@@ -423,4 +423,27 @@ def test_exam_impact_delta_and_letter_change():
     assert impact["letter_change"] == "up"
     assert impact["letter_after"] is not None
     assert impact["letter_before"] is not None
+
+    multi = exam_impact(course, [1, 2], 3)
+    assert multi is not None
+    assert multi["test_percent"] == 85  # avg of HW 90 and Tests 80
+    assert multi["test_category_ids"] == [1, 2]
+
+    incomplete = CourseInput(
+        code="MAE 310",
+        credits=3,
+        categories=[
+            CategoryInput(id=1, name="HW", weight=0.2, assignments=[P(90)]),
+            CategoryInput(id=2, name="Tests", weight=0.5, assignments=[]),
+            CategoryInput(id=3, name="Final", weight=0.3, assignments=[P(95)]),
+        ],
+        scale=scale_rows_from_tuples(DEFAULT_SCALE),
+    )
+    missing_tests = exam_impact(incomplete, [2], 3)
+    assert missing_tests is not None
+    assert missing_tests["test_percent"] is None
+    assert missing_tests["exam_percent"] == 95
+    assert missing_tests["letter_change"] is None
+    assert missing_tests["letter_before"] is None
+    assert missing_tests["letter_after"] is None
 

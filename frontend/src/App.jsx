@@ -329,10 +329,12 @@ export default function App() {
                 >
                   <span>{sem.name}</span>
                   {sem.term_gpa != null ? (
-                    <span className="meta">
+                    <span className={`meta ${sem.included ? "" : "meta-excluded"}`}>
                       <span className="meta-gpa">{fmtGpa(sem.term_gpa)}</span>
                       {appearance.showScore !== false && sem.term_score != null ? (
-                        <span className={`meta-score ${scoreClass(sem.term_score)}`}>
+                        <span
+                          className={`meta-score ${sem.included ? scoreClass(sem.term_score) : ""}`}
+                        >
                           {fmtScore(sem.term_score)}
                         </span>
                       ) : null}

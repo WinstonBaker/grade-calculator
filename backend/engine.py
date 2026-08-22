@@ -255,39 +255,61 @@ def course_without_category_scores(course: CourseInput, category_id: int) -> Cou
 
 def exam_impact(
     course: CourseInput,
-    test_category_id: int | None,
+    test_category_ids: list[int] | int | None,
     exam_category_id: int | None,
     target_gp: float = 4.0,
 ) -> dict | None:
     """Post-exam vs tests: score delta and letter movement. Ignores GP override."""
-    if not test_category_id or not exam_category_id:
+    if isinstance(test_category_ids, int):
+        test_ids = [test_category_ids]
+    else:
+        test_ids = [int(item) for item in (test_category_ids or []) if item is not None]
+    # Preserve order, drop duplicates.
+    seen: set[int] = set()
+    ordered_ids: list[int] = []
+    for tid in test_ids:
+        if tid in seen:
+            continue
+        seen.add(tid)
+        ordered_ids.append(tid)
+    if not ordered_ids or not exam_category_id:
         return None
-    test = next((c for c in course.categories if c.id == test_category_id), None)
+    tests = [next((c for c in course.categories if c.id == tid), None) for tid in ordered_ids]
+    if any(test is None for test in tests):
+        return None
     exam = next((c for c in course.categories if c.id == exam_category_id), None)
-    if test is None or exam is None:
+    if exam is None:
         return None
-    test_pct = category_percent(test, course.categories)
+    test_percents = [category_percent(test, course.categories) for test in tests]
+    scored = [pct for pct in test_percents if pct is not None]
+    test_pct = (sum(scored) / len(scored)) if scored else None
     exam_pct = category_percent(exam, course.categories)
     delta = (exam_pct - test_pct) if test_pct is not None and exam_pct is not None else None
-    plain = replace(course, gp_override=None)
-    after = evaluate_course(plain, target_gp)
-    before = evaluate_course(course_without_category_scores(plain, exam_category_id), target_gp)
+    letter_before = None
+    letter_after = None
     letter_change = None
-    if before.letter and after.letter and before.quality_points is not None and after.quality_points is not None:
-        if after.quality_points > before.quality_points:
-            letter_change = "up"
-        elif after.quality_points < before.quality_points:
-            letter_change = "down"
-        else:
-            letter_change = "same"
+    if test_pct is not None and exam_pct is not None:
+        plain = replace(course, gp_override=None)
+        after = evaluate_course(plain, target_gp)
+        before = evaluate_course(course_without_category_scores(plain, exam_category_id), target_gp)
+        letter_before = before.letter
+        letter_after = after.letter
+        if before.letter and after.letter and before.quality_points is not None and after.quality_points is not None:
+            if after.quality_points > before.quality_points:
+                letter_change = "up"
+            elif after.quality_points < before.quality_points:
+                letter_change = "down"
+            else:
+                letter_change = "same"
     return {
-        "test_category_id": test_category_id,
+        "test_category_id": ordered_ids[0],
+        "test_category_ids": ordered_ids,
         "exam_category_id": exam_category_id,
         "test_percent": test_pct,
         "exam_percent": exam_pct,
         "delta": delta,
-        "letter_before": before.letter,
-        "letter_after": after.letter,
+        "letter_before": letter_before,
+        "letter_after": letter_after,
         "letter_change": letter_change,
     }
 

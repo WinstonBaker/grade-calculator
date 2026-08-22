@@ -1042,7 +1042,7 @@ export default function GpaDashboard({ onChange }) {
                             <>
                               {" "}
                               · score{" "}
-                              <span className={`mono ${scoreClass(term.term_score)}`}>
+                              <span className={`mono ${term.included ? scoreClass(term.term_score) : ""}`}>
                                 {fmtScore(term.term_score)}
                               </span>
                             </>
@@ -1196,6 +1196,8 @@ export default function GpaDashboard({ onChange }) {
                     id: row.course_id,
                     categories: [],
                     test_category_id: row.test_category_id,
+                    test_category_ids: row.test_category_ids
+                      || (row.test_category_id != null ? [row.test_category_id] : []),
                     exam_category_id: row.exam_category_id,
                     exam_impact: row,
                   }))}

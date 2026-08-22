@@ -60,6 +60,16 @@ def ensure_schema() -> None:
         if "test_category_id" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE courses ADD COLUMN test_category_id INTEGER"))
+        if "test_category_ids_json" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE courses ADD COLUMN test_category_ids_json TEXT DEFAULT '[]'"))
+                conn.execute(
+                    text(
+                        "UPDATE courses SET test_category_ids_json = '[' || test_category_id || ']' "
+                        "WHERE test_category_id IS NOT NULL "
+                        "AND (test_category_ids_json IS NULL OR test_category_ids_json = '' OR test_category_ids_json = '[]')"
+                    )
+                )
         if "exam_category_id" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE courses ADD COLUMN exam_category_id INTEGER"))

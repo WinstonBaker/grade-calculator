@@ -109,6 +109,54 @@ def _scale_from_settings_json(settings: Settings | None) -> list[tuple[str, floa
         return list(DEFAULT_SCALE)
 
 
+def course_test_category_ids(course: Course) -> list[int]:
+    """Resolved test category ids (JSON list, falling back to singular column)."""
+    raw = (course.test_category_ids_json or "").strip()
+    ids: list[int] = []
+    if raw and raw not in ("[]", "{}"):
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = []
+        if isinstance(payload, list):
+            for item in payload:
+                try:
+                    ids.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+    if not ids and course.test_category_id is not None:
+        ids = [int(course.test_category_id)]
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for tid in ids:
+        if tid in seen:
+            continue
+        seen.add(tid)
+        ordered.append(tid)
+    return ordered
+
+
+def set_course_test_category_ids(course: Course, ids: list[int] | None) -> None:
+    cleaned: list[int] = []
+    seen: set[int] = set()
+    for item in ids or []:
+        try:
+            tid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if tid in seen:
+            continue
+        seen.add(tid)
+        cleaned.append(tid)
+    course.test_category_ids_json = json.dumps(cleaned)
+    course.test_category_id = cleaned[0] if cleaned else None
+
+
+def remove_test_category_id(course: Course, category_id: int) -> None:
+    ids = [tid for tid in course_test_category_ids(course) if tid != category_id]
+    set_course_test_category_ids(course, ids)
+
+
 def list_scale_profiles(db: Session) -> list[ScaleProfile]:
     return db.query(ScaleProfile).order_by(ScaleProfile.sort_order, ScaleProfile.id).all()
 
@@ -607,6 +655,7 @@ def serialize_course(course: Course, target_gp: float) -> dict:
         ],
         "level_band": course_level_band(course.code),
         "test_category_id": course.test_category_id,
+        "test_category_ids": course_test_category_ids(course),
         "exam_category_id": course.exam_category_id,
         "dynamic_weighting_enabled": bool(course.dynamic_weighting_enabled),
         "dynamic_weighting": dynamic_payload,
@@ -638,16 +687,18 @@ def semester_name(sem: Semester) -> str:
 
 
 def _exam_impact_payload(course: Course, target_gp: float) -> dict | None:
+    test_ids = course_test_category_ids(course)
     impact = exam_impact(
         course_to_input(course),
-        course.test_category_id,
+        test_ids,
         course.exam_category_id,
         target_gp,
     )
     if not impact:
         return None
     names = {cat.id: cat.name for cat in course.categories}
-    impact["test_name"] = names.get(course.test_category_id)
+    impact["test_name"] = ", ".join(names[tid] for tid in test_ids if tid in names) or None
+    impact["test_names"] = [names[tid] for tid in test_ids if tid in names]
     impact["exam_name"] = names.get(course.exam_category_id)
     return impact
 

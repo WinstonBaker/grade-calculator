@@ -34,6 +34,7 @@ class CourseUpdate(BaseModel):
     gp_override: float | None = None
     grade_rounding: int | None = Field(default=None, ge=0, le=3)
     test_category_id: int | None = None
+    test_category_ids: list[int] | None = None
     exam_category_id: int | None = None
     dynamic_weighting_enabled: bool | None = None
     dynamic_weighting: dict | None = None

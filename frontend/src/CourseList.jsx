@@ -226,7 +226,9 @@ export default function CourseList({ semesters, onChange }) {
         {showScore ? (
           <div className="stat">
             <div className="label">Semester score</div>
-            <div className={`value ${scoreClass(current.term_score)}`}>{fmtScore(current.term_score)}</div>
+            <div className={`value ${current.included ? scoreClass(current.term_score) : ""}`}>
+              {fmtScore(current.term_score)}
+            </div>
           </div>
         ) : null}
       </div>
@@ -329,6 +331,20 @@ export default function CourseList({ semesters, onChange }) {
         </form>
       </div>
 
+      <SemesterProgressChart
+        semesterId={current.id}
+        locked={Boolean(current.progression_locked)}
+        onLock={async (nextLocked) => {
+          try {
+            await api.patchSemester(current.id, { progression_locked: nextLocked });
+            onChange?.();
+          } catch (err) {
+            warning(err.message);
+          }
+        }}
+        onToast={(message) => warning(message)}
+      />
+
       <section className="panel" style={{ marginTop: 16 }}>
         <h2>Exam vs tests</h2>
         <p className="muted" style={{ marginTop: 0 }}>
@@ -345,20 +361,6 @@ export default function CourseList({ semesters, onChange }) {
         />
         <ExamImpactTable courses={courses} onPatch={patchExamCats} />
       </section>
-
-      <SemesterProgressChart
-        semesterId={current.id}
-        locked={Boolean(current.progression_locked)}
-        onLock={async (nextLocked) => {
-          try {
-            await api.patchSemester(current.id, { progression_locked: nextLocked });
-            onChange?.();
-          } catch (err) {
-            warning(err.message);
-          }
-        }}
-        onToast={(message) => warning(message)}
-      />
     </>
   );
 }

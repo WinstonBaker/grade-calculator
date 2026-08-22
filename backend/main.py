@@ -70,6 +70,7 @@ from backend.service import (
     serialize_course,
     serialize_scale_profile,
     serialize_semester,
+    set_course_test_category_ids,
     set_primary_profile,
     snooze_grade_prompt,
     sort_courses,
@@ -78,6 +79,7 @@ from backend.service import (
     sync_primary_scale_json,
     target_gp_from_settings,
     update_primary_scale,
+    remove_test_category_id,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -331,8 +333,12 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         course.gp_override = body.gp_override
     if "grade_rounding" in body.model_fields_set:
         course.grade_rounding = body.grade_rounding
-    if "test_category_id" in body.model_fields_set:
-        course.test_category_id = _owned_category_id(course, body.test_category_id)
+    if "test_category_ids" in body.model_fields_set:
+        owned = [_owned_category_id(course, tid) for tid in (body.test_category_ids or [])]
+        set_course_test_category_ids(course, [tid for tid in owned if tid is not None])
+    elif "test_category_id" in body.model_fields_set:
+        owned = _owned_category_id(course, body.test_category_id)
+        set_course_test_category_ids(course, [owned] if owned is not None else [])
     if "exam_category_id" in body.model_fields_set:
         course.exam_category_id = _owned_category_id(course, body.exam_category_id)
     if "dynamic_weighting_enabled" in body.model_fields_set:
@@ -553,8 +559,7 @@ def delete_category(category_id: int, db: Session = Depends(get_db)):
     )
     course = db.get(Course, course_id)
     if course is not None:
-        if course.test_category_id == category_id:
-            course.test_category_id = None
+        remove_test_category_id(course, category_id)
         if course.exam_category_id == category_id:
             course.exam_category_id = None
     db.delete(cat)

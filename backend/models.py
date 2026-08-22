@@ -41,6 +41,8 @@ class Course(Base):
         ForeignKey("scale_profiles.id"), nullable=True
     )
     test_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # JSON list of category ids averaged for the "tests" side of exam impact.
+    test_category_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     exam_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dynamic_weighting_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # JSON: {"options":[{"id":"...","weights":{"<category_id>":0.2}}]}
