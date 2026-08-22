@@ -80,6 +80,7 @@ export const api = {
   applyUpdate: () => req("/api/updates/apply", { method: "POST" }),
   downloadUpdate: () => req("/api/updates/apply", { method: "POST" }),
   dismissUpdate: (body) => req("/api/updates/dismiss", { method: "POST", headers, body: JSON.stringify(body) }),
+  ackUpdateStatus: () => req("/api/updates/status/ack", { method: "POST" }),
   patchSettings: (body) => req("/api/settings", { method: "PATCH", headers, body: JSON.stringify(body) }),
   createFumble: (body) => req("/api/fumbles", { method: "POST", headers, body: JSON.stringify(body) }),
   deleteFumble: (id) => req(`/api/fumbles/${id}`, { method: "DELETE" }),

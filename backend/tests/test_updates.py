@@ -1,15 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 from backend.main import app
 from backend.updates import (
     _validate_release_url,
+    _windows_apply_script,
+    acknowledge_update_status,
     apply_update,
     dismiss_update,
     is_newer,
     load_update_state,
+    load_update_status,
     parse_version,
     should_show_update_toast,
+    write_update_status,
 )
 
 
@@ -85,6 +90,7 @@ def test_check_for_updates_records_state_and_toast_flag(tmp_path, monkeypatch):
     assert payload["latest_version"] == "9.9.9"
     assert payload["last_update_check_at"]
     assert payload["can_apply"] is False
+    assert payload["apply_status"] is None
 
     dismiss_update("9.9.9")
     hidden = check_for_updates()
@@ -155,3 +161,66 @@ def test_dismiss_endpoint(tmp_path, monkeypatch):
     assert body["dismissed_update_version"] == "1.9.0"
     missing = client.post("/api/updates/dismiss", json={"version": " "})
     assert missing.status_code == 400
+
+
+def test_windows_apply_script_retries_and_falls_back():
+    script = _windows_apply_script(
+        src=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\GradeCalculator-Windows.exe"),
+        dst=Path(r"C:\Program Files\Grade Calculator\GradeCalculator-Windows.exe"),
+        log=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\apply.log"),
+        marker=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\update-status.json"),
+        pid=4242,
+        version="1.3.2",
+    )
+    assert "$appPid = 4242" in script
+    assert "for ($i = 0; $i -lt 45; $i++)" in script
+    assert "Move-Item -LiteralPath $dst -Destination $oldPath -Force" in script
+    assert "Copy-Item -LiteralPath $src -Destination $dst -Force" in script
+    assert "failed_launched_staged" in script
+    assert "Start-Process -FilePath $src" in script
+    assert "Write-Status 'applied'" in script
+
+
+def test_apply_status_survives_and_can_be_acked(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.updates.httpx.Client", _FakeGithubClient)
+    write_update_status(
+        "failed_launched_staged",
+        version="9.9.9",
+        message="Could not replace the installed file",
+        staged=str(tmp_path / "updates" / "app.exe"),
+    )
+    from backend.updates import check_for_updates
+
+    payload = check_for_updates()
+    assert payload["apply_status"]["status"] == "failed_launched_staged"
+    assert "Could not replace" in payload["apply_status"]["message"]
+
+    client = TestClient(app)
+    assert client.post("/api/updates/status/ack").json()["ok"] is True
+    assert load_update_status() is None
+    cleared = check_for_updates()
+    assert cleared["apply_status"] is None
+    assert acknowledge_update_status()["ok"] is True
+
+
+def test_applied_status_clears_when_version_matches(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.updates.httpx.Client", _FakeGithubClient)
+    from backend import updates as updates_mod
+
+    write_update_status("applied", version=updates_mod.__version__, message="Update installed")
+    payload = updates_mod.check_for_updates()
+    assert payload["apply_status"] is None
+    assert load_update_status() is None
+
+
+def test_pending_status_hidden_from_toast_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.updates.httpx.Client", _FakeGithubClient)
+    write_update_status("pending", version="9.9.9", message="Waiting…")
+    from backend.updates import check_for_updates
+
+    payload = check_for_updates()
+    assert payload["apply_status"] is None
+    assert load_update_status()["status"] == "pending"

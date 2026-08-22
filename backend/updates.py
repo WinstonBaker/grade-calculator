@@ -82,6 +82,40 @@ def save_update_state(patch: dict) -> dict:
     return state
 
 
+def update_status_path() -> Path:
+    return _staging_dir() / "update-status.json"
+
+
+def write_update_status(status: str, **extra) -> dict:
+    payload = {"status": status, "at": _now_iso(), **extra}
+    path = update_status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def load_update_status() -> dict | None:
+    path = update_status_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def clear_update_status() -> None:
+    path = update_status_path()
+    if path.is_file():
+        path.unlink(missing_ok=True)
+
+
+def acknowledge_update_status() -> dict:
+    clear_update_status()
+    return {"ok": True}
+
+
 def dismiss_update(version: str) -> dict:
     normalized = normalize_version(version)
     if not normalized:
@@ -127,6 +161,22 @@ def _validate_release_url(url: str) -> str:
     return url
 
 
+def _reconcile_apply_status() -> dict | None:
+    status = load_update_status()
+    if not status:
+        return None
+    code = str(status.get("status") or "")
+    version = str(status.get("version") or "")
+    # Successful replace + we're now on that build → drop the marker.
+    if code == "applied" and version and parse_version(version) == parse_version(__version__):
+        clear_update_status()
+        return None
+    # Stale pending from a crashed helper → ignore after the app is clearly running again.
+    if code == "pending":
+        return None
+    return status
+
+
 def _attach_toast_state(payload: dict) -> dict:
     state = save_update_state({"last_update_check_at": _now_iso()})
     dismissed = state.get("dismissed_update_version")
@@ -138,6 +188,7 @@ def _attach_toast_state(payload: dict) -> dict:
         dismissed,
     )
     payload["can_apply"] = can_apply_in_place()
+    payload["apply_status"] = _reconcile_apply_status()
     return payload
 
 
@@ -233,7 +284,8 @@ def _spawn_detached(command: list[str]) -> None:
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         kwargs["creationflags"] = flags
-        kwargs["close_fds"] = False
+        # Avoid inheriting file handles that can keep the .exe locked on Windows.
+        kwargs["close_fds"] = True
     else:
         kwargs["start_new_session"] = True
         kwargs["close_fds"] = True
@@ -256,31 +308,117 @@ def _macos_bundle_path() -> Path:
     raise RuntimeError("Could not locate the Grade Calculator app bundle")
 
 
-def _stage_windows_replace(staged_exe: Path) -> None:
+def _windows_apply_script(
+    *,
+    src: Path,
+    dst: Path,
+    log: Path,
+    marker: Path,
+    pid: int,
+    version: str,
+) -> str:
+    """PowerShell that replaces the running exe after exit, with retries and fallback launch."""
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$src = {_ps_single_quote(str(src))}",
+            f"$dst = {_ps_single_quote(str(dst))}",
+            f"$log = {_ps_single_quote(str(log))}",
+            f"$marker = {_ps_single_quote(str(marker))}",
+            f"$appPid = {int(pid)}",
+            f"$version = {_ps_single_quote(version)}",
+            "function Write-Status([string]$Status, [string]$Message) {",
+            "  $payload = [ordered]@{",
+            "    status = $Status",
+            "    message = $Message",
+            "    staged = $src",
+            "    destination = $dst",
+            "    version = $version",
+            "    at = (Get-Date).ToUniversalTime().ToString('o')",
+            "  }",
+            "  ($payload | ConvertTo-Json) | Set-Content -LiteralPath $marker -Encoding UTF8",
+            "}",
+            "try {",
+            "  $deadline = (Get-Date).AddMinutes(2)",
+            "  while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {",
+            "    Start-Sleep -Seconds 1",
+            "  }",
+            "  Start-Sleep -Seconds 2",
+            "  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |",
+            "    Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq $dst) } |",
+            "    ForEach-Object {",
+            "      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}",
+            "    }",
+            "  Start-Sleep -Seconds 1",
+            "  $ok = $false",
+            "  $lastError = ''",
+            "  $oldPath = \"$dst.old\"",
+            "  for ($i = 0; $i -lt 45; $i++) {",
+            "    try {",
+            "      if (Test-Path -LiteralPath $oldPath) {",
+            "        Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue",
+            "      }",
+            "      if (Test-Path -LiteralPath $dst) {",
+            "        Move-Item -LiteralPath $dst -Destination $oldPath -Force",
+            "      }",
+            "      Copy-Item -LiteralPath $src -Destination $dst -Force",
+            "      if (-not (Test-Path -LiteralPath $dst)) { throw 'Replacement file missing after copy' }",
+            "      Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue",
+            "      $ok = $true",
+            "      break",
+            "    } catch {",
+            "      $lastError = $_.Exception.Message",
+            "      if ((-not (Test-Path -LiteralPath $dst)) -and (Test-Path -LiteralPath $oldPath)) {",
+            "        Move-Item -LiteralPath $oldPath -Destination $dst -Force -ErrorAction SilentlyContinue",
+            "      }",
+            "      Start-Sleep -Seconds 1",
+            "    }",
+            "  }",
+            "  if ($ok) {",
+            "    Write-Status 'applied' 'Update installed'",
+            "    Start-Process -FilePath $dst",
+            "    Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue",
+            "    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue",
+            "  } else {",
+            "    $msg = \"Could not replace the installed file ($lastError). Launching the downloaded copy instead.\"",
+            "    Set-Content -LiteralPath $log -Value $msg",
+            "    Write-Status 'failed_launched_staged' $msg",
+            "    Start-Process -FilePath $src",
+            "  }",
+            "} catch {",
+            "  Set-Content -LiteralPath $log -Value $_.Exception.Message",
+            "  Write-Status 'failed' $_.Exception.Message",
+            "  try { Start-Process -FilePath $src } catch {}",
+            "}",
+            "",
+        ]
+    )
+
+
+def _stage_windows_replace(staged_exe: Path, version: str) -> None:
     dest = Path(sys.executable).resolve()
-    log_path = staged_exe.parent / "apply.log"
-    script = staged_exe.parent / "apply-update.ps1"
+    staging = staged_exe.parent
+    log_path = staging / "apply.log"
+    marker = staging / "update-status.json"
+    script = staging / "apply-update.ps1"
     pid = os.getpid()
+    write_update_status(
+        "pending",
+        version=version,
+        staged=str(staged_exe),
+        destination=str(dest),
+        message="Waiting to replace the installed app…",
+    )
+    if log_path.is_file():
+        log_path.unlink(missing_ok=True)
     script.write_text(
-        "\n".join(
-            [
-                "$ErrorActionPreference = 'Stop'",
-                f"$src = {_ps_single_quote(str(staged_exe))}",
-                f"$dst = {_ps_single_quote(str(dest))}",
-                f"$log = {_ps_single_quote(str(log_path))}",
-                f"$appPid = {pid}",
-                "try {",
-                "  while (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {",
-                "    Start-Sleep -Seconds 1",
-                "  }",
-                "  Copy-Item -LiteralPath $src -Destination $dst -Force",
-                "  Start-Process -FilePath $dst",
-                "  Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue",
-                "} catch {",
-                "  Set-Content -LiteralPath $log -Value $_.Exception.Message",
-                "}",
-                "",
-            ]
+        _windows_apply_script(
+            src=staged_exe,
+            dst=dest,
+            log=log_path,
+            marker=marker,
+            pid=pid,
+            version=version,
         ),
         encoding="utf-8-sig",
     )
@@ -332,45 +470,67 @@ def _extract_macos_app(dmg: Path, staging_dir: Path) -> Path:
         subprocess.run(["hdiutil", "detach", str(mount), "-quiet", "-force"], check=False)
 
 
-def _stage_macos_replace(dmg: Path) -> None:
+def _stage_macos_replace(dmg: Path, version: str) -> None:
     dest = _macos_bundle_path()
     staging_dir = dmg.parent
     staged_app = _extract_macos_app(dmg, staging_dir)
     log_path = staging_dir / "apply.log"
     script = staging_dir / "apply-update.sh"
     pid = os.getpid()
+    write_update_status(
+        "pending",
+        version=version,
+        staged=str(staged_app),
+        destination=str(dest),
+        message="Waiting to replace the installed app…",
+    )
+    if log_path.is_file():
+        log_path.unlink(missing_ok=True)
     script.write_text(
         "\n".join(
             [
                 "#!/bin/bash",
                 "set -e",
-                "trap 'echo \"Update failed\" > \"$log\"' ERR",
                 f"src={_sh_single_quote(str(staged_app))}",
                 f"dst={_sh_single_quote(str(dest))}",
                 f"dmg={_sh_single_quote(str(dmg))}",
                 f"log={_sh_single_quote(str(log_path))}",
+                f"marker={_sh_single_quote(str(update_status_path()))}",
+                f"version={_sh_single_quote(version)}",
                 f"app_pid={pid}",
+                "write_status() {",
+                "  printf '{\"status\":\"%s\",\"message\":\"%s\",\"staged\":\"%s\",\"destination\":\"%s\",\"version\":\"%s\"}\\n' \\",
+                "    \"$1\" \"$2\" \"$src\" \"$dst\" \"$version\" > \"$marker\"",
+                "}",
                 "while kill -0 \"$app_pid\" 2>/dev/null; do sleep 1; done",
+                "sleep 1",
                 "new=\"${dst}.new\"",
                 "old=\"${dst}.old\"",
-                "rm -rf \"$new\" \"$old\"",
-                "ditto \"$src\" \"$new\"",
-                "if mv \"$dst\" \"$old\"; then",
-                "  if mv \"$new\" \"$dst\"; then",
-                "    rm -rf \"$old\"",
-                "  else",
-                "    mv \"$old\" \"$dst\" || true",
-                "    echo \"Could not move the new app into place\" > \"$log\"",
-                "    exit 1",
+                "ok=0",
+                "for i in $(seq 1 30); do",
+                "  rm -rf \"$new\" \"$old\" || true",
+                "  if ditto \"$src\" \"$new\" \\",
+                "    && mv \"$dst\" \"$old\" \\",
+                "    && mv \"$new\" \"$dst\"; then",
+                "    rm -rf \"$old\" || true",
+                "    ok=1",
+                "    break",
                 "  fi",
+                "  mv \"$old\" \"$dst\" 2>/dev/null || true",
+                "  rm -rf \"$new\" || true",
+                "  sleep 1",
+                "done",
+                "if [ \"$ok\" -eq 1 ]; then",
+                "  write_status applied 'Update installed'",
+                "  open \"$dst\"",
+                "  rm -rf \"$src\"",
+                "  rm -f \"$dmg\" \"$log\"",
                 "else",
-                "  echo \"Could not replace the running app\" > \"$log\"",
-                "  rm -rf \"$new\"",
-                "  exit 1",
+                "  msg=\"Could not replace the installed app. Launching the downloaded copy instead.\"",
+                "  echo \"$msg\" > \"$log\"",
+                "  write_status failed_launched_staged \"$msg\"",
+                "  open \"$src\"",
                 "fi",
-                "open \"$dst\"",
-                "rm -rf \"$src\"",
-                "rm -f \"$dmg\"",
                 "",
             ]
         ),
@@ -397,15 +557,16 @@ def apply_update() -> dict:
     if not download_url or not asset_name:
         raise RuntimeError("No desktop installer is published for this platform")
     url = _validate_release_url(str(download_url))
+    version = str(info.get("latest_version") or "")
 
     staged = _staging_dir() / str(asset_name)
     _download_file(url, staged)
 
     platform = current_platform()
     if platform == "windows":
-        _stage_windows_replace(staged)
+        _stage_windows_replace(staged, version)
     elif platform == "macos":
-        _stage_macos_replace(staged)
+        _stage_macos_replace(staged, version)
     else:
         raise RuntimeError("In-place updates are not supported on this platform")
 
@@ -413,7 +574,8 @@ def apply_update() -> dict:
         "ok": True,
         "frozen": True,
         "restarting": True,
-        "version": info.get("latest_version"),
+        "version": version,
+        "staged_path": str(staged),
     }
 
 
@@ -422,5 +584,6 @@ def download_update() -> dict:
 
 
 def schedule_app_exit() -> None:
-    time.sleep(0.5)
+    # Give the detached helper time to start before we release the process lock.
+    time.sleep(1.5)
     os._exit(0)

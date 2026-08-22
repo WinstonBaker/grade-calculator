@@ -11,7 +11,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.database import Base, engine, ensure_schema, get_db
 from backend.paths import current_platform, frozen, frontend_dist, github_repo
-from backend.updates import apply_update, check_for_updates, dismiss_update, schedule_app_exit
+from backend.updates import (
+    acknowledge_update_status,
+    apply_update,
+    check_for_updates,
+    dismiss_update,
+    schedule_app_exit,
+)
 from backend.version import MACOS_ASSET, WINDOWS_ASSET, __version__
 from backend.engine import (
     ACCEPTED_AGGREGATIONS,
@@ -198,6 +204,11 @@ def post_update_dismiss(body: UpdateDismiss):
         return dismiss_update(body.version)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/updates/status/ack")
+def post_update_status_ack():
+    return acknowledge_update_status()
 
 
 @app.post("/api/updates/apply")

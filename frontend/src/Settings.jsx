@@ -86,6 +86,7 @@ export default function Settings({ appearance, onAppearanceChange, onChange }) {
   useEffect(() => {
     api.gpa().then(applyGpa).catch((err) => setError(err.message));
     api.meta().then(setMeta).catch(() => {});
+    api.updates().then(setUpdateInfo).catch(() => {});
   }, []);
 
   async function refreshAll() {
@@ -128,6 +129,8 @@ export default function Settings({ appearance, onAppearanceChange, onChange }) {
       if (!restarting) setUpdateBusy(false);
       try {
         await refreshAll();
+        const nextInfo = await api.updates().catch(() => null);
+        if (nextInfo) setUpdateInfo(nextInfo);
       } catch (err) {
         setError(err.message);
       }
@@ -259,6 +262,13 @@ export default function Settings({ appearance, onAppearanceChange, onChange }) {
         </div>
         {updateMessage ? <p className="pos">{updateMessage}</p> : null}
         {updateError ? <p className="error">{updateError}</p> : null}
+        {updateInfo?.apply_status?.status === "failed_launched_staged" ||
+        updateInfo?.apply_status?.status === "failed" ? (
+          <p className="error">
+            {updateInfo.apply_status.message ||
+              "The last update could not replace the installed file. Check Settings after relaunching from the download folder."}
+          </p>
+        ) : null}
         {updateInfo?.update_available && updateInfo.notes ? (
           <pre className="update-notes">{updateInfo.notes}</pre>
         ) : null}

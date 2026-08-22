@@ -12,7 +12,7 @@ function AnimatedValue({ value, format }) {
 }
 
 const fmtAnimatedScore = (value) => fmtScore(value == null ? null : Math.round(value));
-const fmtAnimatedTenth = (value) => fmtScore(value == null ? null : Number(Number(value).toFixed(1)));
+const fmtAnimatedHundredth = (value) => fmtScore(value == null ? null : Number(Number(value).toFixed(2)));
 
 function fumblesBySemester(terms, fumbles) {
   const groups = [];
@@ -1077,7 +1077,7 @@ export default function GpaDashboard({ onChange }) {
           >
             <div className="label">Buffer / semester</div>
             <div className={`value ${scoreClass(data.score_per_semester)}`}>
-              <AnimatedValue value={data.score_per_semester} format={fmtAnimatedTenth} />
+              <AnimatedValue value={data.score_per_semester} format={fmtAnimatedHundredth} />
             </div>
             <p className="stat-tip-bubble" id="score-pace-tip" role="tooltip">
               Your overall score spread across the {data.semesters_remaining} semester

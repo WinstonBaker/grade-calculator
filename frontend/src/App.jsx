@@ -14,7 +14,31 @@ import { applyThemeColors, loadAppearance, parseAppearance, saveAppearance } fro
 const APPEARANCE_SAVE_MS = 350;
 const GRADE_PROMPT_TOAST_ID = "grade-record-prompt";
 const UPDATE_TOAST_ID = "app-update";
+const UPDATE_STATUS_TOAST_ID = "app-update-status";
 const UPDATE_CHECK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function applyStatusToast(info) {
+  const status = info?.apply_status;
+  if (!status || !status.status) return null;
+  const code = status.status;
+  if (code === "failed_launched_staged") {
+    return {
+      tone: "warning",
+      title: "Update partially applied",
+        message:
+        status.message ||
+        "Couldn’t replace the installed copy, so the new build was launched from the download folder. Use that window going forward, or point your shortcut at the file under AppData\\Grade Calculator\\updates.",
+    };
+  }
+  if (code === "failed") {
+    return {
+      tone: "warning",
+      title: "Update failed",
+      message: status.message || "The update could not be installed. Try again from Settings, or download from GitHub Releases.",
+    };
+  }
+  return null;
+}
 
 function semesterKey(year, season) {
   return [Number(year) || 0, TERM_SEQUENCE[season] || 0];
@@ -207,6 +231,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const shownVersion = { current: null };
+    const shownApplyStatus = { current: null };
 
     function offerUpdateToast(info) {
       shownVersion.current = info.latest_version;
@@ -224,6 +249,33 @@ export default function App() {
             await api.dismissUpdate({ version: info.latest_version });
           } catch (err) {
             warning(err.message);
+          }
+        },
+      });
+    }
+
+    function offerApplyStatusToast(info) {
+      const toast = applyStatusToast(info);
+      if (!toast) {
+        shownApplyStatus.current = null;
+        dismiss(UPDATE_STATUS_TOAST_ID);
+        return;
+      }
+      const key = `${info.apply_status.status}:${info.apply_status.version || ""}:${info.apply_status.at || ""}`;
+      if (shownApplyStatus.current === key) return;
+      shownApplyStatus.current = key;
+      push({
+        id: UPDATE_STATUS_TOAST_ID,
+        type: "persistent",
+        tone: toast.tone,
+        title: toast.title,
+        message: toast.message,
+        onDismissAction: async () => {
+          shownApplyStatus.current = null;
+          try {
+            await api.ackUpdateStatus();
+          } catch {
+            /* ignore */
           }
         },
       });
@@ -261,6 +313,7 @@ export default function App() {
       try {
         const info = await api.updates();
         if (cancelled) return;
+        offerApplyStatusToast(info);
         if (!info.show_toast) {
           shownVersion.current = null;
           dismiss(UPDATE_TOAST_ID);
@@ -279,6 +332,7 @@ export default function App() {
       cancelled = true;
       clearInterval(timer);
       dismiss(UPDATE_TOAST_ID);
+      dismiss(UPDATE_STATUS_TOAST_ID);
     };
   }, [push, dismiss, warning]);
 
