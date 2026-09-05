@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from backend.paths import current_platform, frozen, github_repo, user_data_dir
+from backend.paths import current_platform, frozen, github_repo, program_dir, user_data_dir
 from backend.version import MACOS_ASSET, WINDOWS_ASSET, __version__
 
 USER_AGENT = f"GradeCalculator/{__version__}"
@@ -133,8 +133,8 @@ def set_update_notifications_disabled(disabled: bool) -> dict:
 
 
 def create_update_backup(version: str) -> Path:
-    root = user_data_dir()
-    folder = root / "Backups"
+    data_root = user_data_dir()
+    folder = program_dir() / "Backups"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d")
     target = folder / f"updatebackup-{stamp}-Version{normalize_version(version) or __version__}.zip"
@@ -142,11 +142,11 @@ def create_update_backup(version: str) -> Path:
     while target.exists():
         target = folder / f"updatebackup-{stamp}-Version{normalize_version(version) or __version__}-{index}.zip"
         index += 1
-    # Never archive Backups itself: that would include prior archives and can
-    # attempt to include the archive currently being written.
+    # Keep prior data backups out of the archive if a legacy data directory
+    # already contains one, and never include the program-level destination.
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in root.rglob("*"):
-            relative = path.relative_to(root)
+        for path in data_root.rglob("*"):
+            relative = path.relative_to(data_root)
             if path.is_file() and "Backups" not in relative.parts:
                 archive.write(path, relative)
     return target

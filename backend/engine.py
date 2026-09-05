@@ -1141,14 +1141,19 @@ def future_guess_delta(
     counts_by_credits: dict[float, dict[str, float]],
     scale: list[ScaleRow],
     target_gp: float,
+    unit_size: float | None = None,
 ) -> tuple[int | None, float, int | None]:
-    """Return (delta_score, extra_credits, None placeholder)."""
+    """Return (delta_score, extra_units, None placeholder).
+
+    ``counts_by_credits`` is still keyed by the user's planning grid, but a
+    fixed-unit gradebook gives every entered class the same score/GPA unit.
+    """
     letter_to_gp = {row.letter: row.quality_points for row in scale}
     extra_credits = 0.0
     raw = 0.0
     any_count = False
     for credits, letters in counts_by_credits.items():
-        ch = float(credits)
+        ch = float(unit_size) if unit_size is not None else float(credits)
         for letter, count in letters.items():
             n = float(count or 0)
             if n <= 0:

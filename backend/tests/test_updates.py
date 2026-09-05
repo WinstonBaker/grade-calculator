@@ -1,4 +1,5 @@
 import pytest
+import zipfile
 from fastapi.testclient import TestClient
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from backend.updates import (
     _windows_apply_script,
     acknowledge_update_status,
     apply_update,
+    create_update_backup,
     dismiss_update,
     is_newer,
     load_update_state,
@@ -47,6 +49,25 @@ def test_dismissed_version_hides_toast_until_newer(tmp_path, monkeypatch):
 def test_dismiss_update_requires_version():
     with pytest.raises(ValueError, match="required"):
         dismiss_update("  ")
+
+
+def test_create_update_backup_uses_program_backups_folder(tmp_path, monkeypatch):
+    program = tmp_path / "Grade Calculator"
+    data = tmp_path / "user-data"
+    program.mkdir()
+    data.mkdir()
+    (data / "data.txt").write_text("keep me", encoding="utf-8")
+    monkeypatch.setattr("backend.updates.program_dir", lambda: program)
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: data)
+
+    backup = create_update_backup("v1.4.0")
+
+    assert backup.parent == program / "Backups"
+    assert backup.name.startswith("updatebackup-")
+    assert backup.name.endswith("-Version1.4.0.zip")
+    assert backup.is_file()
+    with zipfile.ZipFile(backup) as archive:
+        assert archive.namelist() == ["data.txt"]
 
 
 class _FakeReleaseResponse:

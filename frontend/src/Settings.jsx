@@ -25,6 +25,19 @@ function normalizedName(value) {
   return String(value || "").trim().toLocaleLowerCase();
 }
 
+function sortWeightTags(tags) {
+  return (Array.isArray(tags) ? tags : [])
+    .map((tag, index) => ({ tag, index }))
+    .sort((a, b) => {
+      const aBoost = Number(a.tag?.boost);
+      const bBoost = Number(b.tag?.boost);
+      const aValue = Number.isFinite(aBoost) ? aBoost : 0;
+      const bValue = Number.isFinite(bBoost) ? bBoost : 0;
+      return aValue - bValue || a.index - b.index;
+    })
+    .map(({ tag }) => tag);
+}
+
 const RESERVED_TERM_NAMES = new Set(["settings", "overall"]);
 
 function collegeTermKey(year, season) {
@@ -91,43 +104,20 @@ function setupAppearancePayload(appearance) {
   );
 }
 
-function setupTermDisplayName(term, gradebook, gradebookAppearances) {
-  const appearance = gradebookAppearances?.[gradebook?.id] || {};
-  const season = String(term?.season || "").toLowerCase();
-  const year = Number(term?.year);
-  const withYear = (name) => {
-    const label = String(name || term?.name || "Term");
-    return year && !new RegExp(`^${year}\\b`).test(label) ? `${year} ${label}` : label;
-  };
-  if (gradebook?.gradebook_type === "high_school") {
-    const configured = appearance.highSchoolTermsByPeriod?.[String(term?.academic_period_key)] || appearance.highSchoolTerms || [];
-    const match = configured.find((item) => String(item?.season || item?.id || "").toLowerCase() === season);
-    if (match?.name) return withYear(match.name);
-  } else {
-    const match = (appearance.semesterTitles || []).find((item) => String(item?.id || "").toLowerCase() === season);
-    if (match?.name) return withYear(match.name);
-  }
-  return withYear(term?.name || "Term");
-}
-
-function withSetupDisplayNames(gradebooks, gradebookAppearances) {
-  return (gradebooks || []).map((gradebook) => ({
-    ...gradebook,
-    periods: (gradebook.periods || []).map((period) => ({
-      ...period,
-      terms: (period.terms || []).map((term) => ({
-        ...term,
-        name: setupTermDisplayName(term, gradebook, gradebookAppearances),
-      })),
-    })),
-  }));
-}
-
 function setupTermLeaves(term) {
   const classes = Array.isArray(term?.classes) ? term.classes : [];
   return classes.length
     ? classes.map((course) => `course:${course.id}`)
     : [`term:${term?.id}`];
+}
+
+function sortSetupClasses(classes) {
+  return [...(Array.isArray(classes) ? classes : [])].sort((a, b) => {
+    const aName = String(a?.name || a?.code || "").trim();
+    const bName = String(b?.name || b?.code || "").trim();
+    return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: "base" })
+      || Number(a?.id || 0) - Number(b?.id || 0);
+  });
 }
 
 function setupPeriodLeaves(period) {
@@ -223,10 +213,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
     api.gradebookSetupInventory(gradebooks)
       .then((result) => {
         if (cancelled) return;
-        const next = withSetupDisplayNames(
-          Array.isArray(result?.gradebooks) ? result.gradebooks : [],
-          gradebookAppearances,
-        );
+        const next = Array.isArray(result?.gradebooks) ? result.gradebooks : [];
         setInventory(next);
         setSelected(new Set(next.flatMap(setupBookLeaves)));
         setInventoryError("");
@@ -235,7 +222,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
         if (!cancelled) setInventoryError(err.message);
       });
     return () => { cancelled = true; };
-  }, [gradebooks, gradebookAppearances]);
+  }, [gradebooks]);
 
   function toggleLeaves(leaves, shouldSelect) {
     setSelected((current) => {
@@ -361,7 +348,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
       if (String(entry?.destination_id) !== String(gradebookId)) return [];
       const sourceType = sourceBook.settings?.gradebook_type === "high_school" ? "high_school" : "college";
       return (sourceBook.periods || []).flatMap((period) => (period.terms || []).flatMap((term) =>
-        (term.classes || []).filter((course) => String(entry?.class_destinations?.[course.key]) === String(termId)).map((course) => ({
+        sortSetupClasses((term.classes || []).filter((course) => String(entry?.class_destinations?.[course.key]) === String(termId))).map((course) => ({
           sourceId,
           sourceType,
           classKey: course.key,
@@ -378,7 +365,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
       if (String(entry?.destination_id) !== String(gradebookId)) return [];
       const sourceType = sourceBook.settings?.gradebook_type === "high_school" ? "high_school" : "college";
       return (sourceBook.periods || []).flatMap((period) => (period.terms || []).flatMap((term) =>
-        (term.classes || []).filter((course) => String(entry?.class_destinations?.[course.key]) === `period:${periodId}`).map((course) => ({
+        sortSetupClasses((term.classes || []).filter((course) => String(entry?.class_destinations?.[course.key]) === `period:${periodId}`)).map((course) => ({
           sourceId,
           sourceType,
           classKey: course.key,
@@ -396,7 +383,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
       const sourceType = sourceBook.settings?.gradebook_type === "high_school" ? "high_school" : "college";
       return (sourceBook.periods || []).flatMap((period) => (period.terms || [])
         .filter((term) => Object.prototype.hasOwnProperty.call(entry?.explicit_term_destinations || {}, term.key))
-        .map((term) => ({ sourceId, sourceType, key: term.key, name: sourceTermName(term), classes: term.classes || [] }))
+        .map((term) => ({ sourceId, sourceType, key: term.key, name: sourceTermName(term), classes: sortSetupClasses(term.classes) }))
       );
     });
   }
@@ -517,36 +504,37 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
           <div className="gradebook-export-tree" aria-label="Gradebooks to export">
             {inventory.map((gradebook) => {
               const bookLeaves = setupBookLeaves(gradebook);
+              const renderTerm = (term) => {
+                const termLeaves = setupTermLeaves(term);
+                return <details className="export-tree-term" key={term.id} open>
+                  <summary>
+                    <SetupCheckbox leaves={termLeaves} selected={selected} onToggle={toggleLeaves} label={`Select ${term.name}`} />
+                    <span>{term.name}</span>
+                  </summary>
+                  {(term.classes || []).length ? <div className="export-tree-classes">
+                    {sortSetupClasses(term.classes).map((course) => <label key={course.id}>
+                      <SetupCheckbox leaves={[`course:${course.id}`]} selected={selected} onToggle={toggleLeaves} label={`Select ${course.name}`} />
+                      <span>{course.name}</span>
+                    </label>)}
+                  </div> : <p className="muted export-empty-term">Empty term</p>}
+                </details>;
+              };
               return <details className="export-tree-gradebook" key={gradebook.id} open>
                 <summary>
                   <SetupCheckbox leaves={bookLeaves} selected={selected} onToggle={toggleLeaves} label={`Select ${gradebook.name}`} />
                   <strong>{gradebook.name}</strong>
                   <span className="muted">{gradebook.gradebook_type === "high_school" ? "Multi-term" : "Single-term"}</span>
                 </summary>
-                {(gradebook.periods || []).map((period) => {
+                {gradebook.gradebook_type === "high_school" ? (gradebook.periods || []).map((period) => {
                   const periodLeaves = setupPeriodLeaves(period);
                   return <details className="export-tree-period" key={period.key} open>
                     <summary>
                       <SetupCheckbox leaves={periodLeaves} selected={selected} onToggle={toggleLeaves} label={`Select ${period.name}`} />
                       <span>{period.name}</span>
                     </summary>
-                    {(period.terms || []).map((term) => {
-                      const termLeaves = setupTermLeaves(term);
-                      return <details className="export-tree-term" key={term.id} open>
-                        <summary>
-                          <SetupCheckbox leaves={termLeaves} selected={selected} onToggle={toggleLeaves} label={`Select ${term.name}`} />
-                          <span>{term.name}</span>
-                        </summary>
-                        {(term.classes || []).length ? <div className="export-tree-classes">
-                          {term.classes.map((course) => <label key={course.id}>
-                            <SetupCheckbox leaves={[`course:${course.id}`]} selected={selected} onToggle={toggleLeaves} label={`Select ${course.name}`} />
-                            <span>{course.name}</span>
-                          </label>)}
-                        </div> : <p className="muted export-empty-term">Empty term</p>}
-                      </details>;
-                    })}
+                    {(period.terms || []).map(renderTerm)}
                   </details>;
-                })}
+                }) : (gradebook.periods || []).flatMap((period) => period.terms || []).map(renderTerm)}
               </details>;
             })}
           </div>
@@ -580,7 +568,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                       <small className="muted">{(term.classes || []).length} class{(term.classes || []).length === 1 ? "" : "es"}</small>
                     </summary>
                     <div className="placement-source-classes">
-                      {(term.classes || []).map((course) => <div className="placement-source-class" key={course.key} draggable onDragStart={(event) => startPlacementDrag(event, { type: "class", sourceId, classKey: course.key, className: course.code, gradebookType: sourceType })}>{course.code}</div>)}
+                      {sortSetupClasses(term.classes).map((course) => <div className="placement-source-class" key={course.key} draggable onDragStart={(event) => startPlacementDrag(event, { type: "class", sourceId, classKey: course.key, className: course.code, gradebookType: sourceType })}>{course.code}</div>)}
                       {(term.classes || []).length === 0 ? <small className="muted">Empty term</small> : null}
                     </div>
                   </details>;
@@ -605,7 +593,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                   </summary>
                   {gradebook.gradebook_type !== "high_school" ? placedTermsForBook(gradebook.id).map((term) => <div className="placement-target-imported-term" key={`${term.sourceId}-${term.key}`} draggable onDragStart={(event) => startPlacementDrag(event, { type: "term", sourceId: term.sourceId, termKey: term.key, termName: term.name, gradebookType: term.sourceType })}>
                     <strong>{term.name}</strong><small>Added from file</small>
-                    {term.classes.map((course) => <span key={course.key}>{course.code}</span>)}
+                    {sortSetupClasses(term.classes).map((course) => <span key={course.key}>{course.code}</span>)}
                   </div>) : null}
                   {gradebook.gradebook_type !== "high_school" ? (gradebook.periods || []).flatMap((period) => period.terms || []).map((term) => {
                     const placedClasses = placedClassesForTerm(gradebook.id, term.id);
@@ -1074,11 +1062,14 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
     });
   }
 
-  function applyGpa(next) {
-    setData(next);
+  function applyGpa(next, sortWeights = false) {
+    const visible = sortWeights
+      ? { ...next, gpa_weight_tags: sortWeightTags(next.gpa_weight_tags) }
+      : next;
+    setData(visible);
     setProfileDrafts(
       Object.fromEntries(
-        (next.scale_profiles || []).map((profile) => [
+        (visible.scale_profiles || []).map((profile) => [
           profile.id,
           {
             name: profile.name,
@@ -1134,7 +1125,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
     autoSaveReady.current = false;
     api.gpa(gpaParams)
       .then((next) => {
-        if (!cancelled) applyGpa(next);
+        if (!cancelled) applyGpa(next, true);
       })
       .catch((err) => {
         if (!cancelled) setError(err.message);
@@ -1190,7 +1181,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
   async function refreshAll() {
     const gpaParams = mode === "gradebook" && gradebookId ? { gradebook_id: gradebookId } : {};
     const [gpa, nextMeta] = await Promise.all([api.gpa(gpaParams), api.meta().catch(() => null)]);
-    applyGpa(gpa);
+    applyGpa(gpa, true);
     if (nextMeta) setMeta(nextMeta);
     await onChange?.();
   }
@@ -1259,7 +1250,9 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
   }
 
   function saveWeightTags(nextTags) {
-    updateSettings({ gpa_weight_tags: nextTags });
+    const sortedTags = sortWeightTags(nextTags);
+    applyGpa({ ...data, gpa_weight_tags: sortedTags });
+    updateSettings({ gpa_weight_tags: sortedTags });
   }
 
   async function refreshProfiles() {
@@ -1444,10 +1437,12 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
             </a>
           ) : null}
         </div>
-        <label className="update-notification-setting">
-          <span><strong>Disable update notifications</strong><small>Updates can still be checked manually from this page.</small></span>
-          <input type="checkbox" role="switch" checked={updateInfo?.notifications_disabled === true} onChange={async (event) => { try { const preference = await api.setUpdateNotifications(event.target.checked); setUpdateInfo((current) => ({ ...current, ...preference })); } catch (err) { warning(err.message); } }} />
-        </label>
+        {mode === "global" ? (
+          <label className="update-notification-setting">
+            <span><strong>Disable update notifications</strong><small>Updates can still be checked manually from this page.</small></span>
+            <input type="checkbox" role="switch" checked={updateInfo?.notifications_disabled === true} onChange={async (event) => { try { const preference = await api.setUpdateNotifications(event.target.checked); setUpdateInfo((current) => ({ ...current, ...preference })); } catch (err) { warning(err.message); } }} />
+          </label>
+        ) : null}
         <div className="update-uninstall-action"><button className="btn danger" type="button" onClick={() => { setUninstallChecks([false, false]); setUninstallOpen(true); }}>Uninstall Grade Calculator</button></div>
         {updateMessage ? <p className="pos">{updateMessage}</p> : null}
         {updateError ? <p className="error">{updateError}</p> : null}
@@ -1473,9 +1468,9 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
         </div>
       </div> : null}
 
-      <section className="panel appearance-panel">
+      {mode === "global" ? <section className="panel appearance-panel">
         <h2>Appearance</h2>
-        {mode === "global" && gradebooks.length ? (
+        {gradebooks.length ? (
           <section className="gradebook-order-settings">
             <p className="muted settings-note gradebook-order-heading">Gradebook order</p>
             <table className="semester-titles-table gradebook-order-table">
@@ -1951,7 +1946,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
             </form>
           </div>
         ), document.body) : null}
-      </section>
+      </section> : null}
 
       <FlaggingSettings appearance={appearance} onAppearanceChange={onAppearanceChange} />
 
@@ -2293,10 +2288,12 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                   <input type="checkbox" checked={data.gpa_cap === 4} onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })} />
                   <span><strong>Cap GPA at 4.000</strong><Tooltip anchor="icon" text={`Caps semester and cumulative GPA only.${showScore ? " A+ quality points still count toward Score." : ""}`} /></span>
                 </label>
-                <label className="checkbox settings-gpa-option settings-show-score-option">
-                  <input type="checkbox" checked={appearance.showScore !== false} onChange={(e) => onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))} />
-                  <span className="settings-show-score-label"><strong>Show Score</strong><Tooltip anchor="icon" text="Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay visible." /></span>
-                </label>
+                {mode === "gradebook" ? (
+                  <label className="checkbox settings-gpa-option settings-show-score-option">
+                    <input type="checkbox" checked={appearance.showScore !== false} onChange={(e) => onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))} />
+                    <span className="settings-show-score-label"><strong>Show Score</strong><Tooltip anchor="icon" text="Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay visible." /></span>
+                  </label>
+                ) : null}
               </div>
               {showScore ? (
                 <div className="settings-fields settings-score-options">
@@ -2341,7 +2338,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                     onAppearanceChange((current) => ({ ...current, highSchoolAcademicPeriods: { ...(current.highSchoolAcademicPeriods || {}), [key]: nextName } }));
                     onAcademicPeriodChange?.(nextName, key);
                   }} /></td>
-                  <td className="period-order-actions">{index > 0 ? <button className="btn small period-order-up" type="button" aria-label={`Move ${periodName} up`} onClick={() => onAppearanceChange((current) => { const base = orderedAcademicPeriods.map((item) => String(item.key)); [base[index - 1], base[index]] = [base[index], base[index - 1]]; return { ...current, highSchoolAcademicPeriodOrder: base }; })}>↑</button> : null} {index < orderedAcademicPeriods.length - 1 ? <button className="btn small period-order-down" type="button" aria-label={`Move ${periodName} down`} onClick={() => onAppearanceChange((current) => { const base = orderedAcademicPeriods.map((item) => String(item.key)); [base[index], base[index + 1]] = [base[index + 1], base[index]]; return { ...current, highSchoolAcademicPeriodOrder: base }; })}>↓</button> : null}</td><td><button className="btn small danger" type="button" disabled={academicPeriodBusy} aria-label={`Delete ${periodName}`} onClick={() => deleteAcademicPeriod(period)}>×</button></td>
+                  <td className="period-order-actions">{index > 0 ? <button className="btn small period-order-up" type="button" aria-label={`Move ${periodName} up`} onClick={() => onAppearanceChange((current) => { const base = orderedAcademicPeriods.map((item) => String(item.key)); [base[index - 1], base[index]] = [base[index], base[index - 1]]; return { ...current, highSchoolAcademicPeriodOrder: base }; })}>↑</button> : <span className="period-order-spacer period-order-up-spacer" aria-hidden="true" />} {index < orderedAcademicPeriods.length - 1 ? <button className="btn small period-order-down" type="button" aria-label={`Move ${periodName} down`} onClick={() => onAppearanceChange((current) => { const base = orderedAcademicPeriods.map((item) => String(item.key)); [base[index], base[index + 1]] = [base[index + 1], base[index]]; return { ...current, highSchoolAcademicPeriodOrder: base }; })}>↓</button> : <span className="period-order-spacer period-order-down-spacer" aria-hidden="true" />}</td><td><button className="btn small danger" type="button" disabled={academicPeriodBusy} aria-label={`Delete ${periodName}`} onClick={() => deleteAcademicPeriod(period)}>×</button></td>
                 </tr>;
               }) : (appearance.semesterTitles || []).map((item, index) => <tr key={item.id}><td><input className="input" size={Math.min(Math.max(item.name.length, 1), 25)} title={item.name} value={item.name} aria-label={`${item.name} term name`} onChange={(e) => {
                 const nextName = e.target.value;
@@ -2354,7 +2351,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                   return;
                 }
                 onAppearanceChange((current) => ({ ...current, semesterTitles: (current.semesterTitles || []).map((term) => term.id === item.id ? { ...term, name: nextName } : term) }));
-              }} /></td><td className="period-order-actions">{index > 0 ? <button className="btn small period-order-up" type="button" aria-label={`Move ${item.name} up`} onClick={() => onAppearanceChange((current) => { const next = [...(current.semesterTitles || [])]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return { ...current, semesterTitles: next }; })}>↑</button> : null} {index < (appearance.semesterTitles || []).length - 1 ? <button className="btn small period-order-down" type="button" aria-label={`Move ${item.name} down`} onClick={() => onAppearanceChange((current) => { const next = [...(current.semesterTitles || [])]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; return { ...current, semesterTitles: next }; })}>↓</button> : null}</td><td><button className="btn small danger" type="button" aria-label={`Delete ${item.name} term title`} onClick={() => deleteSemesterTitle(item)}>×</button></td></tr>)}
+              }} /></td><td className="period-order-actions">{index > 0 ? <button className="btn small period-order-up" type="button" aria-label={`Move ${item.name} up`} onClick={() => onAppearanceChange((current) => { const next = [...(current.semesterTitles || [])]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return { ...current, semesterTitles: next }; })}>↑</button> : <span className="period-order-spacer period-order-up-spacer" aria-hidden="true" />} {index < (appearance.semesterTitles || []).length - 1 ? <button className="btn small period-order-down" type="button" aria-label={`Move ${item.name} down`} onClick={() => onAppearanceChange((current) => { const next = [...(current.semesterTitles || [])]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; return { ...current, semesterTitles: next }; })}>↓</button> : <span className="period-order-spacer period-order-down-spacer" aria-hidden="true" />}</td><td><button className="btn small danger" type="button" aria-label={`Delete ${item.name} term title`} onClick={() => deleteSemesterTitle(item)}>×</button></td></tr>)}
             </tbody></table>
             {(data.gradebook_type || "college") === "high_school" ? <form className="settings-add-period" onSubmit={(event) => { event.preventDefault(); addAcademicPeriod(); }}><input className="input" value={newAcademicPeriodName} placeholder="Academic period name" aria-label="New academic period name" onChange={(event) => setNewAcademicPeriodName(event.target.value)} /><button className="btn small" type="submit" disabled={academicPeriodBusy || !newAcademicPeriodName.trim()}>Add period</button></form> : <form className="settings-add-period" onSubmit={addSemesterTitle}><input className="input" value={newSemesterTitleName} placeholder="Semester title" aria-label="New semester title" onChange={(event) => setNewSemesterTitleName(event.target.value)} /><button className="btn small" type="submit" disabled={!newSemesterTitleName.trim()}>Add title</button></form>}
           </section>

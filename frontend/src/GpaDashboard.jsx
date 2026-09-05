@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, dashboardCourseGradeClass, fmtDelta, fmtGpa, fmtPct, fmtScore, letterClass, scoreClass } from "./api";
-import { Tooltip, useCreditTerms, useGpaBasis, useShowScore, useTooltips } from "./creditLabel.jsx";
+import { api, dashboardCourseGradeClass, fmtDelta, fmtGpa, fmtPct, fmtScore, letterClass, passFailGradeIsFailing, scoreClass } from "./api";
+import { Tooltip, useCreditTerms, useGpaBasis, useShowScore } from "./creditLabel.jsx";
 import { useAnimatedNumber } from "./useAnimatedNumber";
 import { ExamImpactStats } from "./ExamImpact.jsx";
 import { TERM_SEQUENCE } from "./seasons.js";
@@ -29,6 +29,22 @@ const fmtGuessCount = (value) => {
   if (!Number.isFinite(number)) return "";
   return Number(number.toFixed(3)).toString().replace(/^(-?)0\./, "$1.");
 };
+
+function isGradedCreditSummaryCourse(course) {
+  if (!course || course.gp_override === -1) return false;
+  return course.quality_points != null || course.pass_fail_override != null || course.letter != null;
+}
+
+function isPassingCreditSummaryCourse(course) {
+  if (course.credit_mode === "pass_fail") {
+    const letter = course.pass_fail_override ?? course.letter;
+    return Boolean(letter) && !passFailGradeIsFailing(course, letter);
+  }
+  const current = (course.scale || []).find((row) => row.letter === course.letter);
+  const passing = (course.scale || []).find((row) => row.letter === (course.minimum_passing_letter || "C-"));
+  if (!current || !passing) return Number(course.quality_points) > 0;
+  return Number(current.min_percent) >= Number(passing.min_percent);
+}
 
 function fumblesBySemester(terms, fumbles, highSchoolMode = false, periodGroups = []) {
   const groups = [];
@@ -74,18 +90,60 @@ function fumblesBySemester(terms, fumbles, highSchoolMode = false, periodGroups 
   return groups;
 }
 
-function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = false, periodGroups = [] }) {
+function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = false, periodGroups = [], overallClasses = [], scale = [] }) {
   const [open, setOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState(() => new Set());
   const rootRef = useRef(null);
   const groups = useMemo(
-    () => highSchoolMode
-      ? (periodGroups || []).filter((group) => group.courses?.length)
-      : (terms || []).filter((term) => term.courses?.length),
-    [highSchoolMode, periodGroups, terms]
+    () => {
+      if (!highSchoolMode) return (terms || []).filter((term) => term.courses?.length);
+      const overallByPeriod = new Map();
+      (overallClasses || []).forEach((course) => {
+        if (course?.id == null || course.quality_points == null) return;
+        const key = String(course.period);
+        const current = overallByPeriod.get(key) || [];
+        current.push(course);
+        overallByPeriod.set(key, current);
+      });
+      return (periodGroups || [])
+        .map((group) => ({
+          ...group,
+          // Multi-term classes must be represented by their overall period
+          // result, not by an individual term row.
+          courses: overallByPeriod.get(String(group.period_key)) || [],
+        }))
+        .filter((group) => group.courses.length);
+    }, [highSchoolMode, overallClasses, periodGroups, terms]
   );
   const displayCodes = useMemo(() => buildCourseDisplayCodes(terms), [terms]);
-  const selected = groups.flatMap((group) => group.courses).find((course) => String(course.id) === String(value));
+  const selectableCourses = useMemo(
+    () => groups.flatMap((group) => group.courses || []),
+    [groups],
+  );
+  const menuWidthCh = useMemo(() => {
+    const longestLabel = selectableCourses.reduce((longest, course) => {
+      const code = displayCodes.get(course.id) || course.display_code || course.code || "Class";
+      const actualGp = course.natural_quality_points
+        ?? course.base_quality_points
+        ?? course.quality_points;
+      const actualGrade = gradeScaleRowForGp(scale, actualGp);
+      const actualLetter = actualGrade?.letter || course.natural_letter || course.letter;
+      const label = `${code}${actualLetter ? ` (${actualLetter}${actualGp != null ? ` ${fmtGpa(actualGp)}` : ""})` : ""}`;
+      return Math.max(longest, label.length);
+    }, 0);
+    // Size from every available class, including collapsed groups, so opening
+    // or selecting a different class never changes the menu width.
+    return Math.min(50, Math.max(24, longestLabel + 2));
+  }, [displayCodes, scale, selectableCourses]);
+  const selected = selectableCourses.find((course) => String(course.id) === String(value))
+    || (terms || []).flatMap((term) => term.courses || []).find((course) => String(course.id) === String(value));
+  const selectedActualGp = selected?.natural_quality_points
+    ?? selected?.base_quality_points
+    ?? selected?.quality_points;
+  const selectedActualGrade = gradeScaleRowForGp(scale, selectedActualGp);
+  const selectedActualLetter = selectedActualGrade?.letter
+    || selected?.natural_letter
+    || selected?.letter;
   const addedCourseIds = new Set((fumbles || []).map((fumble) => String(fumble.course_id)));
 
   useEffect(() => {
@@ -118,10 +176,8 @@ function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = 
 
   function toggleGroup(id) {
     setOpenGroups((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+      if (current.has(id)) return new Set();
+      return new Set([id]);
     });
   }
 
@@ -134,10 +190,21 @@ function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = 
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <span className={selected ? "" : "muted"}>{selected ? displayCodes.get(selected.id) || selected.display_code || selected.code : "Class"}</span>
+        <span className={`fumble-course-selected-label ${selected ? "" : "muted"}`}>
+          {selected ? displayCodes.get(selected.id) || selected.display_code || selected.code : "Class"}
+        </span>
+        {selected && selectedActualLetter ? (
+          <span className={`fumble-course-selected-grade ${selectedActualGrade ? letterClass(selectedActualLetter) : ""}`}>
+            ({selectedActualLetter}{selectedActualGp != null ? ` ${fmtGpa(selectedActualGp)}` : ""})
+          </span>
+        ) : null}
       </button>
       {open ? (
-        <div className="exam-multi-menu fumble-course-menu" role="listbox">
+        <div
+          className="exam-multi-menu fumble-course-menu"
+          role="listbox"
+          style={{ "--fumble-course-menu-width": `${menuWidthCh}ch` }}
+        >
           {groups.length === 0 ? (
             <div className="muted exam-multi-empty">No classes</div>
           ) : (
@@ -169,8 +236,21 @@ function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = 
                             setOpen(false);
                           }}
                         >
-                          {displayCodes.get(course.id) || course.display_code || course.code}
-                          {highSchoolMode && course.letter ? <span className="muted"> ({course.letter})</span> : null}
+                          <span className="fumble-course-option-name">
+                            {displayCodes.get(course.id) || course.display_code || course.code}
+                          </span>
+                          {(() => {
+                            const actualGp = course.natural_quality_points
+                              ?? course.base_quality_points
+                              ?? course.quality_points;
+                            const actualGrade = gradeScaleRowForGp(scale, actualGp);
+                            const actualLetter = actualGrade?.letter || course.natural_letter || course.letter;
+                            return actualLetter ? (
+                              <span className={`fumble-course-option-grade ${actualGrade ? letterClass(actualLetter) : ""}`}>
+                                ({actualLetter}{actualGp != null ? ` ${fmtGpa(actualGp)}` : ""})
+                              </span>
+                            ) : null;
+                          })()}
                         </button>
                       ))
                     : null}
@@ -304,12 +384,42 @@ function buildSlices(rows, valueKey) {
       creditPct: d.credit_pct,
       courses: d.courses,
       coursePct: d.course_pct,
+      displayValue: d.displayValue,
       start,
       end: angle,
       color: d.color || gradeFill(d.letter),
     };
   });
   return { slices, total };
+}
+
+function scoreDistributionFromCourses(courses, chartDistribution) {
+  const groups = new Map();
+  for (const course of courses || []) {
+    const letter = course.credit_mode === "pass_fail"
+      ? (course.pass_fail_override || course.letter)
+      : course.letter;
+    const score = Number(course.score);
+    if (!letter || !Number.isFinite(score)) continue;
+    const current = groups.get(letter) || { letter, score: 0, course };
+    current.score += score;
+    groups.set(letter, current);
+  }
+
+  const order = new Map((chartDistribution || []).map((row, index) => [row.letter, index]));
+  const rows = [...groups.values()]
+    .sort((a, b) => (order.get(a.letter) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.letter) ?? Number.MAX_SAFE_INTEGER))
+    .map((group) => ({
+      letter: group.letter,
+      score_abs: Math.abs(group.score),
+      displayValue: fmtScore(group.score),
+      color: chartDistribution.find((row) => row.letter === group.letter)?.color
+        || `var(--${dashboardCourseGradeClass(group.course)})`,
+    }));
+  return {
+    ...buildSlices(rows, "score_abs"),
+    netScore: [...groups.values()].reduce((sum, group) => sum + group.score, 0),
+  };
 }
 
 /** Keep letters through the lowest grade that still has credits; drop everything below. */
@@ -492,7 +602,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
   );
 }
 
-function DonutChart({ title, slices, total, unit, emptyLabel, compact = false, onHover }) {
+function DonutChart({ title, slices, total, centerTotal = total, centerValueClass = "", hoverValueFirst = false, unit, hoverUnit = unit, emptyLabel, compact = false, onHover }) {
   const [hover, setHover] = useState(null);
   const size = 200;
   const cx = size / 2;
@@ -541,7 +651,7 @@ function DonutChart({ title, slices, total, unit, emptyLabel, compact = false, o
               }}
             >
               <title>
-                {s.letter}: {s.value} {unit} ({fmtPct(s.pct * 100, 1)}%)
+                {s.letter}: {s.displayValue ?? s.value} {unit} ({fmtPct(s.pct * 100, 1)}%)
               </title>
             </path>
           ))}
@@ -550,12 +660,21 @@ function DonutChart({ title, slices, total, unit, emptyLabel, compact = false, o
           {!compact && tip ? (
             <>
               <div className={`donut-center-letter letter ${letterClass(tip.letter)}`}>{tip.letter}</div>
-              <div className="donut-center-value mono">{fmtPct(tip.pct * 100, 1)}%</div>
-              <div className="donut-center-label">{tip.value} {unit}</div>
+              {hoverValueFirst ? (
+                <>
+                  <div className={`donut-center-value mono ${scoreClass(tip.displayValue ?? tip.value)}`}>{tip.displayValue ?? tip.value}{hoverUnit ? ` ${hoverUnit}` : ""}</div>
+                  <div className="donut-center-label">{fmtPct(tip.pct * 100, 1)}%</div>
+                </>
+              ) : (
+                <>
+                  <div className="donut-center-value mono">{fmtPct(tip.pct * 100, 1)}%</div>
+                  <div className="donut-center-label">{tip.displayValue ?? tip.value} {unit}</div>
+                </>
+              )}
             </>
           ) : (
             <>
-              <div className="donut-center-value mono">{total}</div>
+              <div className={`donut-center-value mono ${centerValueClass}`}>{centerTotal}</div>
               <div className="donut-center-label">{unit}</div>
             </>
           )}
@@ -568,7 +687,7 @@ function DonutChart({ title, slices, total, unit, emptyLabel, compact = false, o
   );
 }
 
-function GradeDistributionCharts({ distribution, courses = [], compact = false }) {
+function GradeDistributionCharts({ distribution, courses = [], compact = false, showScoreChart = false, scoreTotal = null }) {
   const [hover, setHover] = useState(null);
   const creditTerms = useCreditTerms();
   const chartDistribution = useMemo(
@@ -577,13 +696,21 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false }
   );
   const byCredits = useMemo(() => buildSlices(chartDistribution, "credit_hours"), [chartDistribution]);
   const byCourses = useMemo(() => buildSlices(chartDistribution, "courses"), [chartDistribution]);
+  const byScore = useMemo(() => scoreDistributionFromCourses(courses, chartDistribution), [courses, chartDistribution]);
   const uniformCredits = courses.length > 0 && new Set(courses.map((course) => Number(course.credits) || 0)).size === 1;
   const classBasis = useGpaBasis() === "classes";
+  const showCreditChart = !uniformCredits && !classBasis;
+  const chartCount = Number(showCreditChart) + 1 + Number(showScoreChart);
+  const rowClasses = [
+    "dist-charts-row",
+    showScoreChart ? `score-chart-count-${chartCount}` : "",
+    uniformCredits && !showScoreChart ? "single" : "",
+  ].filter(Boolean).join(" ");
 
   return (
     <div className="dist-charts">
-      <div className={`dist-charts-row ${uniformCredits ? "single" : ""}`}>
-        {!uniformCredits && !classBasis ? (
+      <div className={rowClasses}>
+        {showCreditChart ? (
           <DonutChart
             title={`By ${creditTerms.plural}`}
             slices={byCredits.slices}
@@ -603,6 +730,21 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false }
           compact={compact}
           onHover={(slice) => setHover(slice ? { ...slice, unit: "courses" } : null)}
         />
+        {showScoreChart ? (
+          <DonutChart
+            title="By score"
+            slices={byScore.slices}
+            total={byScore.total}
+            centerTotal={fmtScore(scoreTotal ?? byScore.netScore)}
+            centerValueClass={scoreClass(scoreTotal ?? byScore.netScore)}
+            hoverValueFirst
+            hoverUnit=""
+            unit="score"
+            emptyLabel="No scores yet."
+            compact={compact}
+            onHover={(slice) => setHover(slice ? { ...slice, unit: "score" } : null)}
+          />
+        ) : null}
       </div>
       {compact ? (
         <div className="distribution-hover-hint donut-tooltip muted">
@@ -611,7 +753,7 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false }
               <strong>
                 {fmtPct(hover.pct * 100, 1)}% <span className={`letter ${letterClass(hover.letter)}`}>{hover.letter}</span>
               </strong>
-              <span>{hover.value} {hover.unit}</span>
+              <span>{hover.displayValue ?? hover.value} {hover.unit}</span>
             </>
           ) : "Hover a slice for details"}
         </div>
@@ -1649,14 +1791,21 @@ function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrd
   );
 }
 
+function gradeScaleRowForGp(scale, gp) {
+  const value = Number(gp);
+  if (!Number.isFinite(value)) return null;
+  return (scale || []).find((row) => Math.abs(Number(row.quality_points) - value) < 1e-6) || null;
+}
+
 function FumbleShouldSelect({ fumble, scale, apply }) {
   const options = (scale || []).filter((row) => row.letter !== "F");
   const notTaken = fumble.should_have_been_gp == null;
+  const selectedGrade = gradeScaleRowForGp(scale, fumble.should_have_been_gp);
 
   return (
     <span className={`fumble-should-select-wrap ${notTaken ? "is-not-taken" : ""}`}>
       <select
-        className="fumble-should-select mono"
+        className={`fumble-should-select mono ${selectedGrade ? letterClass(selectedGrade.letter) : ""}`}
         value={notTaken ? "na" : String(fumble.should_have_been_gp)}
         aria-label={`Should have been grade for ${fumble.code}`}
         onChange={async (event) => {
@@ -1667,7 +1816,7 @@ function FumbleShouldSelect({ fumble, scale, apply }) {
       >
         <option value="na">Not take</option>
         {options.map((row) => (
-          <option key={row.letter} value={row.quality_points}>
+          <option key={row.letter} value={row.quality_points} className={letterClass(row.letter)}>
             {fmtGpa(row.quality_points)}
           </option>
         ))}
@@ -1693,6 +1842,7 @@ function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setF
   const creditTerms = useCreditTerms();
   const selectedFumbleGrade = data.default_scale.find((row) => String(row.quality_points) === String(fumbleGp));
   const showWeightedGpa = weightedGpa && data.weighted_overall_gpa != null;
+  const showCreditDelta = data.fumbles?.some((fumble) => fumble.should_have_been_gp == null) || false;
   const hasNotTaken = data.fumbles?.some((fumble) => fumble.should_have_been_gp == null)
     || Number(data.fumble_credits_delta) !== 0;
   const adjustedUnitValues = [data.gpa_credits, data.fumble_credits_delta, data.gpa_credits_with_fumbles]
@@ -1718,6 +1868,8 @@ function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setF
           onChange={setFumbleCourse}
           highSchoolMode={highSchoolMode}
           periodGroups={periodGroups}
+          overallClasses={data.overall_classes}
+          scale={data.default_scale}
         />
         <select
           className={`select fumble-grade-select ${letterClass(selectedFumbleGrade?.letter)}`}
@@ -1738,30 +1890,42 @@ function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setF
             await apply(await api.createFumble({ course_id: Number(fumbleCourse), should_have_been_gp: Number(fumbleGp) }));
           }}
         >
-          Add
+          {fumbleAlreadyAdded ? "Added" : "Add"}
         </button>
       </div>
-      <table className="fumble-table">
+      <table className={`fumble-table with-credit-delta ${showScore ? "with-score" : ""}`}>
         <thead>
           <tr>
             <th>Class</th>
-            <th>Did</th>
-            <th>Should</th>
-            {showScore ? <th>Δ</th> : null}
+            <th>Actual</th>
+            <th>Should've</th>
+            <th className={`fumble-delta-heading ${showCreditDelta ? "" : "fumble-credit-delta-hidden"}`}>Δ Credits</th>
+            {showScore ? <th className="fumble-delta-heading">Δ Score</th> : null}
             <th />
           </tr>
         </thead>
         {fumblesBySemester(data.terms, data.fumbles, highSchoolMode, periodGroups).map((group) => (
           <tbody key={group.term.id}>
             <tr className="fumble-semester-head">
-              <th colSpan={showScore ? 5 : 4}>{group.term.name}</th>
+              <th colSpan={5 + (showScore ? 1 : 0)}>{group.term.name}</th>
             </tr>
             {group.rows.map((f) => (
               <tr key={f.id}>
                 <td>{f.code}</td>
-                <td className="mono">{fmtGpa(f.did_get)}</td>
+                <td className={`mono ${gradeScaleRowForGp(data.default_scale, f.did_get) ? letterClass(gradeScaleRowForGp(data.default_scale, f.did_get).letter) : ""}`}>
+                  {fmtGpa(f.did_get)}
+                </td>
                 <td><FumbleShouldSelect fumble={f} scale={data.default_scale} apply={apply} /></td>
-                {showScore ? <td className={`mono ${scoreClass(f.delta)}`}><SignedValue value={f.delta} compact /></td> : null}
+                <td className={`mono fumble-delta-cell ${showCreditDelta ? "" : "fumble-credit-delta-hidden"}`}>
+                  {f.should_have_been_gp == null && f.credits != null && Number.isFinite(Number(f.credits))
+                    ? fmtAnimatedCredits(-Math.abs(Number(f.credits)))
+                    : null}
+                </td>
+                {showScore ? (
+                  <td className={`mono fumble-delta-cell ${f.should_have_been_gp == null ? "score-zero" : scoreClass(f.delta)}`}>
+                    <SignedValue value={f.delta} compact />
+                  </td>
+                ) : null}
                 <td><button className="btn small danger" onClick={async () => apply(await api.deleteFumble(f.id))}>×</button></td>
               </tr>
             ))}
@@ -1824,22 +1988,7 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
           .replace(/\s+(Fall|Spring|Summer)$/i, "")
       );
     };
-    const periodKey = (term) => {
-      if (!highSchoolMode) return String(term.id);
-      const configuredPeriod = String(periodNames[String(term.id)] || "").trim();
-      // Keep unnamed terms separated by calendar period instead of merging
-      // every unassigned term into one class group.
-      if (configuredPeriod && configuredPeriod.toLowerCase() !== "academic period") {
-        return `period:${configuredPeriod}`;
-      }
-      const season = String(term.season || "").toLowerCase();
-      const year = Number(term.year || 0);
-      return `year:${year - (["spring", "summer"].includes(season) ? 1 : 0)}`;
-    };
     const isGradedCourse = (course) => course.quality_points != null || course.credit_mode === "pass_fail";
-    const isCountedCourse = (course) => (
-      course.quality_points != null && course.gp_override !== -1
-    );
     const overallById = new Map(
       (overallClasses || []).map((course) => [String(course.id), course]),
     );
@@ -1858,67 +2007,59 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
     };
     const entries = [];
 
-    if (highSchoolMode) {
-      // A multi-term class is one class for the whole academic period. Keep
-      // the latest graded occurrence as the representative row, while using
-      // the strongest configured weighting tag found on any occurrence.
-      const classes = new Map();
+    if (highSchoolMode && (overallClasses || []).length) {
+      // High-school overall classes are already collapsed to one final row
+      // per class and academic period. Use them here so weighting totals cover
+      // every period, while recovering weighting tags from the term rows.
+      const weightingByPeriodCode = new Map();
+      const weightingByCourseId = new Map();
+      const periodLabels = new Map();
       for (const term of terms || []) {
+        const periodGroupKey = highSchoolAcademicYearKey(term);
+        const label = String(periodNames[String(term.id)] || "").trim()
+          || periodLabel(term);
+        if (label && label !== "—" && !periodLabels.has(periodGroupKey)) {
+          periodLabels.set(periodGroupKey, label);
+        }
         if (!term.included) continue;
         for (const course of term.courses || []) {
-          if (!isGradedCourse(course)) continue;
           const code = String(course.code || "").trim().toLowerCase();
-          if (!code) continue;
-          const periodGroupKey = periodKey(term);
-          const key = `${periodGroupKey}:${code}`;
+          if (!code && course.id == null) continue;
           const tagId = String(course.gpa_weight_tag || "unweighted");
           const definition = definitions.get(tagId);
           const boost = Number(course.gpa_weight_boost ?? definition?.boost ?? 0) || 0;
-          const current = classes.get(key) || {
-            code,
-            periodKey: periodGroupKey,
-            period: periodLabel(term),
-            representative: null,
-            tagId: "unweighted",
-            boost: Number.NEGATIVE_INFINITY,
-            occurrences: 0,
+          const candidate = {
+            tagId,
+            boost,
+            tagName: definition?.name || course.gpa_weight_tag_name,
           };
-          current.occurrences += 1;
-          if (boost >= current.boost) {
-            current.tagId = tagId;
-            current.boost = boost;
+          if (course.id != null) weightingByCourseId.set(String(course.id), candidate);
+          if (code) {
+            const key = `${periodGroupKey}:${code}`;
+            const current = weightingByPeriodCode.get(key);
+            if (!current || boost >= current.boost) weightingByPeriodCode.set(key, candidate);
           }
-          if (isCountedCourse(course) && (
-            !current.representative
-            || Number(course.id || 0) >= Number(current.representative.id || 0)
-          )) {
-            current.representative = {
-              ...course,
-              units: fullUnitsFor(course),
-              semester: term.name,
-              period: current.period,
-              gpa_weight_tag: tagId,
-              gpa_weight_tag_name: definition?.name || course.gpa_weight_tag_name,
-              gpa_weight_boost: boost,
-            };
-          }
-          classes.set(key, current);
         }
       }
-      for (const item of classes.values()) {
-        if (item.representative) {
-          const units = fullUnitsFor(item.representative);
-          entries.push({
-            ...item.representative,
-            units,
-            period: item.period,
-            gpa_weight_tag: item.tagId,
-            gpa_weight_tag_name: definitions.get(item.tagId)?.name || item.representative.gpa_weight_tag_name,
-            gpa_weight_boost: item.boost === Number.NEGATIVE_INFINITY ? 0 : item.boost,
-          });
-        }
+      for (const course of overallClasses || []) {
+        if (!isGradedCourse(course)) continue;
+        const code = String(course.code || "").trim().toLowerCase();
+        const periodGroupKey = String(course.period ?? "");
+        const weighting = weightingByPeriodCode.get(`${periodGroupKey}:${code}`)
+          || weightingByCourseId.get(String(course.id))
+          || { tagId: "unweighted", boost: 0 };
+        const period = periodLabels.get(periodGroupKey) || String(course.period || "—");
+        entries.push({
+          ...course,
+          units: Number(course.units) || 0,
+          semester: period,
+          period,
+          gpa_weight_tag: weighting.tagId,
+          gpa_weight_tag_name: definitions.get(weighting.tagId)?.name || weighting.tagName,
+          gpa_weight_boost: weighting.boost,
+        });
       }
-    } else {
+    } else if (!highSchoolMode) {
       for (const term of terms || []) {
         if (!term.included) continue;
         for (const course of term.courses || []) {
@@ -2072,7 +2213,6 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
   const showScore = useShowScore();
-  const tooltipsEnabled = useTooltips();
   const [data, setData] = useState(null);
   const [view, setView] = useState("semester");
   const [summaryView, setSummaryView] = useState("grade");
@@ -2105,9 +2245,10 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
     return configuredName || rawName.replace(/^\d{4}\s+/, "") || "—";
   };
   const displayCoursePeriod = (term) => {
+    if (!highSchoolMode) return displayTermName(term);
     const periodName = periodNames[String(term.id)];
-    if (periodName) return String(periodName).slice(0, 10);
-    return displayTermName(term).replace(/\s+(Fall|Spring|Summer)$/i, "");
+    if (periodName) return String(periodName).trim();
+    return displayTermName(term);
   };
   const overallPeriodRollups = useMemo(() => {
     if (!highSchoolMode) return new Map();
@@ -2252,11 +2393,50 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         && periodNames[String(fumble.semester_id)] === selectedFumbleGroup.name;
     }
   );
-  const distributionCourses = useMemo(
+  const distributionCourses = useMemo(() => {
+    if (!highSchoolMode) {
+      return (data?.terms || []).flatMap((term) => (
+        (term.courses || []).map((course) => ({ ...course, semester: displayTermName(term) }))
+      ));
+    }
+
+    // High-school term rows hold the per-term inputs, while the dashboard
+    // grade for a class is the final result across its academic period. Use
+    // those overall class rows here so older periods are represented too.
+    const periodLabels = new Map();
+    for (const term of data?.terms || []) {
+      const key = highSchoolAcademicYearKey(term);
+      const label = String(periodNames[String(term.id)] || "").trim()
+        || displayTermName(term);
+      if (label && !periodLabels.has(key)) periodLabels.set(key, label);
+    }
+    for (const group of periodGroups || []) {
+      if (group.period_key == null || !group.name || group.name === "Other") continue;
+      periodLabels.set(String(group.period_key), group.name);
+    }
+
+    return (data?.overall_classes || [])
+      .filter((course) => course?.letter && course.quality_points != null)
+      .map((course) => {
+        const units = Number(course.units) || 0;
+        const qualityPoints = Number(course.quality_points);
+        const target = Number(data.target_gp);
+        return {
+          ...course,
+          credits: units,
+          period: periodLabels.get(String(course.period)) || String(course.period || "—"),
+          semester: periodLabels.get(String(course.period)) || String(course.period || "—"),
+          score: Number.isFinite(qualityPoints) && Number.isFinite(target)
+            ? Math.round((qualityPoints - target) * 3) * units
+            : 0,
+        };
+      });
+  }, [data, highSchoolMode, periodGroups, periodNames, termNames]);
+  const summaryDistribution = useMemo(
     () => highSchoolMode
-      ? periodGroups.filter((group) => group.included).flatMap((group) => group.courses.map((course) => ({ ...course, period: group.name })))
-      : (data?.terms || []).flatMap((term) => (term.courses || []).map((course) => ({ ...course, semester: displayTermName(term) }))),
-    [data, highSchoolMode, periodGroups, termNames]
+      ? distributionFromCourses(distributionCourses, lettersFromScale(data?.default_scale), true)
+      : data?.distribution || [],
+    [data, distributionCourses, highSchoolMode]
   );
   const hasClasses = distributionCourses.length > 0;
   const periodScores = periodGroups.filter((group) => group.included && group.term_score != null);
@@ -2462,7 +2642,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       const cmp = av > bv ? 1 : -1;
       return desc ? -cmp : cmp;
     });
-  }, [data, highSchoolMode, highSchoolTerms, highSchoolTermsByPeriod, periodNames, sort, desc]);
+  }, [data, highSchoolMode, highSchoolTerms, highSchoolTermsByPeriod, periodNames, sort, desc, termNames]);
 
   const highSchoolUnitBreakdown = useMemo(() => {
     if (!highSchoolMode) return [];
@@ -2484,6 +2664,26 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       .map(([units, count]) => ({ units, count }))
       .sort((a, b) => Number(b.units) - Number(a.units));
   }, [data, highSchoolMode, periodGroups]);
+
+  const creditBreakdown = useMemo(() => {
+    if (highSchoolMode) return null;
+    const courses = (data?.terms || [])
+      .filter((term) => term.included)
+      .flatMap((term) => term.courses || [])
+      .filter(isGradedCreditSummaryCourse);
+    const summarize = (items) => ({
+      classes: items.length,
+      credits: items.reduce((sum, course) => sum + (Number(course.credits) || 0), 0),
+    });
+    const passed = courses.filter(isPassingCreditSummaryCourse);
+    const failed = courses.filter((course) => !isPassingCreditSummaryCourse(course));
+    return {
+      forCredit: summarize(courses.filter((course) => course.credit_mode !== "pass_fail")),
+      passFail: summarize(courses.filter((course) => course.credit_mode === "pass_fail")),
+      passed: summarize(passed),
+      failed: summarize(failed),
+    };
+  }, [data, highSchoolMode]);
 
   function toggleSort(next) {
     if (GRADE_SORT_KEYS.has(next)) {
@@ -2627,16 +2827,15 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
           </div>
         </div> : null}
         <div
-          className={`stat${tooltipsEnabled ? " stat-info-hover" : ""}`}
-          tabIndex={tooltipsEnabled ? 0 : undefined}
-          aria-describedby={tooltipsEnabled ? "credits-taken-tip" : undefined}
+          className="stat stat-info-hover"
+          tabIndex={0}
+          aria-describedby="credits-taken-tip"
         >
           <div className="label">{classBasis ? "Classes" : creditTerms.label}</div>
           <div className="value">
             <AnimatedValue value={highSchoolMode ? overallClassCount : classBasis ? distributionCourses.length : data.total_credits} integerFrames={!highSchoolMode && !classBasis} format={highSchoolMode || classBasis ? ((value) => Math.round(Number(value) || 0)) : fmtAnimatedCredits} />
           </div>
-          {tooltipsEnabled ? (
-            <p className="stat-info-hover-bubble" id="credits-taken-tip" role="note">
+          <p className="stat-info-hover-bubble" id="credits-taken-tip" role="note">
               {highSchoolMode ? (
                 <>
                   <span>Total units: {fmtUnitValue(overallClassUnits)}</span>
@@ -2646,19 +2845,17 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                 </>
               ) : (
                 <>
-                  <span>Affects GPA: {classBasis ? distributionCourses.length : (data.affects_gpa_credits ?? data.gpa_credits ?? 0)} {classBasis ? "classes" : creditTerms.plural}</span>
-                  {!classBasis ? <span>Credit Only: {data.credit_only_credits ?? Math.max(0, (data.total_credits ?? 0) - (data.gpa_credits ?? 0))} {creditTerms.plural}</span> : null}
-                  {!classBasis && (data.unpassed_credits ?? 0) > 0 ? (
+                  {creditBreakdown ? (
                     <>
-                      <br />
-                      <span>Passed Credits: {data.total_credits ?? 0} {creditTerms.plural}</span>
-                      <span>Failed Credits: {data.unpassed_credits} {creditTerms.plural}</span>
+                      <span>For-credit classes: {creditBreakdown.forCredit.classes} · {fmtUnitValue(creditBreakdown.forCredit.credits)} {creditTerms.plural}</span>
+                      <span>Pass/fail classes: {creditBreakdown.passFail.classes} · {fmtUnitValue(creditBreakdown.passFail.credits)} {creditTerms.plural}</span>
+                      <span>Passed classes: {creditBreakdown.passed.classes} · {fmtUnitValue(creditBreakdown.passed.credits)} {creditTerms.plural}</span>
+                      <span>Failed classes: {creditBreakdown.failed.classes} · {fmtUnitValue(creditBreakdown.failed.credits)} {creditTerms.plural}</span>
                     </>
-                  ) : null}
+                  ) : <span>No graded classes yet</span>}
                 </>
               )}
-            </p>
-          ) : null}
+          </p>
         </div>
         {showScore ? (
           <div className="stat">
@@ -2717,6 +2914,12 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
           <div className="term-accordion-body" style={{ paddingTop: 12 }}>
               {periodGroups.map((term) => {
                 const open = !!openTerms[term.id];
+                const termUnitValue = highSchoolMode || classBasis
+                  ? (highSchoolMode ? term.overall_class_count : term.courses.length)
+                  : term.term_credits;
+                const termUnitLabel = highSchoolMode || classBasis
+                  ? "classes"
+                  : (Number(termUnitValue) === 1 ? creditTerms.singular : creditTerms.plural);
                 return (
                   <section className="panel term-accordion" key={term.id} style={{ marginBottom: 10 }}>
                     <div
@@ -2734,7 +2937,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                         <p className={`term-accordion-meta ${term.included ? "" : "term-accordion-meta-excluded"}`}>
                           GPA {fmtGpa(term.term_gpa)}
                           {weightedGpa ? <> · WGPA {fmtGpa(term.term_wgpa)}</> : null}
-                          {" "}· {highSchoolMode ? term.overall_class_count : term.courses.length} classes
+                          {" "}· {highSchoolMode || classBasis ? termUnitValue : fmtUnitValue(termUnitValue)} {termUnitLabel}
                           {showScore ? (
                             <>
                               {" "}
@@ -2784,7 +2987,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
               </button>
             </div>
           </div>
-          <CourseTable courses={flatCourses} showSemester sort={sort} desc={desc} onSort={toggleSort} displayCodes={displayCodes} weightedGpa={weightedGpa} weightTags={data.gpa_weight_tags} highSchoolMode={highSchoolMode} courseHref={courseHref} />
+          <CourseTable courses={flatCourses} showSemester sort={sort} desc={desc} onSort={toggleSort} displayCodes={displayCodes} weightedGpa={weightedGpa} weightTags={data.gpa_weight_tags} highSchoolMode={highSchoolMode} courseHref={courseHref} termLabel={termLabel} />
         </div>
       )}
 
@@ -2824,10 +3027,10 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
 
         {summaryView === "grade" ? (
           <div>
-            <div className={data.terms.flatMap((term) => term.courses || []).length > 0 && new Set(data.terms.flatMap((term) => term.courses || []).map((course) => Number(course.credits) || 0)).size === 1 ? "distribution-summary-grid course-grade-summary-grid" : ""}>
-              <GradeDistributionCharts distribution={data.distribution} courses={distributionCourses} />
+            <div>
+              <GradeDistributionCharts distribution={summaryDistribution} courses={distributionCourses} showScoreChart scoreTotal={overallScore} />
               <DistributionTable
-                distribution={data.distribution}
+                distribution={summaryDistribution}
                 courses={distributionCourses}
                 displayCodes={displayCodes}
                 periodMode={highSchoolMode}
@@ -2906,8 +3109,8 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                       <Link to={`/courses?gradebook=${gradebookId}&term=${term.semester_id}#exam-impact`}>{term.name}</Link>
                     </td>
                     <td className={`mono ${scoreClass(term.avg_delta)}`}>{fmtDelta(term.avg_delta)}</td>
-                    <td className="mono pos">{term.letter_up || 0}</td>
-                    <td className="mono neg">{term.letter_down || 0}</td>
+                    <td className="mono pos">{term.letter_up || ""}</td>
+                    <td className="mono neg">{term.letter_down || ""}</td>
                     <td className="mono">{term.letter_same || 0}</td>
                   </tr>
                 ))}
@@ -3030,6 +3233,10 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                     </div>
                   </>
                 ) : null}
+                <div className="fumble-adjusted-row-label">{highSchoolMode ? "Units" : creditTerms.label}</div>
+                <div className="mono">{fmtGuessCount(data.gpa_credits)}</div>
+                <div className="mono">{Number(data.future_guess.extra_credits) > 0 ? fmtGuessCount(data.future_guess.extra_credits) : "—"}</div>
+                <div className="mono">{data.future_guess.adjusted_credits == null ? "—" : fmtGuessCount(data.future_guess.adjusted_credits)}</div>
                 <div className="fumble-adjusted-row-label">GPA</div>
                 <div className="mono">{fmtGpa(data.overall_gpa)}</div>
                 <div />
@@ -3042,10 +3249,6 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                     <div className="mono">{fmtGpa(data.future_guess.adjusted_wgpa)}</div>
                   </>
                 ) : null}
-                <div className="fumble-adjusted-row-label">{highSchoolMode ? "Units" : creditTerms.label}</div>
-                <div className="mono">{fmtGuessCount(data.gpa_credits)}</div>
-                <div className="mono">{Number(data.future_guess.extra_credits) > 0 ? fmtGuessCount(data.future_guess.extra_credits) : "—"}</div>
-                <div className="mono">{data.future_guess.adjusted_credits == null ? "—" : fmtGuessCount(data.future_guess.adjusted_credits)}</div>
               </div>
             </div>
         </div>
@@ -3055,7 +3258,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   );
 }
 
-function CourseTable({ courses, showSemester = false, sort = null, desc = false, onSort = null, displayCodes = new Map(), weightedGpa = false, weightTags = [], highSchoolMode = false, courseHref }) {
+function CourseTable({ courses, showSemester = false, sort = null, desc = false, onSort = null, displayCodes = new Map(), weightedGpa = false, weightTags = [], highSchoolMode = false, courseHref, termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
   const gpaBasis = useGpaBasis();
   const showScore = useShowScore();
@@ -3065,7 +3268,7 @@ function CourseTable({ courses, showSemester = false, sort = null, desc = false,
 
   const sortable = typeof onSort === "function";
   const cols = [
-    showSemester ? ["semester", "Period"] : null,
+    showSemester ? ["semester", termLabel] : null,
     ["code", "Class"],
     showCredits ? ["credits", creditLabel] : null,
     ["percent", "%"],
@@ -3097,7 +3300,12 @@ function CourseTable({ courses, showSemester = false, sort = null, desc = false,
         </tr>
       </thead>
       <tbody>
-        {courses.map((c) => (
+        {(sortable ? courses : [...courses].sort((a, b) => {
+          const aName = displayCodes.get(a.id) || a.display_code || a.displayCode || a.code || "";
+          const bName = displayCodes.get(b.id) || b.display_code || b.displayCode || b.code || "";
+          return String(aName).localeCompare(String(bName), undefined, { numeric: true, sensitivity: "base" })
+            || Number(a.id || 0) - Number(b.id || 0);
+        })).map((c) => (
           <tr key={c.id}>
             {showSemester ? <td className="muted">{c.semester}</td> : null}
             <td>

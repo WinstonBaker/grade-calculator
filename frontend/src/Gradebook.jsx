@@ -893,6 +893,12 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   }
     }
     setCourse(next);
+    if (patch.code != null) {
+      // Course names are shared by every occurrence of a class in this
+      // gradebook. Reload the matching records so display labels and overall
+      // rollups reflect the rename immediately as well.
+      await load();
+    }
     onChange?.();
   }
 

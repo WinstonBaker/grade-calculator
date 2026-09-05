@@ -41,6 +41,7 @@ from backend.engine import (
     preset_payload,
     scale_as_dicts,
     scale_rows_from_tuples,
+    term_score,
     unit_weighted_fumble_delta,
     weighted_gpa,
     round_half_up,
@@ -1701,6 +1702,12 @@ def serialize_course(
             if payload["natural_quality_points"] is not None:
                 natural_delta = round(3 * (payload["natural_quality_points"] - target_gp))
                 payload["natural_score"] = natural_delta
+    elif score_units is not None:
+        # The course's catalog credits remain available for display, but a
+        # fixed-unit gradebook scores every class as one unit everywhere that
+        # consumes the serialized course payload.
+        payload["score"] = term_score(payload["quality_points"], score_units, target_gp)
+        payload["natural_score"] = term_score(payload["natural_quality_points"], score_units, target_gp)
     return payload
 
 
@@ -1710,8 +1717,10 @@ def cap_gpa(gpa: float | None, gpa_cap: float | None) -> float | None:
     return min(gpa, gpa_cap)
 
 
-def semester_name(sem: Semester) -> str:
+def semester_name(sem: Semester, gradebook_type: str = "college") -> str:
     label = SEASON_LABELS.get(sem.season, sem.season.title())
+    if (gradebook_type or "college").strip().lower() == "high_school":
+        return label
     return f"{sem.year} {label}"
 
 
@@ -1744,7 +1753,7 @@ def serialize_semester(
 ) -> dict:
     courses = [
         serialize_course(c, target_gp, fail_pass_fail_affects_gpa, gradebook_type, weight_tags, score_units)
-        for c in sem.courses
+        for c in sorted(sem.courses, key=lambda c: (str(c.code or "").strip().casefold(), c.id))
     ]
     unit = lambda course: 1.0 if gpa_basis == "classes" else (course.get("credits") or 0)
     # A class contributes credits to the term only after it has an actual
@@ -1827,7 +1836,7 @@ def serialize_semester(
         "id": sem.id,
         "year": sem.year,
         "season": sem.season,
-        "name": semester_name(sem),
+        "name": semester_name(sem, gradebook_type),
         "included": sem.included,
         "progression_locked": bool(sem.progression_locked),
         "term_gpa": gpa,
@@ -1885,7 +1894,11 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
                 changed = True
     if changed:
         db.commit()
-    score_units = high_school_term_units(db) if gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if gradebook_type == "high_school"
+        else ({s.id: 1.0 for s in semesters} if gpa_basis == "classes" else {})
+    )
     overall_rounding_by_period = high_school_overall_rounding_by_period(db) if gradebook_type == "high_school" else {}
     term_weights_by_period = high_school_term_weights_by_period(db) if gradebook_type == "high_school" else {}
     terms = [
@@ -2025,15 +2038,19 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             course for term in included_terms for course in term["courses"]
             if course.get("quality_points") is not None and course.get("gp_override") != -1
         ]
-        class_pairs = [
-            (1.0, course["quality_points"]) for course in class_courses
+        scored_class_courses = [
+            course for course in class_courses
             if course.get("credit_mode") != "pass_fail"
             or (course.get("pass_fail", {}).get("fail_affects_gpa") and not pass_fail_row_is_passing(course))
         ]
+        class_pairs = [(1.0, course["quality_points"]) for course in scored_class_courses]
         gpa_credits = float(len(class_pairs))
         total_credits = float(sum(1 for course in class_courses if course_meets_passing_cutoff(course)))
         unpassed_credits = float(sum(1 for course in class_courses if not course_meets_passing_cutoff(course)))
-        overall_score = sum(3 * (gp - target_gp) for _, gp in class_pairs)
+        # Sum each class's already-rounded fixed-unit score. Summing the raw
+        # quality-point differences here can leave fractional residue (for
+        # example, A+ + A- + B+ becoming -2.001 instead of -2).
+        overall_score = sum(course.get("score") or 0 for course in scored_class_courses)
         overall = cap_gpa(weighted_gpa(class_pairs, include_zero=any(gp == 0 for _, gp in class_pairs)), settings.gpa_cap)
 
     weighted_pairs = []
@@ -2154,9 +2171,15 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         .all()
     ):
         course = by_id.get(fumble.course_id)
-        if not course or course["quality_points"] is None:
+        if not course:
             continue
         weighted_info = weighted_course_info.get(fumble.course_id)
+        # A high-school class can have no grade on its term row while its
+        # final/overall grade is supplied by final_gp_override.  Fumbles are
+        # calculated against that overall class result, so keep it eligible
+        # when the weighted rollup has a final entry.
+        if course["quality_points"] is None and weighted_info is None:
+            continue
         overall_course = weighted_info["course"] if weighted_info else course
         score_quality_points = (
             overall_course.get("base_quality_points", overall_course["quality_points"])
@@ -2177,10 +2200,15 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             and term_keys.get((course_term.get(other_id) or {}).get("id"), (-1, -1)) > (original_key or (-1, -1))
             for other_id in courses_by_code.get(str(course.get("code") or "").strip().lower(), [])
         )
-        # In multi-term mode, a later occurrence of the same class supersedes
-        # the earlier one. Single-term gradebooks keep their original fumble
-        # behavior and only honor an explicit "Not take" selection.
-        auto_excluded = gradebook_type == "high_school" and has_later_retake
+        # A later occurrence can keep an untouched fumble excluded, but it
+        # must not overwrite an explicit "Should" selection. Otherwise the
+        # dropdown for an earlier multi-term class immediately snaps back to
+        # "Not take" after it is changed.
+        auto_excluded = (
+            gradebook_type == "high_school"
+            and has_later_retake
+            and fumble.should_have_been_gp is None
+        )
         excluded = explicit_excluded or auto_excluded
         if excluded:
             # Not taking the class removes its original contribution, so its
@@ -2222,7 +2250,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
                 "course_id": course["id"],
                 "code": course["code"],
                 "did_get": score_quality_points,
-                "letter": course["letter"],
+                "letter": overall_course.get("letter", course.get("letter")),
                 "should_have_been_gp": None if excluded else fumble.should_have_been_gp,
                 "credits": 1.0 if gpa_basis == "classes" else course["credits"],
                 "delta": delta,
@@ -2281,7 +2309,12 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         for letters in weighted_counts.values():
             for letter, count in letters.items():
                 guess_counts[1][letter] = guess_counts[1].get(letter, 0) + count
-    delta, extra, _ = future_guess_delta(guess_counts, scale_rows, target_gp)
+    delta, extra, _ = future_guess_delta(
+        guess_counts,
+        scale_rows,
+        target_gp,
+        1.0 if gpa_basis == "classes" else None,
+    )
     adj_credits = gpa_credits + extra if extra else None
     adj_score = (overall_score + delta) if delta is not None else None
     adj_gpa = (
@@ -2976,7 +3009,11 @@ def record_all_grade_snapshots(db: Session) -> list[dict]:
     gradebook_type = (settings.gradebook_type or "college").strip().lower() if settings else "college"
     gpa_basis = (settings.gpa_basis or "credits").strip().lower() if settings else "credits"
     weight_tags = gpa_weight_tags(settings)
-    score_units = high_school_term_units(db) if gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if gradebook_type == "high_school"
+        else ({semester.id: 1.0 for semester in gradebook_semesters(db)} if gpa_basis == "classes" else {})
+    )
     results = []
     for semester in sort_semesters(gradebook_semesters(db)):
         if semester.progression_locked:
@@ -3089,7 +3126,7 @@ def grade_prompt_status(db: Session) -> dict:
                 "id": sem.id,
                 "gradebook_id": sem.gradebook_id,
                 "gradebook_type": gradebook_type_for(sem.gradebook_id),
-                "name": semester_name(sem),
+                "name": semester_name(sem, gradebook_type_for(sem.gradebook_id)),
                 "progression_locked": bool(sem.progression_locked),
             }
             for sem in ranked

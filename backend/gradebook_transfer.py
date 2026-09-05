@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
 
+from backend.engine import SEASON_LABELS
 from backend.models import AcademicYear, Category, Course, GradeScale, ScaleProfile, ScaleProfileRow, Semester, Settings
 from backend.service import GRADEBOOK_SETTING_DEFAULTS, _gradebook_settings_map, _gradebook_values
 
@@ -153,14 +154,14 @@ def gradebook_setup_inventory(db: Session, gradebooks: list[dict]) -> dict:
             periods.append({
                 "key": f"period-{record.id}",
                 "name": record.name,
-                "terms": [_inventory_term(item) for item in terms],
+                "terms": [_inventory_term(item, gradebook_type) for item in terms],
             })
         remaining = [semester for semester in semesters if semester.id not in assigned]
         if remaining:
             periods.append({
                 "key": "unassigned",
                 "name": "Terms",
-                "terms": [_inventory_term(item) for item in remaining],
+                "terms": [_inventory_term(item, gradebook_type) for item in remaining],
             })
         payload.append({
             "id": gradebook_id,
@@ -171,17 +172,27 @@ def gradebook_setup_inventory(db: Session, gradebooks: list[dict]) -> dict:
     return {"gradebooks": payload}
 
 
-def _inventory_term(semester: Semester) -> dict:
+def _term_name(semester: Semester, gradebook_type: str = "college") -> str:
+    label = SEASON_LABELS.get(str(semester.season or "").lower(), str(semester.season or "").title())
+    if (gradebook_type or "college").strip().lower() == "high_school":
+        return label
+    return f"{semester.year} {label}"
+
+
+def _inventory_term(semester: Semester, gradebook_type: str = "college") -> dict:
     season = str(semester.season or "").lower()
     academic_period_key = semester.year - 1 if season in {"spring", "summer"} else semester.year
     return {
         "id": semester.id,
         "key": f"term-{semester.id}",
-        "name": f"{semester.year} {semester.season.title()}",
+        "name": _term_name(semester, gradebook_type),
         "year": semester.year,
         "season": semester.season,
         "academic_period_key": str(academic_period_key),
-        "classes": [{"id": course.id, "key": f"course-{course.id}", "name": course.code} for course in semester.courses],
+        "classes": [
+            {"id": course.id, "key": f"course-{course.id}", "name": course.code}
+            for course in sorted(semester.courses, key=lambda course: (str(course.code or "").strip().casefold(), course.id))
+        ],
     }
 
 
@@ -217,16 +228,22 @@ def export_gradebook_setups(db: Session, selections: list[dict]) -> dict:
             .order_by(ScaleProfile.sort_order, ScaleProfile.id)
             .all()
         )
+        values = _gradebook_values(db.get(Settings, 1), gradebook_id)
+        gradebook_type = str(values.get("gradebook_type") or "college")
         terms = []
         for semester in selected:
             courses = [course for course in semester.courses if course.id in selected_courses]
+            configured_name = term_names.get(str(semester.id)) or term_names.get(semester.id)
             terms.append({
                 "key": f"term-{semester.id}",
-                "name": str(term_names.get(str(semester.id)) or term_names.get(semester.id) or f"{semester.year} {semester.season.title()}"),
+                "name": str(configured_name) if configured_name and gradebook_type != "high_school" else _term_name(semester, gradebook_type),
                 "year": semester.year,
                 "season": semester.season,
                 "included": semester.included is True,
-                "classes": [_course_payload(course) for course in courses],
+                "classes": [
+                    _course_payload(course)
+                    for course in sorted(courses, key=lambda course: (str(course.code or "").strip().casefold(), course.id))
+                ],
             })
         period_by_term: dict[int, tuple[str, str]] = {}
         for record in db.query(AcademicYear).filter(AcademicYear.gradebook_id == gradebook_id).order_by(AcademicYear.id):
@@ -420,8 +437,22 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
         period_destinations = entry.get("period_destinations") if isinstance(entry.get("period_destinations"), dict) else {}
         imported_term_ids: dict[str, int] = {}
         created_term_ids: set[int] = set()
+
+        def has_explicit_class_destinations(term: dict) -> bool:
+            classes = [item for item in term.get("classes", []) if isinstance(item, dict)]
+            return bool(classes) and all(
+                str(item.get("key") or "") in class_destinations
+                for item in classes
+            )
+
         if not cross_type:
             for term_key, term in terms.items():
+                # A term whose exported classes have all been placed explicitly
+                # must be created by the placement logic below. Creating its
+                # default term here would leave an empty duplicate behind when
+                # importing a class into an existing academic period.
+                if has_explicit_class_destinations(term):
+                    continue
                 chosen = str(term_destinations.get(term_key) or "new")
                 if chosen != "new" and chosen.isdigit():
                     existing = db.query(Semester).filter(Semester.id == int(chosen), Semester.gradebook_id == destination_id).first()

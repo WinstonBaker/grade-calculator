@@ -150,7 +150,7 @@ export default function ExamImpactTable({ courses, onPatch, gradebookId = null, 
             <th>Exam</th>
             <th>Test %</th>
             <th>Exam %</th>
-            <th>Δ</th>
+            <th className="exam-impact-delta">Δ</th>
             <th>Before</th>
             <th>After</th>
             <th>Letter</th>
@@ -221,7 +221,7 @@ export default function ExamImpactTable({ courses, onPatch, gradebookId = null, 
                 </td>
                 <td className="mono">{fmtPct(impact?.test_percent)}</td>
                 <td className="mono">{fmtPct(impact?.exam_percent)}</td>
-                <td className={`mono ${scoreClass(impact?.delta)}`}>{fmtDelta(impact?.delta)}</td>
+                <td className={`mono exam-impact-delta ${scoreClass(impact?.delta)}`}>{fmtDelta(impact?.delta)}</td>
                 <td>
                   {hasBothPercents ? (
                     <span className={`letter ${courseGradeClass({ ...course, pass_fail_override: null, percent: impact?.percent_before, letter: impact?.letter_before })}`}>

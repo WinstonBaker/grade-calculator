@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api, courseGradeClass, fmtGpa, fmtPct, fmtScore, gradeFromPercent, gpOptions, gpSelectValue, letterClass, roundPercentForCalculation, scoreClass } from "./api";
-import { Tooltip, useCreditTerms, useShowScore, useTooltips } from "./creditLabel.jsx";
+import { Tooltip, useCreditTerms, useShowScore } from "./creditLabel.jsx";
 import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
 import { useToasts } from "./notifications.jsx";
 import SemesterProgressChart from "./SemesterProgressChart.jsx";
@@ -105,7 +105,6 @@ function HighSchoolEditModeToggle({ value, onChange, weightedGpa, ariaLabel = "E
 export default function CourseList({ semesters, academicPeriods = [], onChange, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, onAcademicPeriodDelete, classType = "alphanumeric", gradebookType = "college", highSchoolTerms: configuredHighSchoolTerms, highSchoolTermWeights = {}, highSchoolOverallRoundingByPeriod = {}, weightedGpa = false, termLabel = "Semester", termNames = {}, academicYearKey, academicPeriodName, onAcademicPeriodChange, onSemesterCreated, dataLoaded = true, gradebookId = null }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
-  const tooltipsEnabled = useTooltips();
   const periodLabel = String(termLabel || "Term").trim() || "Term";
   const { warning, push } = useToasts();
   const navigate = useNavigate();
@@ -208,11 +207,6 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
       ...Object.fromEntries(relatedHighSchoolCourses(course).map((item) => [String(item.id), labelIds])),
     },
   }));
-  const hasCreditBreakdown = Boolean(
-    (current?.term_attempted_pass_fail_credits ?? 0) > 0
-      || (current?.term_unpassed_credits ?? 0) > 0
-      || courses.some((course) => course.credit_mode === "pass_fail" || (course.quality_points != null && course.quality_points <= 0))
-  );
   const gradedCourses = useMemo(
     () => courses.filter((course) => course.quality_points != null && course.gp_override !== -1),
     [courses]
@@ -686,36 +680,27 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
           </div>
         ) : null}
         {isHighSchool ? (
-          <div className={`stat${tooltipsEnabled ? " stat-info-hover" : ""}`} tabIndex={tooltipsEnabled ? 0 : undefined} aria-describedby={tooltipsEnabled ? `semester-classes-info-${current.id}` : undefined}>
+          <div className="stat stat-info-hover" tabIndex={0} aria-describedby={`semester-classes-info-${current.id}`}>
             <div className="label">{periodLabel} Classes</div>
             <div className="value mono">{gradedCourses.length}</div>
-            {tooltipsEnabled ? (
-              <p className="stat-info-hover-bubble" id={`semester-classes-info-${current.id}`} role="note">
-                <span>Total units: {Number(termUnitTotal.toFixed(3)).toString()}</span>
-                {termUnitBreakdown.length ? termUnitBreakdown.map((row) => (
-                  <span key={row.units}>{row.units}-unit classes: {row.count}</span>
-                )) : <span>No units yet</span>}
-              </p>
-            ) : null}
-          </div>
-        ) : hasCreditBreakdown ? (
-          <div className={`stat${tooltipsEnabled ? " stat-info-hover" : ""}`} tabIndex={tooltipsEnabled ? 0 : undefined} aria-describedby={tooltipsEnabled ? `semester-credits-info-${current.id}` : undefined}>
-            <div className="label">{periodLabel} {creditTerms.plural}</div>
-            <div className="value mono">{current.term_credits ?? 0}</div>
-            {tooltipsEnabled ? (
-              <p className="stat-info-hover-bubble" id={`semester-credits-info-${current.id}`} role="note">
-                <span>Affects GPA: {current.term_affects_gpa_credits ?? current.term_gpa_credits ?? 0} {creditTerms.plural}</span>
-                <span>Credit Only: {current.term_credit_only_credits ?? Math.max(0, (current.term_credits ?? 0) - (current.term_gpa_credits ?? 0))} {creditTerms.plural}</span>
-                <br />
-                {(current.term_passed_credits ?? 0) > 0 ? <span>Passing: {current.term_passed_credits} {creditTerms.plural}</span> : null}
-                {(current.term_unpassed_credits ?? 0) > 0 ? <span>Failing: {current.term_unpassed_credits} {creditTerms.plural}</span> : null}
-              </p>
-            ) : null}
+            <p className="stat-info-hover-bubble" id={`semester-classes-info-${current.id}`} role="note">
+              <span>Total units: {Number(termUnitTotal.toFixed(3)).toString()}</span>
+              {termUnitBreakdown.length ? termUnitBreakdown.map((row) => (
+                <span key={row.units}>{row.units}-unit classes: {row.count}</span>
+              )) : <span>No units yet</span>}
+            </p>
           </div>
         ) : (
-          <div className="stat">
+          <div className="stat stat-info-hover" tabIndex={0} aria-describedby={`semester-credits-info-${current.id}`}>
             <div className="label">{periodLabel} {creditTerms.plural}</div>
             <div className="value mono">{current.term_credits ?? 0}</div>
+            <p className="stat-info-hover-bubble" id={`semester-credits-info-${current.id}`} role="note">
+              <span>Affects GPA: {current.term_affects_gpa_credits ?? current.term_gpa_credits ?? 0} {creditTerms.plural}</span>
+              <span>Credit Only: {current.term_credit_only_credits ?? Math.max(0, (current.term_credits ?? 0) - (current.term_gpa_credits ?? 0))} {creditTerms.plural}</span>
+              <br />
+              {(current.term_passed_credits ?? 0) > 0 ? <span>Passing: {current.term_passed_credits} {creditTerms.plural}</span> : null}
+              {(current.term_unpassed_credits ?? 0) > 0 ? <span>Failing: {current.term_unpassed_credits} {creditTerms.plural}</span> : null}
+            </p>
           </div>
         )}
         {flaggedSemesterItems.length ? (
@@ -988,7 +973,6 @@ function averageDelta(courses) {
 }
 
 function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, semesters, termSemesters = [], courses, termWeights = {}, overallRounding = {}, overallClasses = [], termLabel = "Semester", weightedGpa = false, gpaSettings = {}, onSelectTerm, onEditPeriodName, onDeletePeriod, onChange }) {
-  const tooltipsEnabled = useTooltips();
   const [overrides, setOverrides] = useState(() => ({}));
   const [overrideBusy, setOverrideBusy] = useState(false);
   const roundTermPercents = overallRounding.roundTermPercents === true;
@@ -1155,17 +1139,15 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
     <div className="grid-stats semester-stats high-school-semester-stats high-school-overall-stats">
       <div className="stat"><div className="label">{termLabel} GPA</div><div className="value">{fmtGpa(semesterGpa)}</div></div>
       {weightedGpa ? <div className="stat"><div className="label">{termLabel} WGPA</div><div className="value">{fmtGpa(semesterWgpa)}</div></div> : null}
-      <div className={`stat${tooltipsEnabled ? " stat-info-hover" : ""}`} tabIndex={tooltipsEnabled ? 0 : undefined} aria-describedby={tooltipsEnabled ? `overall-classes-info-${academicYearKey}` : undefined}>
+      <div className="stat stat-info-hover" tabIndex={0} aria-describedby={`overall-classes-info-${academicYearKey}`}>
         <div className="label">{termLabel} Classes</div>
         <div className="value mono">{graded.length}</div>
-        {tooltipsEnabled ? (
-          <p className="stat-info-hover-bubble" id={`overall-classes-info-${academicYearKey}`} role="note">
-            <span>Total units: {Number(unitTotal.toFixed(3)).toString()}</span>
-            {unitBreakdown.length ? unitBreakdown.map((row) => (
-              <span key={row.units}>{row.units}-unit classes: {row.count}</span>
-            )) : <span>No units yet</span>}
-          </p>
-        ) : null}
+        <p className="stat-info-hover-bubble" id={`overall-classes-info-${academicYearKey}`} role="note">
+          <span>Total units: {Number(unitTotal.toFixed(3)).toString()}</span>
+          {unitBreakdown.length ? unitBreakdown.map((row) => (
+            <span key={row.units}>{row.units}-unit classes: {row.count}</span>
+          )) : <span>No units yet</span>}
+        </p>
       </div>
       <div className="stat"><div className="label">Unweighted Score</div><div className={`value ${unweightedScore == null ? "" : scoreClass(unweightedScore)}`}>{fmtScore(unweightedScore)}</div></div>
     </div>
@@ -1175,7 +1157,7 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
         <tbody>{rollups.map((item) => <tr key={item.row.key}>
           <th>{item.row.label}<div className="overall-class-length">{displayRatio(item.classCredit)} Units</div></th>
           {terms.map((term, index) => { const entry = item.entries[index]; return <td key={term.id}>{entry ? <><div className={`overall-cell-grade ${entry.course.gp_override === -1 ? "letter-neutral" : courseGradeClass(entry.course)}`}>{displayPercent(coursePercent(entry.course))}</div><div className="overall-cell-weight">({displayPercent(entry.weight)})</div></> : null}</td>; })}
-          <td className="overall-class-summary">{item.representative ? <><div className={`overall-cell-score ${item.overallScore == null ? "muted" : scoreClass(item.overallScore)}`}>Score: {fmtScore(item.overallScore)}</div><div className={`overall-class-grade ${gradeClass(item)} ${item.override != null ? "overall-overridden-value" : ""}`}><span>{item.grade.letter || "—"}</span> <span className="mono">{fmtGpa(item.unweightedGp)}</span></div>{weightedGpa ? <div className={`overall-weighted-gp ${isNeutralWeightedGp(item.representative, item.unweightedGp, item.weightedGp) ? "weighted-gp-neutral" : ""} ${item.override != null ? "overall-overridden-value" : ""}`}>WGP: {fmtGpa(item.weightedGp)}</div> : null}</> : null}</td>
+          <td className="overall-class-summary">{item.representative ? <><div className={`overall-cell-score ${item.overallScore == null ? "muted" : scoreClass(item.overallScore)}`}>Score: {fmtScore(item.overallScore)}</div><div className={`overall-class-grade ${gradeClass(item)} ${item.override != null ? "overall-overridden-value" : ""}`}><span>{item.grade.letter || "—"}</span> <span className="mono overall-class-unweighted-gp">{fmtGpa(item.unweightedGp)}</span></div>{weightedGpa ? <div className={`overall-weighted-gp ${isNeutralWeightedGp(item.representative, item.unweightedGp, item.weightedGp) ? "weighted-gp-neutral" : ""} ${item.override != null ? "overall-overridden-value" : ""}`}>WGP: {fmtGpa(item.weightedGp)}</div> : null}</> : null}</td>
           <td className="overall-class-override">{item.representative ? <select className={`select override-select ${item.override == null ? "is-none" : ""} ${overrideGradeClass(item.override == null ? "" : item.override === -1 ? "na" : String(item.override), gpOptions(item.representative))}`} value={item.override == null ? "" : item.override === -1 ? "na" : String(item.override)} aria-label={`${item.row.label} final override`} onChange={(event) => updateOverride(item, event.target.value)}><option value="">None</option><option value="na">N/A</option>{gpOptions(item.representative).map(([letter, gp]) => <option key={letter} value={gp} className={letterClass(letter)}>{letter} ({fmtGpa(gp)})</option>)}</select> : null}</td>
          </tr>)}{!rollups.length ? <tr><td colSpan={terms.length + 3} className="muted">No classes in this academic period yet.</td></tr> : null}</tbody>
       </table>
@@ -1195,6 +1177,52 @@ function AcademicPeriodNameModal({ name, onClose, onSave }) {
       </form>
     </div>,
     document.body,
+  );
+}
+
+function InlineClassNameInput({ row, disabled = false, onSave }) {
+  const [draft, setDraft] = useState(row.code || "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(row.code || "");
+  }, [row.key, row.code]);
+
+  async function commit() {
+    const next = draft.trim();
+    const current = String(row.code || "").trim();
+    if (!next || next === current || saving) {
+      setDraft(current);
+      return;
+    }
+    setSaving(true);
+    try {
+      const saved = await onSave?.(row, next);
+      setDraft(saved === false ? current : next);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <input
+      className="high-school-class-name-input"
+      value={draft}
+      disabled={disabled || saving}
+      aria-label={`Class name for ${row.label}`}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          setDraft((current) => String(row.code || current));
+          event.currentTarget.blur();
+        }
+      }}
+    />
   );
 }
 
@@ -1271,6 +1299,22 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
 
   function classLabelIds(row) {
     return [...new Set(coursesForRow(row).flatMap((course) => courseLabels?.[String(course.id)] || []))];
+  }
+
+  async function renameClass(row, name) {
+    const course = coursesForRow(row)[0];
+    if (!course) return false;
+    setBusy(true);
+    try {
+      await api.patchCourse(course.id, { code: name });
+      await onChange?.();
+      return true;
+    } catch (err) {
+      warning(err.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function updateClassWeight(row, value) {
@@ -1476,7 +1520,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
             {rows.map((row) => {
               const course = coursesForRow(row)[0];
               return <tr key={row.key}>
-                <th><span className="high-school-class-label">{row.label}</span></th>
+                <th><InlineClassNameInput row={row} disabled={busy} onSave={renameClass} /></th>
                 <td>
                   {course ? <ClassLabelPicker
                     course={course}
@@ -1517,7 +1561,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
             <thead><tr><th>Class</th>{terms.map((term, index) => { const draftName = termNameDrafts[term.id] ?? term.name; return <th key={term.id} className="high-school-term-header"><div className="high-school-term-header-content"><button className="high-school-term-delete" type="button" aria-label={`Delete ${term.name} term`} disabled={busy} onClick={() => requestDeleteTerm(term)}>×</button><input className="high-school-term-header-input" style={{ width: `${Math.max(3, String(draftName || "").length)}ch` }} value={draftName} aria-label={`${term.name} term name`} onFocus={() => { termNameBeforeEdit.current[term.id] = termNameDrafts[term.id] ?? term.name; }} onChange={(event) => editTermName(term, event.target.value)} onBlur={(event) => finishTermNameEdit(term, event.target.value)} /><button className="high-school-term-drag" type="button" aria-label={`Move ${term.name} right`} disabled={index === terms.length - 1} onClick={() => reorderTerm(index, index + 1)}>→</button></div></th>; })}<th className="high-school-term-add-header"><div className="high-school-term-add-control"><span className="high-school-term-add-label">Add Term</span><button className="btn small" type="button" aria-label="Add term" onClick={addTerm}>+</button></div></th></tr></thead>
             <tbody>
               {rows.map((row) => <tr key={row.key}>
-                 <th><span className="high-school-class-label">{row.label}</span></th>
+                 <th><InlineClassNameInput row={row} disabled={busy} onSave={renameClass} /></th>
                 {terms.map((term) => {
                   const semester = semesterForTerm(term);
                   const matching = courses.filter((course) => course.semester_id === semester?.id && String(course.code || "").trim().toLowerCase() === row.code.toLowerCase());

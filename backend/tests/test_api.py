@@ -122,6 +122,58 @@ def test_semester_course_grade_flow(tmp_path):
         teardown()
 
 
+def test_class_names_are_alphabetical_within_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        semester = client.get("/api/semesters").json()[0]
+        created = [
+            client.post(
+                "/api/courses",
+                json={"semester_id": semester["id"], "code": code, "credits": index + 1},
+            ).json()
+            for index, code in enumerate(("Zoology", "alpha", "Biology", "Calculus"))
+        ]
+        expected = ["alpha", "Biology", "Calculus", "Zoology"]
+
+        listed_term = next(
+            item for item in client.get("/api/semesters").json()
+            if item["id"] == semester["id"]
+        )
+        assert [item["code"] for item in listed_term["courses"]] == expected
+        credits_desc = client.get(
+            f"/api/courses?semester_id={semester['id']}&sort=credits&desc=true"
+        ).json()
+        assert [item["code"] for item in credits_desc] == ["Calculus", "Biology", "alpha", "Zoology"]
+        gpa_term = next(item for item in client.get("/api/gpa").json()["terms"] if item["id"] == semester["id"])
+        assert [item["code"] for item in gpa_term["courses"]] == expected
+
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Source"}]},
+        ).json()
+        inventory_term = next(
+            term
+            for period in inventory["gradebooks"][0]["periods"]
+            for term in period["terms"]
+            if term["id"] == semester["id"]
+        )
+        assert [item["name"] for item in inventory_term["classes"]] == expected
+
+        payload = client.post(
+            "/api/gradebook-setups/export",
+            json={"gradebooks": [{
+                "id": "gradebook-1",
+                "name": "Source",
+                "term_ids": [semester["id"]],
+                "course_ids": [item["id"] for item in created],
+            }]},
+        ).json()
+        exported_term = payload["gradebooks"][0]["periods"][0]["terms"][0]
+        assert [item["code"] for item in exported_term["classes"]] == expected
+    finally:
+        teardown()
+
+
 def test_meta_includes_version_and_downloads(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -331,6 +383,123 @@ def test_gradebook_setup_import_converts_individual_class_between_types(tmp_path
         teardown()
 
 
+def test_gradebook_setup_import_places_selected_classes_in_matching_new_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        for gradebook_id in ("gradebook-1", "gradebook-2"):
+            updated = client.patch(
+                f"/api/settings?gradebook_id={gradebook_id}",
+                json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+            )
+            assert updated.status_code == 200
+
+        source_terms = [
+            client.post(
+                "/api/semesters?gradebook_id=gradebook-1",
+                json={"year": 2040, "season": season, "included": True},
+            ).json()
+            for season in ("term 1", "term 2")
+        ]
+        client.post(
+            "/api/academic-years?gradebook_id=gradebook-1",
+            json={"name": "Source period", "semester_ids": [item["id"] for item in source_terms]},
+        )
+        art_courses = []
+        for term in source_terms:
+            art_courses.append(client.post(
+                "/api/courses?gradebook_id=gradebook-1",
+                json={"semester_id": term["id"], "code": "Art I", "credits": 1},
+            ).json())
+            client.post(
+                "/api/courses?gradebook_id=gradebook-1",
+                json={"semester_id": term["id"], "code": "Other Class", "credits": 1},
+            )
+
+        target_terms = [
+            client.post(
+                "/api/semesters?gradebook_id=gradebook-2",
+                json={"year": 2040, "season": season, "included": True},
+            ).json()
+            for season in ("fall", "spring")
+        ]
+        target_period = client.post(
+            "/api/academic-years?gradebook_id=gradebook-2",
+            json={"name": "Target period", "semester_ids": [item["id"] for item in target_terms]},
+        ).json()
+
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Source"}]},
+        ).json()
+        exported_period = next(
+            period
+            for period in inventory["gradebooks"][0]["periods"]
+            if {term["id"] for term in period["terms"]} >= {item["id"] for item in source_terms}
+        )
+        payload = client.post(
+            "/api/gradebook-setups/export",
+            json={"gradebooks": [{
+                "id": "gradebook-1",
+                "name": "Source",
+                "term_ids": [item["id"] for item in source_terms],
+                "course_ids": [item["id"] for item in art_courses],
+            }]},
+        ).json()
+        exported_terms = {
+            term["key"]: term
+            for period in payload["gradebooks"][0]["periods"]
+            for term in period["terms"]
+        }
+        source_term_keys = {f"term-{item['id']}" for item in source_terms}
+        assert {term["name"] for term in exported_terms.values()} >= {"Term 1", "Term 2"}
+        assert all(
+            [course["code"] for course in term["classes"]] == ["Art I"]
+            for term in exported_terms.values()
+            if term["key"] in source_term_keys
+        )
+
+        imported = client.post(
+            "/api/gradebook-setups/import",
+            json={"payload": payload, "plan": [{
+                "source_id": "gradebook-1",
+                "destination_mode": "existing",
+                "destination_id": "gradebook-2",
+                "destination_name": "Target",
+                "apply_settings": False,
+                "conflict_strategy": "copy",
+                "term_destinations": {key: "new" for key in exported_terms},
+                "period_destinations": {exported_period["key"]: "new"},
+                "class_destinations": {
+                    term["classes"][0]["key"]: f"period:{target_period['id']}"
+                    for term in exported_terms.values()
+                },
+            }]},
+        )
+        assert imported.status_code == 200
+        assert imported.json()["gradebooks"][0]["imported_courses"] == 2
+
+        target_semesters = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+        target_period_after = next(
+            item
+            for item in client.get("/api/academic-years?gradebook_id=gradebook-2").json()
+            if item["id"] == target_period["id"]
+        )
+        new_terms = [
+            item
+            for item in target_semesters
+            if item["id"] in set(target_period_after["semester_ids"])
+            and item["id"] not in {term["id"] for term in target_terms}
+        ]
+        assert {item["name"] for item in new_terms} == {"Term 1", "Term 2"}
+        assert all([course["code"] for course in item["courses"]] == ["Art I"] for item in new_terms)
+        assert all(
+            item["name"] != "Source period"
+            for item in client.get("/api/academic-years?gradebook_id=gradebook-2").json()
+        )
+    finally:
+        teardown()
+
+
 def test_gradebook_type_is_scoped_per_gradebook(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -343,16 +512,67 @@ def test_gradebook_type_is_scoped_per_gradebook(tmp_path):
         )
         assert updated.status_code == 200
         assert updated.json()["gradebook_type"] == "high_school"
+        high_school_term = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        assert high_school_term["name"] == high_school_term["season"].title()
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Source"}]},
+        ).json()
+        inventory_term = next(
+            term
+            for period in inventory["gradebooks"][0]["periods"]
+            for term in period["terms"]
+            if term["id"] == high_school_term["id"]
+        )
+        assert inventory_term["name"] == high_school_term["season"].title()
         assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "high_school"
         assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["gradebook_type"] == "college"
+
+        updated = client.patch(
+            "/api/settings?gradebook_id=gradebook-1",
+            json={"gradebook_type": "college"},
+        )
+        assert updated.status_code == 200
+        college_term = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        assert college_term["name"] == f"{college_term['year']} {college_term['season'].title()}"
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "college"
 
         updated = client.patch(
             "/api/settings?gradebook_id=gradebook-2",
             json={"gradebook_type": "college"},
         )
         assert updated.status_code == 200
-        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "high_school"
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "college"
         assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["gradebook_type"] == "college"
+    finally:
+        teardown()
+
+
+def test_course_name_is_shared_across_semesters(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        first_semester = client.get("/api/semesters").json()[0]
+        second_semester = client.post(
+            "/api/semesters", json={"year": 2040, "season": "fall", "included": True}
+        ).json()
+        first = client.post(
+            "/api/courses", json={"semester_id": first_semester["id"], "code": "MATH 101"}
+        ).json()
+        second = client.post(
+            "/api/courses", json={"semester_id": second_semester["id"], "code": "MATH 101"}
+        ).json()
+
+        renamed = client.patch(f"/api/courses/{first['id']}", json={"code": "Calculus I"})
+        assert renamed.status_code == 200
+        assert renamed.json()["code"] == "Calculus I"
+        assert client.get(f"/api/courses/{second['id']}").json()["code"] == "Calculus I"
+        renamed_codes = [
+            course["code"]
+            for semester in client.get("/api/semesters").json()
+            for course in semester["courses"]
+            if course["id"] in {first["id"], second["id"]}
+        ]
+        assert renamed_codes == ["Calculus I", "Calculus I"]
     finally:
         teardown()
 
@@ -546,6 +766,91 @@ def test_fumble_cannot_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_pa
         teardown()
 
 
+def test_high_school_fumble_replaces_overall_grade_from_final_override(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        assert settings.status_code == 200
+        semester = client.get("/api/semesters").json()[0]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": semester["id"], "code": "Biology H", "credits": 3},
+        ).json()
+        assert client.patch(
+            f"/api/courses/{course['id']}",
+            json={"final_gp_override": 4.0},
+        ).status_code == 200
+
+        before = client.get("/api/gpa").json()
+        assert before["overall_gpa"] == pytest.approx(4.0)
+        assert before["fumbles"] == []
+
+        after = client.post(
+            "/api/fumbles",
+            json={"course_id": course["id"], "should_have_been_gp": 4.333},
+        )
+        assert after.status_code == 200
+        body = after.json()
+        assert len(body["fumbles"]) == 1
+        assert body["fumbles"][0]["did_get"] == pytest.approx(4.0)
+        assert body["fumbles"][0]["should_have_been_gp"] == pytest.approx(4.333)
+        assert body["score_with_fumbles"] == pytest.approx(1.0)
+        assert body["gpa_with_fumbles"] == pytest.approx(4.3333333333)
+    finally:
+        teardown()
+
+
+def test_high_school_fumble_selection_survives_later_same_class(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        assert settings.status_code == 200
+        earlier = client.post(
+            "/api/semesters", json={"year": 2027, "season": "fall", "included": True}
+        ).json()
+        later = client.post(
+            "/api/semesters", json={"year": 2028, "season": "spring", "included": True}
+        ).json()
+        courses = []
+        for semester in (earlier, later):
+            course = client.post(
+                "/api/courses",
+                json={"semester_id": semester["id"], "code": "AP Calculus BC", "credits": 3},
+            ).json()
+            assert client.patch(
+                f"/api/courses/{course['id']}",
+                json={"final_gp_override": 4.0},
+            ).status_code == 200
+            courses.append(course)
+
+        created = client.post(
+            "/api/fumbles",
+            json={"course_id": courses[0]["id"], "should_have_been_gp": 4.333},
+        )
+        assert created.status_code == 200
+        fumble_id = created.json()["fumbles"][0]["id"]
+        row = next(item for item in created.json()["fumbles"] if item["id"] == fumble_id)
+        assert row["should_have_been_gp"] == pytest.approx(4.333)
+        assert row["excluded"] is False
+
+        updated = client.patch(
+            f"/api/fumbles/{fumble_id}",
+            json={"should_have_been_gp": 4.0},
+        )
+        assert updated.status_code == 200
+        row = next(item for item in updated.json()["fumbles"] if item["id"] == fumble_id)
+        assert row["should_have_been_gp"] == pytest.approx(4.0)
+        assert row["excluded"] is False
+    finally:
+        teardown()
+
+
 def test_default_scale_copied_to_new_courses(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -615,6 +920,53 @@ def test_optional_gpa_cap_preserves_aplus_score(tmp_path):
         restored = client.patch("/api/settings", json={"gpa_cap": None}).json()
         assert restored["gpa_cap"] is None
         assert abs(restored["overall_gpa"] - 4.333) < 0.001
+    finally:
+        teardown()
+
+
+def test_fixed_unit_score_is_used_by_course_term_summary_fumble_and_future_guess(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        courses = [
+            client.post(
+                "/api/courses",
+                json={"semester_id": semester_id, "code": code, "credits": 3, "gp_override": gp},
+            ).json()
+            for code, gp in (("A+ 101", 4.333), ("A- 102", 3.667), ("B+ 103", 3.333))
+        ]
+
+        fixed = client.patch("/api/settings", json={"gpa_basis": "classes"})
+        assert fixed.status_code == 200
+
+        listed = client.get("/api/courses?semester_id={}".format(semester_id)).json()
+        scores = {row["code"]: row["score"] for row in listed}
+        assert scores == {"A+ 101": 1, "A- 102": -1, "B+ 103": -2}
+
+        gpa = client.get("/api/gpa").json()
+        term = next(row for row in gpa["terms"] if row["id"] == semester_id)
+        assert term["term_score"] == -2
+        assert gpa["overall_score"] == pytest.approx(-2)
+        assert next(row for row in gpa["level_stats"] if row["level"] == "100")["score"] == -2.0
+
+        fumble_response = client.post(
+            "/api/fumbles",
+            json={"course_id": courses[1]["id"], "should_have_been_gp": 4.333},
+        )
+        assert fumble_response.status_code == 200
+        with_fumble = fumble_response.json()
+        assert with_fumble["fumble_total"] == 2
+        assert with_fumble["score_with_fumbles"] == 0
+
+        updated = client.patch(
+            "/api/settings",
+            json={"future_guess": {"3": {"A+": 1}}},
+        )
+        assert updated.status_code == 200
+        future = updated.json()["future_guess"]
+        assert future["extra_credits"] == 1
+        assert future["delta_score"] == 1
+        assert future["adjusted_score"] == -1
     finally:
         teardown()
 

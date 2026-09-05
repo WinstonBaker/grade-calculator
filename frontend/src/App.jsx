@@ -26,6 +26,20 @@ const GRADEBOOK_MEMBERS_KEY = "grade-calculator-gradebook-members-v1";
 const GRADEBOOK_APPEARANCE_KEY = "grade-calculator-gradebook-appearance-v1";
 const SPECULATION_TOOLTIP = 'Speculation Mode: Edit only the grade values of multiple items at once, allowing you to see how your grade would change when speculating a bulk number of grades. "Changes" are not saved when exited.';
 const SPECULATION_MODE_TOAST_ID = "speculation-mode-status";
+const GLOBAL_APPEARANCE_KEYS = new Set([
+  "gradeColors",
+  "tooltips",
+  "gradeScale",
+  "customGradeColors",
+  "gradeScalePresets",
+  "primary",
+  "secondary",
+  "tertiary",
+  "themeScale",
+  "themePresets",
+  "autoContrastText",
+  "textColor",
+]);
 const DEFAULT_HIGH_SCHOOL_TERMS = [
   { id: "fall", name: "Fall", season: "fall" },
   { id: "spring", name: "Spring", season: "spring" },
@@ -500,11 +514,24 @@ function loadGradebookAppearance(gradebooks = []) {
     const parsed = JSON.parse(window.localStorage.getItem(GRADEBOOK_APPEARANCE_KEY) || "{}");
     if (!parsed || typeof parsed !== "object") return {};
     return Object.fromEntries(gradebooks.map((gradebook) => {
-      return [gradebook.id, parsed[gradebook.id]];
+      const stored = parsed[gradebook.id];
+      if (!stored || typeof stored !== "object") return [gradebook.id, stored];
+      return [gradebook.id, stripGlobalAppearance(stored)];
     }).filter(([, value]) => value && typeof value === "object"));
   } catch {
     return {};
   }
+}
+
+function stripGlobalAppearance(value) {
+  if (!value || typeof value !== "object") return {};
+  const scoped = { ...value };
+  GLOBAL_APPEARANCE_KEYS.forEach((key) => delete scoped[key]);
+  return scoped;
+}
+
+function globalAppearanceValues(value) {
+  return Object.fromEntries([...GLOBAL_APPEARANCE_KEYS].map((key) => [key, value?.[key]]));
 }
 
 export default function App() {
@@ -553,14 +580,10 @@ export default function App() {
   const activeAppearance = useMemo(
     () => ({
       ...appearance,
-      ...(gradebookAppearance[selectedGradebookId] || {}),
-      // Assignment-score coloring is a global Appearance preference. Older
-      // gradebook snapshots may contain a stale copy, which must not mask the
-      // current global switch.
-      gradeColors: appearance.gradeColors !== false,
-      // Tooltips are also a global Appearance preference. Do not let an older
-      // gradebook snapshot re-enable them after they were disabled globally.
-      tooltips: appearance.tooltips !== false,
+      ...stripGlobalAppearance(gradebookAppearance[selectedGradebookId]),
+      // App-wide appearance preferences always win over legacy gradebook
+      // snapshots and can only be changed from global Settings.
+      ...globalAppearanceValues(appearance),
     }),
     [appearance, gradebookAppearance, selectedGradebookId]
   );
@@ -651,10 +674,13 @@ export default function App() {
     const match = terms.find((term) => String(term.season || term.id).toLowerCase() === String(semester.season || "").toLowerCase());
     return [String(semester.id), match?.name || String(semester.name || "").replace(/^\d{4}\s+/, "")];
   })), [activeAppearance.highSchoolTerms, activeAppearance.highSchoolTermsByPeriod, activeAppearance.semesterTitles, isHighSchool, visibleSemesters]);
-  const configuredPeriodNames = useMemo(() => Object.fromEntries(visibleSemesters.map((semester) => {
-    const key = String(highSchoolAcademicYearKey(semester));
-    return [String(semester.id), resolvedAcademicPeriodNames[key] || highSchoolAcademicYearLabel(key)];
-  })), [resolvedAcademicPeriodNames, visibleSemesters]);
+  const configuredPeriodNames = useMemo(() => {
+    if (!isHighSchool) return {};
+    return Object.fromEntries(visibleSemesters.map((semester) => {
+      const key = String(highSchoolAcademicYearKey(semester));
+      return [String(semester.id), resolvedAcademicPeriodNames[key] || highSchoolAcademicYearLabel(key)];
+    }));
+  }, [isHighSchool, resolvedAcademicPeriodNames, visibleSemesters]);
 
   useEffect(() => {
     if (!gradebookMenuOpen) return undefined;
@@ -681,11 +707,11 @@ export default function App() {
 
   function updateGradebookAppearance(updater) {
     setGradebookAppearance((current) => {
-      const base = { ...appearance, ...(current[selectedGradebookId] || {}) };
+      const base = { ...appearance, ...stripGlobalAppearance(current[selectedGradebookId]) };
       const next = typeof updater === "function" ? updater(base) : updater;
       return {
         ...current,
-        [selectedGradebookId]: next,
+        [selectedGradebookId]: stripGlobalAppearance(next),
       };
     });
   }
@@ -941,7 +967,7 @@ export default function App() {
       imported.forEach((item) => {
         if (!item?.created || !item?.id || !item?.appearance || typeof item.appearance !== "object") return;
         const id = String(item.id);
-        next[id] = { ...(next[id] || {}), ...item.appearance };
+        next[id] = { ...(next[id] || {}), ...stripGlobalAppearance(item.appearance) };
       });
       return next;
     });

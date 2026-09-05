@@ -1828,7 +1828,11 @@ a {
 }
 
 .neg {
-  color: var(--grade-b, var(--red));
+  color: var(--grade-f, var(--red));
+}
+
+:root[data-grade-scale="classic"] .neg {
+  color: var(--grade-bm, var(--red));
 }
 
 .table-wrap {
@@ -2640,17 +2644,13 @@ th button.active {
 }
 
 .gradebook-dropdown {
-  position: absolute;
-  z-index: 30;
-  left: 0;
-  top: calc(100% + 6px);
+  position: static;
   width: 100%;
   box-sizing: border-box;
   margin-top: 6px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg-raised);
+  padding: 6px 0 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
 }
 
 .gradebook-dropdown-option {
@@ -3742,6 +3742,10 @@ th button.active {
   gap: 12px;
 }
 
+.dist-charts-row.score-chart-count-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .dist-charts-row > .donut-card:only-child {
   grid-column: 1 / -1;
   width: 100%;
@@ -3760,33 +3764,45 @@ th button.active {
 
 .distribution-summary-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   gap: 12px;
   align-items: start;
   min-width: 0;
 }
 
-.course-grade-summary-grid {
-  grid-template-columns: max-content minmax(0, 1fr);
+.distribution-summary-grid .dist-charts-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.distribution-summary-grid .donut-card.compact {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.distribution-summary-grid .donut-card.compact .donut-figure,
+.distribution-summary-grid .donut-card.compact .pie-chart {
+  width: 100px;
+  height: 100px;
+}
+
+.distribution-summary-grid .donut-card.compact .donut-title,
+.distribution-summary-grid .donut-card.compact .donut-figure {
+  justify-self: center;
 }
 
 .distribution-summary-grid .dist-charts {
+  width: 100%;
   min-width: 0;
-  gap: 4px;
+  gap: 0;
   padding: 8px 4px 4px;
   border-radius: 12px;
   background: var(--surface-soft);
 }
 
-.course-grade-summary-grid .dist-charts {
-  width: max-content;
-  max-width: 100%;
-  justify-self: start;
-}
-
-.course-grade-summary-grid .dist-charts-row {
-  width: max-content;
-  max-width: 100%;
+.distribution-summary-grid .distribution-hover-hint {
+  margin-top: 0;
+  min-height: 1rem;
 }
 
 .distribution-summary-grid .donut-card {
@@ -3797,28 +3813,26 @@ th button.active {
   margin-top: 0 !important;
   min-width: 0;
   width: 100%;
-  table-layout: fixed;
+  max-width: none;
+  table-layout: auto;
 }
 
 .distribution-summary-grid > table th,
 .distribution-summary-grid > table td {
+  padding: 6px 4px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .distribution-summary-grid > table th:first-child,
 .distribution-summary-grid > table td:first-child {
-  width: 34%;
+  width: auto;
 }
 
 .distribution-summary-grid .dist-charts-row.single {
   grid-template-columns: minmax(0, 1fr);
   justify-content: stretch;
   width: 100%;
-}
-
-.course-grade-summary-grid .dist-charts-row.single {
-  width: max-content;
 }
 
 .distribution-summary-grid .dist-charts-row.single:has(> .donut-card:not(.compact):only-child) {
@@ -4148,6 +4162,10 @@ th button.active {
 
 @media (max-width: 720px) {
   .dist-charts-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dist-charts-row.score-chart-count-3 {
     grid-template-columns: 1fr;
   }
 
@@ -4828,7 +4846,6 @@ th button.active {
 
 .semester-titles-table .period-order-actions {
   width: 108px;
-  column-gap: 6px;
   min-width: 108px;
   white-space: nowrap;
   text-align: center;
@@ -7150,6 +7167,7 @@ tbody tr {
 
 .exam-impact-table-wrap {
   overflow: visible;
+  margin: 0 -18px -18px;
 }
 
 .exam-impact-table {
@@ -7170,12 +7188,23 @@ tbody tr {
 .exam-impact-table td:nth-child(2),
 .exam-impact-table th:nth-child(3),
 .exam-impact-table td:nth-child(3) {
-  width: 16%;
+  width: 15%;
 }
 
-.exam-impact-table th:nth-child(n + 4),
-.exam-impact-table td:nth-child(n + 4) {
+.exam-impact-table th:nth-child(4),
+.exam-impact-table td:nth-child(4),
+.exam-impact-table th:nth-child(5),
+.exam-impact-table td:nth-child(5) {
+  width: 9.33%;
+}
+
+.exam-impact-table th:nth-child(n + 6),
+.exam-impact-table td:nth-child(n + 6) {
   width: 8.33%;
+}
+
+.exam-impact-table .exam-impact-delta {
+  text-align: center;
 }
 
 .exam-impact-table td:first-child a {
@@ -7246,10 +7275,32 @@ tbody tr {
   position: relative;
   min-width: 148px;
   flex: 1 1 160px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fumble-course-select .exam-multi-trigger {
+  flex: 0 1 220px;
+}
+
+.fumble-course-selected-label {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.fumble-course-selected-grade,
+.fumble-course-option-grade {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  overflow: visible !important;
+  white-space: nowrap !important;
 }
 
 .fumble-course-menu {
+  width: var(--fumble-course-menu-width, fit-content);
   min-width: 220px;
+  max-width: min(50ch, calc(100vw - 2rem));
   max-height: 280px;
   z-index: 100;
 }
@@ -7327,10 +7378,21 @@ tbody tr {
 
 .fumble-course-option {
   width: 100%;
+  min-width: 0;
   border: 0;
   background: transparent;
   font: inherit;
   text-align: left;
+}
+
+.fumble-course-option-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  width: max-content;
+  max-width: 50ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fumble-course-option.is-added {
@@ -7349,20 +7411,53 @@ tbody tr {
   padding-right: 4px;
 }
 
+.fumble-table th {
+  white-space: nowrap;
+}
+
+.fumble-credit-delta-hidden {
+  visibility: hidden;
+}
+
+.fumble-delta-heading,
+.fumble-delta-cell {
+  text-align: center;
+}
+
+.fumble-delta-cell .signed-number {
+  min-width: 0;
+}
+
+.fumble-delta-cell .signed-number-sign {
+  position: static;
+  width: auto;
+  margin-right: 0;
+  text-align: initial;
+}
+
 .fumble-table th:first-child,
-.fumble-table td:first-child { width: 22%; }
+.fumble-table td:first-child { width: 28%; }
 
 .fumble-table th:nth-child(2),
-.fumble-table td:nth-child(2) { width: 15%; }
+.fumble-table td:nth-child(2) { width: 21%; }
 
 .fumble-table th:nth-child(3),
-.fumble-table td:nth-child(3) { width: 34%; }
+.fumble-table td:nth-child(3) { width: 21%; }
 
 .fumble-table th:nth-child(4),
 .fumble-table td:nth-child(4) { width: 14%; }
 
+.fumble-table.with-score.with-credit-delta th:nth-child(4),
+.fumble-table.with-score.with-credit-delta td:nth-child(4) { width: 11%; }
+
+.fumble-table.with-score.with-credit-delta th:nth-child(5),
+.fumble-table.with-score.with-credit-delta td:nth-child(5) { width: 11%; }
+
 .fumble-table th:last-child,
-.fumble-table td:last-child { width: 15%; }
+.fumble-table td:last-child { width: 16%; }
+
+.fumble-table.with-score th:last-child,
+.fumble-table.with-score td:last-child { width: 8%; }
 
 .fumble-table td:first-child {
   overflow: hidden;
@@ -7407,8 +7502,48 @@ tbody tr {
   color: var(--text);
 }
 
+.fumble-should-select.grade-ap,
+.fumble-should-select option.grade-ap { color: var(--grade-ap, #3ee87a); }
+.fumble-should-select.grade-a,
+.fumble-should-select option.grade-a { color: var(--grade-a, #7dce9a); }
+.fumble-should-select.grade-am,
+.fumble-should-select option.grade-am { color: var(--grade-am, #e8a04a); }
+.fumble-should-select.grade-bp,
+.fumble-should-select option.grade-bp { color: var(--grade-bp, #e88888); }
+.fumble-should-select.grade-b,
+.fumble-should-select option.grade-b { color: var(--grade-b, #e06a6a); }
+.fumble-should-select.grade-bm,
+.fumble-should-select option.grade-bm { color: var(--grade-bm, #d44f4f); }
+.fumble-should-select.grade-cp,
+.fumble-should-select option.grade-cp { color: var(--grade-cp, #c43b3b); }
+.fumble-should-select.grade-c,
+.fumble-should-select option.grade-c { color: var(--grade-c, #b12e2e); }
+.fumble-should-select.grade-cm,
+.fumble-should-select option.grade-cm { color: var(--grade-cm, #9a2424); }
+.fumble-should-select.grade-dp,
+.fumble-should-select option.grade-dp,
+.fumble-should-select.grade-d,
+.fumble-should-select option.grade-d,
+.fumble-should-select.grade-dm,
+.fumble-should-select option.grade-dm,
+.fumble-should-select.grade-f,
+.fumble-should-select option.grade-f { color: var(--grade-dp, #7a1818); }
+
 .fumble-should-select-wrap.is-not-taken .fumble-should-select {
   color: transparent;
+}
+
+.fumble-should-select-wrap.is-not-taken::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  pointer-events: none;
+  transform: translateY(-65%) rotate(45deg);
 }
 
 .fumble-should-display {
@@ -7910,6 +8045,33 @@ tbody tr {
   white-space: nowrap;
 }
 
+.high-school-class-name-input {
+  display: block;
+  width: 100%;
+  max-width: 30ch;
+  padding: 2px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: left;
+}
+
+.high-school-class-name-input:focus {
+  border-bottom-color: var(--gold);
+}
+
+.high-school-class-name-input:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
 .high-school-class-matrix tbody th {
   font-weight: 500;
 }
@@ -8076,6 +8238,10 @@ tbody tr {
   justify-content: center;
   gap: 8px;
   align-items: baseline;
+}
+
+.overall-class-unweighted-gp {
+  color: var(--muted);
 }
 
 .overall-weighted-gp {

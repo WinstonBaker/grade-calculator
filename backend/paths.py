@@ -19,6 +19,19 @@ def resource_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def program_dir() -> Path:
+    """Return the folder containing the installed Grade Calculator program."""
+    if not frozen():
+        return resource_root()
+
+    executable = Path(sys.executable).resolve()
+    if sys.platform == "darwin":
+        for parent in [executable, *executable.parents]:
+            if parent.suffix == ".app":
+                return parent
+    return executable.parent
+
+
 def user_data_dir() -> Path:
     if frozen():
         if sys.platform == "darwin":

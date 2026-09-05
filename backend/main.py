@@ -253,7 +253,11 @@ def _fumble_or_404(db: Session, fumble_id: int) -> Fumble:
 def _course_payload(db: Session, course_id: int) -> dict:
     settings = _settings(db)
     course = _course_or_404(db, course_id)
-    score_units = high_school_term_units(db).get(course.semester_id) if settings.gradebook_type == "high_school" else None
+    score_units = (
+        high_school_term_units(db).get(course.semester_id)
+        if settings.gradebook_type == "high_school"
+        else (1.0 if (settings.gpa_basis or "credits").strip().lower() == "classes" else None)
+    )
     payload = refresh_course(
         db, course, _target(db), settings.fail_pass_fail_affects_gpa,
         settings.gradebook_type, gpa_weight_tags(settings), score_units,
@@ -412,7 +416,11 @@ def list_semesters(db: Session = Depends(get_db)):
     semesters = sort_semesters(gradebook_semesters(db))
     _apply_dynamic_for_courses(db, [c for s in semesters for c in s.courses])
     display_codes = _display_code_map(db)
-    score_units = high_school_term_units(db) if settings.gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if settings.gradebook_type == "high_school"
+        else ({s.id: 1.0 for s in semesters} if (settings.gpa_basis or "credits").strip().lower() == "classes" else {})
+    )
     payload = [serialize_semester(s, target, settings.gpa_cap, settings.fail_pass_fail_affects_gpa, settings.gradebook_type, gpa_weight_tags(settings), settings.gpa_basis or "credits", score_units.get(s.id)) for s in semesters]
     for semester in payload:
         _add_display_codes(semester["courses"], display_codes)
@@ -514,7 +522,11 @@ def create_semester(body: SemesterCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(sem)
     settings = _settings(db)
-    score_units = high_school_term_units(db) if settings.gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if settings.gradebook_type == "high_school"
+        else ({sem.id: 1.0} if (settings.gpa_basis or "credits").strip().lower() == "classes" else {})
+    )
     return serialize_semester(sem, _target(db), settings.gpa_cap, settings.fail_pass_fail_affects_gpa, settings.gradebook_type, gpa_weight_tags(settings), settings.gpa_basis or "credits", score_units.get(sem.id))
 
 
@@ -546,7 +558,11 @@ def update_semester(semester_id: int, body: SemesterUpdate, db: Session = Depend
     if clash:
         raise HTTPException(409, f"{sem.year} {sem.season.title()} already exists")
     settings = _settings(db)
-    score_units = high_school_term_units(db) if settings.gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if settings.gradebook_type == "high_school"
+        else ({sem.id: 1.0} if (settings.gpa_basis or "credits").strip().lower() == "classes" else {})
+    )
     payload = serialize_semester(sem, _target(db), settings.gpa_cap, settings.fail_pass_fail_affects_gpa, settings.gradebook_type, gpa_weight_tags(settings), settings.gpa_basis or "credits", score_units.get(sem.id))
     if locking:
         latest = (
@@ -629,7 +645,11 @@ def list_courses(
     courses = query.all()
     _apply_dynamic_for_courses(db, courses)
     settings = _settings(db)
-    score_units = high_school_term_units(db) if settings.gradebook_type == "high_school" else {}
+    score_units = (
+        high_school_term_units(db)
+        if settings.gradebook_type == "high_school"
+        else ({c.semester_id: 1.0 for c in courses} if (settings.gpa_basis or "credits").strip().lower() == "classes" else {})
+    )
     payload = _add_display_codes([serialize_course(c, target, settings.fail_pass_fail_affects_gpa, settings.gradebook_type, gpa_weight_tags(settings), score_units.get(c.semester_id)) for c in courses], _display_code_map(db))
     if q:
         needle = q.lower()
@@ -688,25 +708,44 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
     settings = _settings(db)
     next_semester_id = body.semester_id if body.semester_id is not None else course.semester_id
     next_code = body.code.strip() if body.code is not None else course.code
-    if settings.gradebook_type != "high_school":
-        duplicate = (
-            db.query(Course)
-            .filter(
-                Course.semester_id == next_semester_id,
-                Course.code.ilike(next_code),
-                Course.id != course.id,
+    renamed_courses = [course]
+    if body.code is not None:
+        original_code = str(course.code or "").strip().lower()
+        if original_code:
+            renamed_courses = (
+                db.query(Course)
+                .join(Semester, Course.semester_id == Semester.id)
+                .filter(
+                    Semester.gradebook_id == active_gradebook_id(),
+                    func.lower(Course.code) == original_code,
+                )
+                .all()
             )
-            .first()
-        )
-        if duplicate is not None:
-            raise HTTPException(409, "A class with this code already exists in the selected semester")
+            if course not in renamed_courses:
+                renamed_courses.append(course)
+    if settings.gradebook_type != "high_school":
+        renamed_ids = {item.id for item in renamed_courses}
+        for item in renamed_courses:
+            semester_id = next_semester_id if item.id == course.id else item.semester_id
+            duplicate = (
+                db.query(Course)
+                .filter(
+                    Course.semester_id == semester_id,
+                    Course.code.ilike(next_code),
+                    ~Course.id.in_(renamed_ids),
+                )
+                .first()
+            )
+            if duplicate is not None:
+                raise HTTPException(409, "A class with this code already exists in the selected semester")
     if body.semester_id is not None:
         target_semester = _semester_or_404(db, body.semester_id)
         if target_semester.gradebook_id != course.semester.gradebook_id:
             raise HTTPException(400, "A class cannot be moved between gradebooks")
         course.semester_id = body.semester_id
     if body.code is not None:
-        course.code = body.code.strip()
+        for renamed_course in renamed_courses:
+            renamed_course.code = next_code
     if body.credits is not None:
         course.credits = body.credits
     if body.credit_mode is not None:
@@ -1245,7 +1284,11 @@ def create_semester_snapshot(semester_id: int, db: Session = Depends(get_db)):
     try:
         settings = _settings(db)
         gradebook_type = (settings.gradebook_type or "college").strip().lower()
-        score_units = high_school_term_units(db) if gradebook_type == "high_school" else {}
+        score_units = (
+            high_school_term_units(db)
+            if gradebook_type == "high_school"
+            else ({sem.id: 1.0} if (settings.gpa_basis or "credits").strip().lower() == "classes" else {})
+        )
         return record_grade_snapshot(
             db,
             sem,
