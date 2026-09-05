@@ -11,6 +11,8 @@ Use the [Releases](https://github.com/WinstonBaker/grade-calculator/releases/lat
 
 A new install has no classes and no grades. Everything you enter stays on that computer. Later versions are installed from **Settings → Update**.
 
+Version 1.4 is the clean-install data baseline. Data from older program versions is intentionally not imported. Version 1.4 and later use a versioned, forward-only migration path so future releases can preserve class data without reviving pre-1.4 compatibility code.
+
 ## Run from source
 
 ```bash
@@ -35,7 +37,7 @@ npm install
 npm run dev
 ```
 
-While developing, data is stored in `data/grades.db` (gitignored). Packaged apps store it in Application Support (Mac) or AppData (Windows).
+While developing, data is stored in `data/grades-v1.db` (gitignored). Packaged apps store it in Application Support (Mac) or AppData (Windows). Future releases must keep this database path stable and add numbered migrations for schema changes.
 
 ## Features
 

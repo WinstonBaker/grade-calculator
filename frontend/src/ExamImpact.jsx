@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { fmtDelta, fmtPct, letterClass, scoreClass } from "./api";
+import { courseGradeClass, fmtDelta, fmtPct, scoreClass } from "./api";
 
 const CHANGE_LABEL = { up: "Up", down: "Down", same: "Same" };
 
@@ -29,17 +29,31 @@ export function ExamImpactStats({ summary }) {
 }
 
 function testCategoryIds(course) {
+  if (course?.test_category_ids_configured === true) {
+    return Array.isArray(course.test_category_ids) ? course.test_category_ids.map(Number) : [];
+  }
   if (Array.isArray(course?.test_category_ids) && course.test_category_ids.length) {
     return course.test_category_ids.map(Number);
   }
-  if (course?.test_category_id != null) return [Number(course.test_category_id)];
-  return [];
+  return inferredCategoryIds(course, /^(test|tests|midterm|midterms)$/i);
+}
+
+function inferredCategoryIds(course, pattern) {
+  return (course?.categories || [])
+    .filter((category) => !category.is_bonus_category && pattern.test(String(category.name || "").trim()))
+    .map((category) => Number(category.id));
+}
+
+function examCategoryId(course) {
+  if (course?.exam_category_id === -1) return "";
+  if (course?.exam_category_id != null) return Number(course.exam_category_id);
+  return inferredCategoryIds(course, /^(exam|exams|final|finals)$/i)[0] || "";
 }
 
 function TestCategoryMultiSelect({ course, value, onChange }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
-  const categories = course.categories || [];
+  const categories = (course.categories || []).filter((cat) => !cat.is_bonus_category);
   const selected = new Set(value.map(Number));
 
   useEffect(() => {
@@ -103,12 +117,31 @@ function TestCategoryMultiSelect({ course, value, onChange }) {
   );
 }
 
-export default function ExamImpactTable({ courses, onPatch, empty = "Pick test and exam categories to compare." }) {
-  if (!courses?.length) return <div className="empty">{empty}</div>;
+export default function ExamImpactTable({ courses, onPatch, gradebookId = null, empty = "Pick test and exam categories to compare." }) {
   const editable = typeof onPatch === "function";
+  const initializedDefaults = useRef(new Set());
+  useEffect(() => {
+    if (!editable) return;
+    for (const course of courses) {
+      const tests = testCategoryIds(course);
+      const exam = examCategoryId(course);
+      const hasSavedTests = course.test_category_ids_configured === true
+        || (Array.isArray(course.test_category_ids) && course.test_category_ids.length);
+      const key = String(course.id);
+      if (!initializedDefaults.current.has(key)) {
+        initializedDefaults.current.add(key);
+        const patch = {};
+        if (!hasSavedTests && tests.length) patch.test_category_ids = tests;
+        if (course.exam_category_id == null && exam !== "") patch.exam_category_id = Number(exam);
+        if (Object.keys(patch).length) Promise.resolve(onPatch(course.id, patch)).catch(() => {});
+      }
+    }
+  }, [courses, editable, onPatch]);
+
+  if (!courses?.length) return <div className="empty">{empty}</div>;
 
   return (
-    <div className="table-wrap">
+    <div className="table-wrap exam-impact-table-wrap">
       <table className="exam-impact-table">
         <thead>
           <tr>
@@ -127,16 +160,26 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
           {courses.map((course) => {
             const impact = course.exam_impact;
             const change = impact?.letter_change;
+            const courseHref = gradebookId
+              ? `/courses/${course.id}?gradebook=${encodeURIComponent(gradebookId)}`
+              : `/courses/${course.id}`;
             const selectedTests = testCategoryIds(course);
             const hasBothPercents =
               impact?.test_percent != null &&
               !Number.isNaN(Number(impact.test_percent)) &&
               impact?.exam_percent != null &&
               !Number.isNaN(Number(impact.exam_percent));
+            const afterIsOverridden = course.gp_override != null || course.pass_fail_override != null;
+            const afterLetter = afterIsOverridden
+              ? course.letter || course.pass_fail_override
+              : impact?.letter_after;
+            const afterClass = afterIsOverridden
+              ? (course.gp_override === -1 ? "letter-neutral" : courseGradeClass(course))
+              : courseGradeClass({ ...course, pass_fail_override: null, percent: impact?.percent_after, letter: impact?.letter_after });
             return (
               <tr key={course.id}>
                 <td>
-                  <Link to={`/courses/${course.id}`}>{course.code}</Link>
+                  <Link to={courseHref}>{course.display_code || course.code}</Link>
                 </td>
                 <td>
                   {editable ? (
@@ -158,13 +201,13 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
                   {editable ? (
                     <select
                       className="select"
-                      value={course.exam_category_id || ""}
+                      value={examCategoryId(course)}
                       onChange={(e) =>
-                        onPatch(course.id, { exam_category_id: e.target.value ? Number(e.target.value) : null })
+                        onPatch(course.id, { exam_category_id: e.target.value ? Number(e.target.value) : -1 })
                       }
                     >
                       <option value="">Select</option>
-                      {(course.categories || []).map((cat) => (
+                      {(course.categories || []).filter((cat) => !cat.is_bonus_category).map((cat) => (
                         <option key={cat.id} value={cat.id}>
                           {cat.name}
                         </option>
@@ -181,7 +224,7 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
                 <td className={`mono ${scoreClass(impact?.delta)}`}>{fmtDelta(impact?.delta)}</td>
                 <td>
                   {hasBothPercents ? (
-                    <span className={`letter ${letterClass(impact?.letter_before)}`}>
+                    <span className={`letter ${courseGradeClass({ ...course, pass_fail_override: null, percent: impact?.percent_before, letter: impact?.letter_before })}`}>
                       {impact?.letter_before || "—"}
                     </span>
                   ) : (
@@ -190,8 +233,11 @@ export default function ExamImpactTable({ courses, onPatch, empty = "Pick test a
                 </td>
                 <td>
                   {hasBothPercents ? (
-                    <span className={`letter ${letterClass(impact?.letter_after)}`}>
-                      {impact?.letter_after || "—"}
+                    <span className="course-letter-display">
+                      <span className={`letter ${afterClass}`}>
+                        {afterLetter || "—"}
+                      </span>
+                      {afterIsOverridden ? <span className="grade-override-marker" aria-label="Grade overridden">*</span> : null}
                     </span>
                   ) : (
                     "—"

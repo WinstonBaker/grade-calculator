@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -52,6 +53,11 @@ def test_semester_course_grade_flow(tmp_path):
             json={"semester_id": sem_id, "code": "MA 407", "credits": 3},
         ).json()
         cid = created["id"]
+        duplicate_course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": " ma 407 ", "credits": 3},
+        )
+        assert duplicate_course.status_code == 409
 
         client.post(
             "/api/categories",
@@ -140,6 +146,406 @@ def test_meta_includes_version_and_downloads(tmp_path):
         teardown()
 
 
+def test_gradebook_setup_export_import_excludes_entered_grades(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        semester = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        course = client.post(
+            "/api/courses?gradebook_id=gradebook-1",
+            json={"semester_id": semester["id"], "code": "BIO 101", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories?gradebook_id=gradebook-1",
+            json={"course_id": course["id"], "name": "Labs", "weight": 1},
+        ).json()
+        client.post(
+            "/api/assignments?gradebook_id=gradebook-1",
+            json={"category_id": category["id"], "name": "Lab 1", "score": "95"},
+        )
+
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Source"}]},
+        )
+        assert inventory.status_code == 200
+        term = next(
+            item
+            for period in inventory.json()["gradebooks"][0]["periods"]
+            for item in period["terms"]
+            if any(row["id"] == course["id"] for row in item["classes"])
+        )
+        exported = client.post(
+            "/api/gradebook-setups/export",
+            json={"gradebooks": [{
+                "id": "gradebook-1",
+                "name": "Source",
+                "term_ids": [term["id"]],
+                "course_ids": [course["id"]],
+            }]},
+        )
+        assert exported.status_code == 200
+        payload = exported.json()
+        exported_course = payload["gradebooks"][0]["periods"][0]["terms"][0]["classes"][0]
+        assert "assignments" not in exported_course
+        assert "gp_override" not in exported_course
+        assert exported_course["categories"][0]["name"] == "Labs"
+
+        imported = client.post(
+            "/api/gradebook-setups/import",
+            json={"payload": payload, "plan": [{
+                "source_id": "gradebook-1",
+                "destination_mode": "new",
+                "destination_id": "gradebook-2",
+                "destination_name": "Imported",
+                "apply_settings": True,
+                "conflict_strategy": "copy",
+                "term_destinations": {term["key"]: "new"},
+                "period_destinations": {},
+            }]},
+        )
+        assert imported.status_code == 200
+        assert imported.json()["gradebooks"][0]["imported_courses"] == 1
+        copied = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+        copied_course = next(row for item in copied for row in item["courses"] if row["code"] == "BIO 101")
+        assert copied_course["categories"][0]["name"] == "Labs"
+        assert copied_course["categories"][0]["assignments"] == []
+    finally:
+        teardown()
+
+
+def test_gradebook_setup_import_places_class_in_selected_target_term(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        source_term = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        source_course = client.post(
+            "/api/courses?gradebook_id=gradebook-1",
+            json={"semester_id": source_term["id"], "code": "Mapped Class", "credits": 3},
+        ).json()
+        target_term = client.post(
+            "/api/semesters?gradebook_id=gradebook-2",
+            json={"year": 2038, "season": "spring", "included": True},
+        ).json()
+
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Source"}]},
+        ).json()
+        source_export_term = next(
+            term
+            for period in inventory["gradebooks"][0]["periods"]
+            for term in period["terms"]
+            if any(item["id"] == source_course["id"] for item in term["classes"])
+        )
+        payload = client.post(
+            "/api/gradebook-setups/export",
+            json={"gradebooks": [{
+                "id": "gradebook-1",
+                "name": "Source",
+                "term_ids": [source_export_term["id"]],
+                "course_ids": [source_course["id"]],
+            }]},
+        ).json()
+        exported_course = payload["gradebooks"][0]["periods"][0]["terms"][0]["classes"][0]
+
+        imported = client.post(
+            "/api/gradebook-setups/import",
+            json={"payload": payload, "plan": [{
+                "source_id": "gradebook-1",
+                "destination_mode": "existing",
+                "destination_id": "gradebook-2",
+                "destination_name": "Target",
+                "apply_settings": False,
+                "conflict_strategy": "copy",
+                "term_destinations": {source_export_term["key"]: "new"},
+                "period_destinations": {},
+                "class_destinations": {exported_course["key"]: str(target_term["id"])},
+            }]},
+        )
+        assert imported.status_code == 200
+        imported_terms = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+        mapped_term = next(item for item in imported_terms if item["id"] == target_term["id"])
+        assert any(item["code"] == "Mapped Class" for item in mapped_term["courses"])
+    finally:
+        teardown()
+
+
+def test_gradebook_setup_import_converts_individual_class_between_types(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        client.patch(
+            "/api/settings?gradebook_id=gradebook-1",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        source_term = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        source_course = client.post(
+            "/api/courses?gradebook_id=gradebook-1",
+            json={"semester_id": source_term["id"], "code": "Converted Class", "credits": 1},
+        ).json()
+        target_term = client.post(
+            "/api/semesters?gradebook_id=gradebook-2",
+            json={"year": 2039, "season": "fall", "included": True},
+        ).json()
+        terms_before = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+
+        inventory = client.post(
+            "/api/gradebook-setups/inventory",
+            json={"gradebooks": [{"id": "gradebook-1", "name": "Multi-term source"}]},
+        ).json()
+        source_export_term = next(
+            term
+            for period in inventory["gradebooks"][0]["periods"]
+            for term in period["terms"]
+            if any(item["id"] == source_course["id"] for item in term["classes"])
+        )
+        payload = client.post(
+            "/api/gradebook-setups/export",
+            json={"gradebooks": [{
+                "id": "gradebook-1",
+                "name": "Multi-term source",
+                "term_ids": [source_export_term["id"]],
+                "course_ids": [source_course["id"]],
+            }]},
+        ).json()
+        exported_course = payload["gradebooks"][0]["periods"][0]["terms"][0]["classes"][0]
+
+        imported = client.post(
+            "/api/gradebook-setups/import",
+            json={"payload": payload, "plan": [{
+                "source_id": "gradebook-1",
+                "destination_mode": "existing",
+                "destination_id": "gradebook-2",
+                "destination_name": "Single-term target",
+                "apply_settings": False,
+                "conflict_strategy": "copy",
+                "term_destinations": {source_export_term["key"]: "new"},
+                "period_destinations": {},
+                "class_destinations": {exported_course["key"]: str(target_term["id"])},
+            }]},
+        )
+        assert imported.status_code == 200
+        imported_terms = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+        assert len(imported_terms) == len(terms_before)
+        mapped_term = next(item for item in imported_terms if item["id"] == target_term["id"])
+        assert any(item["code"] == "Converted Class" for item in mapped_term["courses"])
+    finally:
+        teardown()
+
+
+def test_gradebook_type_is_scoped_per_gradebook(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "college"
+        assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["gradebook_type"] == "college"
+
+        updated = client.patch(
+            "/api/settings?gradebook_id=gradebook-1",
+            json={"gradebook_type": "high_school"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["gradebook_type"] == "high_school"
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "high_school"
+        assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["gradebook_type"] == "college"
+
+        updated = client.patch(
+            "/api/settings?gradebook_id=gradebook-2",
+            json={"gradebook_type": "college"},
+        )
+        assert updated.status_code == 200
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["gradebook_type"] == "high_school"
+        assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["gradebook_type"] == "college"
+    finally:
+        teardown()
+
+
+def test_gradebook_data_is_fully_isolated(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        # Legacy terms belong to the default gradebook, while another book can
+        # create an identical calendar term without sharing its data.
+        default_semester = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        first = client.post(
+            "/api/semesters?gradebook_id=gradebook-1",
+            json={"year": 2038, "season": "fall", "included": True},
+        ).json()
+        second_response = client.post(
+            "/api/semesters?gradebook_id=gradebook-2",
+            json={"year": 2038, "season": "fall", "included": True},
+        )
+        assert second_response.status_code == 200
+        second = second_response.json()
+        assert second["id"] != first["id"]
+
+        course = client.post(
+            "/api/courses?gradebook_id=gradebook-1",
+            json={"semester_id": first["id"], "code": "ONLY BOOK ONE", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories?gradebook_id=gradebook-1",
+            json={"course_id": course["id"], "name": "Tests", "weight": 1.0},
+        ).json()
+        category_id = category["categories"][0]["id"]
+        client.post(
+            "/api/assignments?gradebook_id=gradebook-1",
+            json={"category_id": category_id, "name": "Midterm", "score": "92"},
+        )
+        assert client.get(
+            "/api/courses",
+            params={"semester_id": first["id"], "gradebook_id": "gradebook-2"},
+        ).json() == []
+        assert client.get(f"/api/courses/{course['id']}?gradebook_id=gradebook-2").status_code == 404
+        assert client.patch(
+            f"/api/courses/{course['id']}?gradebook_id=gradebook-2",
+            json={"code": "SHOULD NOT MOVE"},
+        ).status_code == 404
+        assert client.patch(f"/api/categories/{category_id}?gradebook_id=gradebook-2", json={"name": "Nope"}).status_code == 404
+        assignment = client.get(f"/api/courses/{course['id']}?gradebook_id=gradebook-1").json()["categories"][0]["assignments"][0]
+        assert client.patch(f"/api/assignments/{assignment['id']}?gradebook_id=gradebook-2", json={"name": "Nope"}).status_code == 404
+        snapshot = client.post(f"/api/semesters/{first['id']}/snapshots?gradebook_id=gradebook-1")
+        assert snapshot.status_code == 200
+        assert client.get(f"/api/semesters/{first['id']}/snapshots?gradebook_id=gradebook-2").status_code == 404
+        assert client.post(
+            "/api/courses?gradebook_id=gradebook-2",
+            json={"semester_id": second["id"], "code": "ONLY BOOK TWO", "credits": 3},
+        ).status_code == 200
+
+        assert client.post(
+            "/api/academic-years?gradebook_id=gradebook-2",
+            json={"name": "Cross-book period", "semester_ids": [first["id"]]},
+        ).status_code == 404
+        first_profiles = client.get("/api/scale-profiles?gradebook_id=gradebook-1").json()
+        second_profiles = client.get("/api/scale-profiles?gradebook_id=gradebook-2").json()
+        assert first_profiles and second_profiles
+        assert first_profiles[0]["id"] != second_profiles[0]["id"]
+        client.patch(
+            f"/api/scale-profiles/{second_profiles[0]['id']}?gradebook_id=gradebook-2",
+            json={"name": "Book Two Scale"},
+        )
+        assert client.get("/api/scale-profiles?gradebook_id=gradebook-1").json()[0]["name"] != "Book Two Scale"
+
+        assert client.post(
+            "/api/fumbles?gradebook_id=gradebook-2",
+            json={"course_id": course["id"], "should_have_been_gp": 4.0},
+        ).status_code == 404
+        assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["fumbles"] == []
+        assert client.delete("/api/gradebook-data?gradebook_id=gradebook-2").status_code == 200
+        assert client.get("/api/semesters?gradebook_id=gradebook-2").json() == []
+        assert any(
+            item["id"] in {default_semester["id"], first["id"]}
+            for item in client.get("/api/semesters?gradebook_id=gradebook-1").json()
+        )
+    finally:
+        teardown()
+
+
+def test_grade_prompt_is_program_wide_and_can_record_another_gradebook(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        first = client.get("/api/semesters?gradebook_id=gradebook-1").json()[0]
+        second = client.post(
+            "/api/semesters?gradebook_id=gradebook-2",
+            json={"year": 2038, "season": "spring", "included": True},
+        ).json()
+        course = client.post(
+            "/api/courses?gradebook_id=gradebook-2",
+            json={"semester_id": second["id"], "code": "TARGET BOOK", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories?gradebook_id=gradebook-2",
+            json={"course_id": course["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+        ).json()
+        client.post(
+            "/api/assignments?gradebook_id=gradebook-2",
+            json={"category_id": category["id"], "name": "Midterm", "score": "90"},
+        )
+
+        first_status = client.get("/api/grade-prompt?gradebook_id=gradebook-1").json()
+        second_status = client.get("/api/grade-prompt?gradebook_id=gradebook-2").json()
+        assert first_status["due"] is True
+        assert second_status["due"] is True
+        assert first_status["recording_interval_days"] == second_status["recording_interval_days"] == 7
+        assert first_status["snooze_until"] == second_status["snooze_until"] is None
+        assert {
+            (item["id"], item["gradebook_id"])
+            for item in first_status["semesters"]
+        } == {
+            (first["id"], "gradebook-1"),
+            (second["id"], "gradebook-2"),
+        }
+
+        snoozed = client.post("/api/grade-prompt/snooze?gradebook_id=gradebook-1").json()
+        other_view = client.get("/api/grade-prompt?gradebook_id=gradebook-2").json()
+        assert snoozed["due"] is False
+        assert other_view["due"] is False
+        assert other_view["snooze_until"] == snoozed["snooze_until"]
+
+        recorded = client.post(
+            f"/api/semesters/{second['id']}/snapshots?gradebook_id=gradebook-2"
+        )
+        assert recorded.status_code == 200
+        after_first = client.get("/api/grade-prompt?gradebook_id=gradebook-1").json()
+        after_second = client.get("/api/grade-prompt?gradebook_id=gradebook-2").json()
+        assert after_first["due"] is False
+        assert after_second["due"] is False
+        assert after_first["last_recorded_at"] == after_second["last_recorded_at"]
+        assert client.get(
+            f"/api/semesters/{first['id']}/snapshots?gradebook_id=gradebook-1"
+        ).json() == []
+        assert len(client.get(
+            f"/api/semesters/{second['id']}/snapshots?gradebook_id=gradebook-2"
+        ).json()) == 1
+    finally:
+        teardown()
+
+
+def test_grade_prompt_is_unchanged_for_another_or_new_gradebook(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        first = client.get("/api/grade-prompt?gradebook_id=gradebook-1").json()
+        other = client.get("/api/grade-prompt?gradebook_id=gradebook-2").json()
+        new_book = client.get("/api/grade-prompt?gradebook_id=gradebook-99").json()
+
+        for status in (other, new_book):
+            assert status["due"] == first["due"]
+            assert status["recording_interval_days"] == first["recording_interval_days"]
+            assert status["last_recorded_at"] == first["last_recorded_at"]
+            assert status["snooze_until"] == first["snooze_until"]
+            assert status["default_semester_id"] == first["default_semester_id"]
+            assert status["semesters"] == first["semesters"]
+            assert status["academic_periods"] == first["academic_periods"]
+    finally:
+        teardown()
+
+
+def test_fumble_cannot_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.post(
+            "/api/semesters", json={"year": 2027, "season": "spring", "included": True}
+        ).json()["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "MA 101", "credits": 3, "gp_override": 3.0},
+        ).json()
+        cid = course["id"]
+
+        created = client.post(
+            "/api/fumbles", json={"course_id": cid, "should_have_been_gp": 4.333}
+        )
+        assert created.status_code == 200
+        body = created.json()
+        # The B contributes -9 and the A+ contributes +3, so the adjusted
+        # score is 3 and GPA is ((3 / 3) + (4 * 3)) / 3 = 4.333.
+        assert body["score_with_fumbles"] == 3
+        assert abs(body["gpa_with_fumbles"] - 4.3333333333) < 1e-9
+
+        duplicate = client.post(
+            "/api/fumbles", json={"course_id": cid, "should_have_been_gp": 4.0}
+        )
+        assert duplicate.status_code == 409
+    finally:
+        teardown()
+
+
 def test_default_scale_copied_to_new_courses(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -213,6 +619,243 @@ def test_optional_gpa_cap_preserves_aplus_score(tmp_path):
         teardown()
 
 
+def test_high_school_score_uses_unweighted_gpa_with_weighted_classes(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={
+                "gradebook_type": "high_school",
+                "gpa_basis": "classes",
+                "gpa_weight_tags": [
+                    {"id": "unweighted", "name": "CP", "boost": 0},
+                    {"id": "weighted", "name": "Honors", "boost": 0.5},
+                ],
+            },
+        )
+        assert settings.status_code == 200
+
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "ENG 101",
+                "credits": 3,
+                "gp_override": 3.0,
+                "gpa_weight_tag": "weighted",
+            },
+        ).json()
+
+        assert course["base_quality_points"] == 3.0
+        assert course["quality_points"] == 3.5
+        assert course["score"] == -3.0
+
+        gpa = client.get("/api/gpa").json()
+        assert gpa["overall_gpa"] == 3.5
+        assert gpa["overall_score"] == -3.0
+    finally:
+        teardown()
+
+
+def test_college_term_wgpa_uses_class_weight_tag(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={
+                "gradebook_type": "college",
+                "gpa_weight_tags": [
+                    {"id": "unweighted", "name": "Unweighted", "boost": 0},
+                    {"id": "weighted", "name": "Weighted", "boost": 0.5},
+                ],
+            },
+        )
+        assert settings.status_code == 200
+
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "ENG 101",
+                "credits": 3,
+                "gp_override": 3.0,
+                "gpa_weight_tag": "weighted",
+            },
+        ).json()
+
+        assert course["quality_points"] == 3.0
+        assert course["gpa_weight_boost"] == 0.5
+
+        client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "ENG 102",
+                "credits": 3,
+                "gp_override": 4.333,
+            },
+        )
+
+        term = client.get("/api/gpa").json()["terms"][0]
+        assert term["term_gpa"] == pytest.approx((3.0 + 4.333) / 2)
+        assert term["term_wgpa"] == pytest.approx((3.5 + 4.333) / 2)
+        gpa = client.get("/api/gpa").json()
+        assert gpa["overall_gpa"] == pytest.approx((3.0 + 4.333) / 2)
+        assert gpa["weighted_overall_gpa"] == pytest.approx((3.5 + 4.333) / 2)
+    finally:
+        teardown()
+
+
+def test_high_school_score_splits_academic_year_units_across_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        fall = client.post(
+            "/api/semesters", json={"year": 2030, "season": "fall", "included": True}
+        ).json()
+        spring = client.post(
+            "/api/semesters", json={"year": 2030, "season": "spring", "included": True}
+        ).json()
+        client.post(
+            "/api/academic-years",
+            json={"name": "2030-31", "semester_ids": [fall["id"], spring["id"]]},
+        )
+
+        for semester_id in [fall["id"], spring["id"]]:
+            client.post(
+                "/api/courses",
+                json={
+                    "semester_id": semester_id,
+                    "code": "ENG 101",
+                    "gp_override": 4.333,
+                },
+            )
+        client.post(
+            "/api/courses",
+            json={"semester_id": fall["id"], "code": "ART 101", "gp_override": 4.333},
+        )
+
+        gpa = client.get("/api/gpa").json()
+        terms = {term["id"]: term for term in gpa["terms"]}
+        # Term scores are raw target-relative scores; unit shares apply only
+        # to the overall period score.
+        assert terms[fall["id"]]["term_score"] == 2.0
+        assert terms[spring["id"]]["term_score"] == 1.0
+        assert gpa["overall_score"] == 1.5
+    finally:
+        teardown()
+
+
+def test_high_school_overall_score_uses_period_coverage_not_graded_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        terms = [
+            client.post(
+                "/api/semesters", json={"year": 2030 + index, "season": "fall", "included": True}
+            ).json()
+            for index in range(3)
+        ]
+        client.post(
+            "/api/academic-years",
+            json={"name": "Three-term period", "semester_ids": [term["id"] for term in terms]},
+        )
+
+        for index, term in enumerate(terms):
+            client.post(
+                "/api/courses",
+                json={
+                    "semester_id": term["id"],
+                    "code": "ALG 101",
+                    "gp_override": 3.667 if index < 2 else None,
+                },
+            )
+        client.post(
+            "/api/courses",
+            json={"semester_id": terms[0]["id"], "code": "BIO 101", "gp_override": 3.333},
+        )
+
+        gpa = client.get("/api/gpa").json()
+
+        # ALG 101 exists in all three terms, so its A- contributes one full
+        # unit even though only two terms have grades. BIO 101 is B+ in one of
+        # three terms, so it contributes -2 * 1/3.
+        assert gpa["overall_score"] == pytest.approx(-1.6666666667)
+    finally:
+        teardown()
+
+
+def test_high_school_final_override_does_not_change_term_grade(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        assert settings.status_code == 200
+        fall = client.post(
+            "/api/semesters", json={"year": 2030, "season": "fall", "included": True}
+        ).json()
+        spring = client.post(
+            "/api/semesters", json={"year": 2031, "season": "spring", "included": True}
+        ).json()
+        client.post(
+            "/api/academic-years",
+            json={"name": "2030-31", "semester_ids": [fall["id"], spring["id"]]},
+        )
+        courses = [
+            client.post(
+                "/api/courses",
+                json={"semester_id": semester["id"], "code": "ENG 101", "gp_override": 3.0},
+            ).json()
+            for semester in (fall, spring)
+        ]
+
+        for course in courses:
+            updated = client.patch(
+                f"/api/courses/{course['id']}",
+                json={"final_gp_override": 4.333},
+            )
+            assert updated.status_code == 200
+            assert updated.json()["gp_override"] == 3.0
+            assert updated.json()["final_gp_override"] == 4.333
+
+        gpa = client.get("/api/gpa").json()
+        terms = {term["id"]: term for term in gpa["terms"]}
+        assert terms[fall["id"]]["term_gpa"] == 3.0
+        assert terms[spring["id"]]["term_gpa"] == 3.0
+        assert gpa["overall_gpa"] == pytest.approx(4.333)
+
+        # Clearing the final override restores the natural rollup. Changing a
+        # term override then changes the rollup input without changing any
+        # unrelated term row.
+        for course in courses:
+            assert client.patch(
+                f"/api/courses/{course['id']}",
+                json={"final_gp_override": None},
+            ).status_code == 200
+        assert client.get("/api/gpa").json()["overall_gpa"] == pytest.approx(3.0)
+        assert client.patch(
+            f"/api/courses/{courses[1]['id']}",
+            json={"gp_override": 4.333},
+        ).status_code == 200
+        gpa = client.get("/api/gpa").json()
+        terms = {term["id"]: term for term in gpa["terms"]}
+        assert terms[fall["id"]]["term_gpa"] == 3.0
+        assert terms[spring["id"]]["term_gpa"] == pytest.approx(4.333)
+        assert gpa["overall_gpa"] == pytest.approx(4.333)
+    finally:
+        teardown()
+
+
 def test_scale_profile_crud_and_course_apply(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -251,7 +894,7 @@ def test_scale_profile_crud_and_course_apply(tmp_path):
 
         custom_rows = [{**row} for row in applied["scale"]]
         custom_rows[0]["min_percent"] = 94
-        custom = client.put(f"/api/courses/{first['id']}/scale", json={"rows": custom_rows}).json()
+        custom = client.put(f"/api/courses/{first['id']}/scale", json={"rows": custom_rows, "minimum_passing_letter": "C-"}).json()
         assert custom["scale_profile_id"] is None
         assert custom["scale"][0]["min_percent"] == 94
 
@@ -299,69 +942,24 @@ def test_identical_school_presets_keep_selected_name(tmp_path):
         teardown()
 
 
-def test_legacy_aggregation_maps_to_knobs(tmp_path):
+def test_legacy_aggregation_is_rejected(tmp_path):
     client = make_client(tmp_path)
     try:
         sem_id = client.get("/api/semesters").json()[0]["id"]
         cid = client.post("/api/courses", json={"semester_id": sem_id, "code": "CSC 101", "credits": 3}).json()["id"]
-        client.post(
-            "/api/categories",
-            json={"course_id": cid, "name": "HW", "weight": 0.2, "aggregation": "drop_lowest"},
-        )
-        client.post(
-            "/api/categories",
-            json={"course_id": cid, "name": "Labs", "weight": 0.2, "aggregation": "average_plus_bonus"},
-        )
-        client.post(
-            "/api/categories",
-            json={"course_id": cid, "name": "Tests", "weight": 0.4, "aggregation": "replace_min_with"},
-        )
-        course = client.get(f"/api/courses/{cid}").json()
-        by_name = {c["name"]: c for c in course["categories"]}
-        assert by_name["HW"]["aggregation"] == "average"
-        assert by_name["HW"]["drop_count"] == 1
-        assert by_name["HW"]["include_bonus"] is False
-        assert by_name["Labs"]["aggregation"] == "average"
-        assert by_name["Labs"]["include_bonus"] is True
-        assert by_name["Labs"]["drop_count"] == 0
-        assert by_name["Tests"]["aggregation"] == "average"
-        assert by_name["Tests"]["drop_count"] == 0
+        for aggregation in ("drop_lowest", "average_plus_bonus", "replace_min_with"):
+            response = client.post(
+                "/api/categories",
+                json={"course_id": cid, "name": aggregation, "weight": 0.2, "aggregation": aggregation},
+            )
+            assert response.status_code == 400
         rejected = client.patch(
-            f"/api/categories/{by_name['HW']['id']}",
+            "/api/categories/999999",
             json={"drop_count": -1},
         )
         assert rejected.status_code == 422
     finally:
         teardown()
-
-
-def test_migrate_legacy_category_modes(tmp_path):
-    from sqlalchemy import create_engine, text
-
-    from backend.database import migrate_legacy_category_modes
-
-    eng = create_engine(f"sqlite:///{tmp_path / 'migrate.db'}")
-    with eng.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE TABLE categories ("
-                "id INTEGER PRIMARY KEY, aggregation VARCHAR(32), drop_count INTEGER, include_bonus BOOLEAN DEFAULT 0)"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO categories (aggregation, drop_count, include_bonus) VALUES "
-                "('average', 1, 0), ('drop_lowest', 2, 0), ('average_plus_bonus', 1, 0), "
-                "('replace_min_with', 1, 0), ('points_ratio', 1, 0)"
-            )
-        )
-        migrate_legacy_category_modes(conn, reset_plain_drop_counts=True)
-        rows = list(conn.execute(text("SELECT aggregation, drop_count, include_bonus FROM categories ORDER BY id")))
-    assert rows[0][0] == "average" and rows[0][1] == 0 and not rows[0][2]
-    assert rows[1][0] == "average" and rows[1][1] == 2 and not rows[1][2]
-    assert rows[2][0] == "average" and rows[2][1] == 0 and rows[2][2]
-    assert rows[3][0] == "average" and rows[3][1] == 0 and not rows[3][2]
-    assert rows[4][0] == "points_ratio" and rows[4][1] == 0 and not rows[4][2]
 
 
 def test_transfer_semester_and_level_stats(tmp_path):
@@ -371,8 +969,14 @@ def test_transfer_semester_and_level_stats(tmp_path):
         assert created.status_code == 200
         assert created.json()["name"] == "2024 Transfer"
         assert created.json()["season"] == "transfer"
-        bad = client.post("/api/semesters", json={"year": 2024, "season": "winter"})
-        assert bad.status_code == 400
+        arbitrary = client.post("/api/semesters", json={"year": 2024, "season": "winter"})
+        assert arbitrary.status_code == 200
+        custom = client.post("/api/semesters", json={"year": 2024, "season": "Term 2"})
+        assert custom.status_code == 200
+        assert custom.json()["season"] == "term 2"
+        renamed = client.patch(f"/api/semesters/{custom.json()['id']}", json={"season": "Term 3"})
+        assert renamed.status_code == 200
+        assert renamed.json()["season"] == "term 3"
         assert "transfer" in client.get("/api/meta").json()["seasons"]
 
         sid = created.json()["id"]
@@ -383,6 +987,7 @@ def test_transfer_semester_and_level_stats(tmp_path):
         levels = {row["level"]: row for row in gpa["level_stats"]}
         assert levels["300"]["courses"] == 1
         assert levels["300"]["credits"] == 3
+        assert levels["300"]["score"] == 0
         assert levels["2000"]["courses"] == 1
         assert levels["other"]["courses"] == 1
     finally:
@@ -403,7 +1008,7 @@ def test_exam_impact(tmp_path):
         client.post("/api/assignments", json={"category_id": ids["Final"], "score": "95"})
         patched = client.patch(
             f"/api/courses/{cid}",
-            json={"test_category_id": ids["Tests"], "exam_category_id": ids["Final"]},
+            json={"test_category_ids": [ids["Tests"]], "exam_category_id": ids["Final"]},
         ).json()
         impact = patched["exam_impact"]
         assert impact["delta"] == 15
@@ -564,6 +1169,8 @@ def test_snapshot_skips_ungraded_and_edits_points(tmp_path):
         leftover = client.get(f"/api/semesters/{sem_id}/snapshots").json()
         assert len(leftover) == 1
         assert [row["code"] for row in leftover[0]["courses"]] == ["CSC 101"]
+        assert leftover[0]["term_gpa"] is None
+        assert leftover[0]["term_wgpa"] is None
 
         empty_sem = client.post("/api/semesters", json={"year": 2020, "season": "fall"}).json()
         client.post(
@@ -573,6 +1180,94 @@ def test_snapshot_skips_ungraded_and_edits_points(tmp_path):
         none = client.post(f"/api/semesters/{empty_sem['id']}/snapshots")
         assert none.status_code == 400
         assert "No class grades" in none.json()["detail"]
+    finally:
+        teardown()
+
+
+def test_deleting_course_removes_its_saved_progression_points(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        courses = []
+        for code, score in (("CSC 101", "90"), ("CSC 202", "80")):
+            course = client.post(
+                "/api/courses", json={"semester_id": sem_id, "code": code, "credits": 3}
+            ).json()
+            category = client.post(
+                "/api/categories",
+                json={"course_id": course["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+            ).json()
+            client.post(
+                "/api/assignments",
+                json={"category_id": category["id"], "name": "Exam", "score": score},
+            )
+            courses.append(course)
+
+        snapshot = client.post(f"/api/semesters/{sem_id}/snapshots").json()
+        assert {row["course_id"] for row in snapshot["courses"]} == {course["id"] for course in courses}
+
+        deleted = client.delete(f"/api/courses/{courses[0]['id']}")
+        assert deleted.status_code == 200
+        remaining = client.get(f"/api/semesters/{sem_id}/snapshots").json()
+        assert len(remaining) == 1
+        assert [row["course_id"] for row in remaining[0]["courses"]] == [courses[1]["id"]]
+    finally:
+        teardown()
+
+
+def test_deleting_class_point_removes_same_class_and_day_across_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        semesters = [
+            client.post(
+                "/api/semesters",
+                json={"year": year, "season": season, "included": True},
+            ).json()
+            for year, season in ((2030, "fall"), (2031, "spring"))
+        ]
+
+        def add_graded_course(semester_id, code, score):
+            course = client.post(
+                "/api/courses", json={"semester_id": semester_id, "code": code, "credits": 3}
+            ).json()
+            category = client.post(
+                "/api/categories",
+                json={"course_id": course["id"], "name": "Exam", "weight": 1, "aggregation": "average"},
+            ).json()
+            client.post(
+                "/api/assignments",
+                json={"category_id": category["id"], "name": "Exam", "score": score},
+            )
+            return course
+
+        first_class = add_graded_course(semesters[0]["id"], "MATH 101", "90")
+        add_graded_course(semesters[0]["id"], "SCI 101", "80")
+        add_graded_course(semesters[1]["id"], "MATH 101", "85")
+        add_graded_course(semesters[1]["id"], "SCI 202", "75")
+
+        first_snapshot = client.post(f"/api/semesters/{semesters[0]['id']}/snapshots").json()
+        second_snapshot = client.post(f"/api/semesters/{semesters[1]['id']}/snapshots").json()
+        assert first_snapshot["recorded_at"][:10] == second_snapshot["recorded_at"][:10]
+
+        deleted = client.request(
+            "DELETE",
+            f"/api/semesters/{semesters[0]['id']}/snapshots",
+            json={
+                "course_points": [
+                    {"snapshot_id": first_snapshot["id"], "course_id": first_class["id"]}
+                ]
+            },
+        )
+        assert deleted.status_code == 200
+
+        first_remaining = client.get(f"/api/semesters/{semesters[0]['id']}/snapshots").json()[0]
+        second_remaining = client.get(f"/api/semesters/{semesters[1]['id']}/snapshots").json()[0]
+        assert [row["code"] for row in first_remaining["courses"]] == ["SCI 101"]
+        assert [row["code"] for row in second_remaining["courses"]] == ["SCI 202"]
+        assert first_remaining["term_gpa"] is None
+        assert first_remaining["term_wgpa"] is None
+        assert second_remaining["term_gpa"] is None
+        assert second_remaining["term_wgpa"] is None
     finally:
         teardown()
 
@@ -692,4 +1387,3 @@ def test_reorder_categories(tmp_path):
         assert missing.status_code == 400
     finally:
         teardown()
-

@@ -1,23 +1,102 @@
 const headers = { "Content-Type": "application/json" };
+const responseCache = new Map();
+const inFlightGets = new Map();
+let cacheGeneration = 0;
+const MAX_CACHED_RESPONSES = 48;
 
-async function req(path, options = {}) {
-  const res = await fetch(path, options);
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body.detail || JSON.stringify(body);
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
+function cloneResponse(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isCacheableGet(path) {
+  const pathname = path.split("?", 1)[0];
+  return /^\/api\/(meta|semesters|courses|gpa|academic-years)(?:\/|$)/.test(pathname);
+}
+
+function clearResponseCache() {
+  cacheGeneration += 1;
+  responseCache.clear();
+  inFlightGets.clear();
+}
+
+function rememberResponse(path, value) {
+  responseCache.delete(path);
+  responseCache.set(path, value);
+  while (responseCache.size > MAX_CACHED_RESPONSES) {
+    responseCache.delete(responseCache.keys().next().value);
   }
-  if (res.status === 204) return null;
-  return res.json();
+}
+
+function scopedPath(path) {
+  if (typeof window === "undefined" || !path.startsWith("/api/")) return path;
+  const gradebookId = new URLSearchParams(window.location.search).get("gradebook");
+  if (!gradebookId) return path;
+  const [pathname, query = ""] = path.split("?");
+  const params = new URLSearchParams(query);
+  if (!params.has("gradebook_id")) params.set("gradebook_id", gradebookId);
+  return `${pathname}?${params.toString()}`;
+}
+
+async function req(path, options = {}, scopeGradebook = true) {
+  const resolvedPath = scopeGradebook ? scopedPath(path) : path;
+  const method = String(options.method || "GET").toUpperCase();
+  const cacheable = method === "GET" && isCacheableGet(resolvedPath);
+
+  if (!cacheable) {
+    if (method !== "GET") clearResponseCache();
+    const res = await fetch(resolvedPath, options);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.detail || JSON.stringify(body);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  if (responseCache.has(resolvedPath)) return cloneResponse(responseCache.get(resolvedPath));
+  if (inFlightGets.has(resolvedPath)) return cloneResponse(await inFlightGets.get(resolvedPath));
+
+  const generation = cacheGeneration;
+  const request = (async () => {
+    const res = await fetch(resolvedPath, options);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.detail || JSON.stringify(body);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    return res.status === 204 ? null : res.json();
+  })();
+  inFlightGets.set(resolvedPath, request);
+  try {
+    const value = await request;
+    if (generation === cacheGeneration) rememberResponse(resolvedPath, value);
+    return cloneResponse(value);
+  } finally {
+    if (inFlightGets.get(resolvedPath) === request) inFlightGets.delete(resolvedPath);
+  }
 }
 
 export const api = {
   meta: () => req("/api/meta"),
+  gradebookSetupInventory: (gradebooks) =>
+    req("/api/gradebook-setups/inventory", { method: "POST", headers, body: JSON.stringify({ gradebooks }) }, false),
+  exportGradebookSetups: (gradebooks) =>
+    req("/api/gradebook-setups/export", { method: "POST", headers, body: JSON.stringify({ gradebooks }) }, false),
+  importGradebookSetups: (payload, plan) =>
+    req("/api/gradebook-setups/import", { method: "POST", headers, body: JSON.stringify({ payload, plan }) }, false),
   semesters: () => req("/api/semesters"),
   createSemester: (body) => req("/api/semesters", { method: "POST", headers, body: JSON.stringify(body) }),
   patchSemester: (id, body) => req(`/api/semesters/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
@@ -34,13 +113,13 @@ export const api = {
   course: (id) => req(`/api/courses/${id}`),
   patchCourse: (id, body) => req(`/api/courses/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
   deleteCourse: (id) => req(`/api/courses/${id}`, { method: "DELETE" }),
-  updateScale: (id, rows) =>
-    req(`/api/courses/${id}/scale`, { method: "PUT", headers, body: JSON.stringify({ rows }) }),
-  resetScale: (id, profileId) =>
+  updateScale: (id, rows, pass_fail = null, minimum_passing_letter = null) =>
+    req(`/api/courses/${id}/scale`, { method: "PUT", headers, body: JSON.stringify({ rows, pass_fail, minimum_passing_letter }) }),
+  resetScale: (id, selection = {}) =>
     req(`/api/courses/${id}/scale/default`, {
       method: "POST",
       headers,
-      body: JSON.stringify(profileId ? { scale_profile_id: profileId } : {}),
+      body: JSON.stringify(typeof selection === "number" ? { scale_profile_id: selection } : selection),
     }),
   scaleProfiles: () => req("/api/scale-profiles"),
   createScaleProfile: (body = {}) =>
@@ -60,11 +139,20 @@ export const api = {
   createAssignment: (body) => req("/api/assignments", { method: "POST", headers, body: JSON.stringify(body) }),
   patchAssignment: (id, body) => req(`/api/assignments/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
   deleteAssignment: (id) => req(`/api/assignments/${id}`, { method: "DELETE" }),
-  gpa: () => req("/api/gpa"),
+  gpa: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") q.set(k, Array.isArray(v) ? (v.join(",") || "__none__") : v);
+    });
+    return req(`/api/gpa${q.toString() ? `?${q}` : ""}`);
+  },
   appearance: () => req("/api/appearance"),
   putAppearance: (body) => req("/api/appearance", { method: "PUT", headers, body: JSON.stringify(body) }),
   semesterSnapshots: (id) => req(`/api/semesters/${id}/snapshots`),
-  recordSemesterSnapshot: (id) => req(`/api/semesters/${id}/snapshots`, { method: "POST" }),
+  recordSemesterSnapshot: (id, gradebookId = null) => {
+    const suffix = gradebookId ? `?gradebook_id=${encodeURIComponent(gradebookId)}` : "";
+    return req(`/api/semesters/${id}/snapshots${suffix}`, { method: "POST" }, !gradebookId);
+  },
   patchSemesterSnapshot: (semesterId, snapshotId, body) =>
     req(`/api/semesters/${semesterId}/snapshots/${snapshotId}`, {
       method: "PATCH",
@@ -74,17 +162,132 @@ export const api = {
   deleteSemesterSnapshots: (id, body) =>
     req(`/api/semesters/${id}/snapshots`, { method: "DELETE", headers, body: JSON.stringify(body) }),
   recordAllSnapshots: () => req("/api/snapshots/record-all", { method: "POST" }),
-  gradePrompt: () => req("/api/grade-prompt"),
-  snoozeGradePrompt: () => req("/api/grade-prompt/snooze", { method: "POST" }),
+  gradePrompt: () => req("/api/grade-prompt", {}, false),
+  snoozeGradePrompt: () => req("/api/grade-prompt/snooze", { method: "POST" }, false),
   updates: () => req("/api/updates"),
   applyUpdate: () => req("/api/updates/apply", { method: "POST" }),
   downloadUpdate: () => req("/api/updates/apply", { method: "POST" }),
   dismissUpdate: (body) => req("/api/updates/dismiss", { method: "POST", headers, body: JSON.stringify(body) }),
+  setUpdateNotifications: (disabled) => req("/api/updates/notifications", { method: "POST", headers, body: JSON.stringify({ disabled }) }),
+  uninstall: () => req("/api/uninstall", { method: "POST", headers, body: JSON.stringify({ confirmed: true }) }),
   ackUpdateStatus: () => req("/api/updates/status/ack", { method: "POST" }),
-  patchSettings: (body) => req("/api/settings", { method: "PATCH", headers, body: JSON.stringify(body) }),
+  academicYears: () => req("/api/academic-years"),
+  createAcademicYear: (body) => req("/api/academic-years", { method: "POST", headers, body: JSON.stringify(body) }),
+  patchAcademicYear: (id, body) => req(`/api/academic-years/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
+  deleteAcademicYear: (id) => req(`/api/academic-years/${id}`, { method: "DELETE" }),
+  patchSettings: (body, gradebookId = null) => {
+    const suffix = gradebookId ? `?gradebook_id=${encodeURIComponent(gradebookId)}` : "";
+    return req(`/api/settings${suffix}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+  },
   createFumble: (body) => req("/api/fumbles", { method: "POST", headers, body: JSON.stringify(body) }),
+  patchFumble: (id, body) => req(`/api/fumbles/${id}`, { method: "PATCH", headers, body: JSON.stringify(body) }),
   deleteFumble: (id) => req(`/api/fumbles/${id}`, { method: "DELETE" }),
+  deleteGradebookData: (gradebookId = null) => {
+    const suffix = gradebookId ? `?gradebook_id=${encodeURIComponent(gradebookId)}` : "";
+    return req(`/api/gradebook-data${suffix}`, { method: "DELETE" });
+  },
 };
+
+class ScoreExpressionParser {
+  constructor(text) {
+    this.text = text;
+    this.index = 0;
+  }
+
+  skipSpace() {
+    while (/\s/.test(this.text[this.index] || "")) this.index += 1;
+  }
+
+  parse() {
+    const value = this.expression();
+    this.skipSpace();
+    if (this.index !== this.text.length || !Number.isFinite(value)) throw new Error("Invalid score expression");
+    return value;
+  }
+
+  expression() {
+    let value = this.term();
+    while (true) {
+      this.skipSpace();
+      const operator = this.text[this.index];
+      if (operator !== "+" && operator !== "-") return value;
+      this.index += 1;
+      const right = this.term();
+      value = operator === "+" ? value + right : value - right;
+    }
+  }
+
+  term() {
+    let value = this.factor();
+    while (true) {
+      this.skipSpace();
+      const operator = this.text[this.index];
+      if (operator !== "*" && operator !== "/") return value;
+      this.index += 1;
+      const right = this.factor();
+      if (operator === "/" && right === 0) throw new Error("Invalid score expression");
+      value = operator === "*" ? value * right : value / right;
+    }
+  }
+
+  factor() {
+    this.skipSpace();
+    let sign = 1;
+    if (this.text[this.index] === "+" || this.text[this.index] === "-") {
+      if (this.text[this.index] === "-") sign = -1;
+      this.index += 1;
+    }
+    this.skipSpace();
+    if (this.text[this.index] === "(") {
+      this.index += 1;
+      const value = this.expression();
+      this.skipSpace();
+      if (this.text[this.index] !== ")") throw new Error("Invalid score expression");
+      this.index += 1;
+      return sign * value;
+    }
+    const match = this.text.slice(this.index).match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
+    if (!match) throw new Error("Invalid score expression");
+    this.index += match[0].length;
+    return sign * Number(match[0]);
+  }
+}
+
+export function parseScoreExpression(raw) {
+  const text = String(raw || "").trim();
+  if (!text.startsWith("=")) return null;
+  const body = text.slice(1).trim();
+  if (!body) return null;
+  let depth = 0;
+  let slashIndex = null;
+  let multipleTopLevelSlashes = false;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth < 0) return null;
+    } else if (char === "/" && depth === 0) {
+      if (slashIndex != null) {
+        multipleTopLevelSlashes = true;
+        continue;
+      }
+      slashIndex = index;
+    }
+  }
+  if (depth !== 0) return null;
+  try {
+    if (slashIndex == null || multipleTopLevelSlashes) {
+      return { earned: new ScoreExpressionParser(body).parse(), possible: 100 };
+    }
+    return {
+      earned: new ScoreExpressionParser(body.slice(0, slashIndex)).parse(),
+      possible: new ScoreExpressionParser(body.slice(slashIndex + 1)).parse(),
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function fmtPct(n, digits = 2) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -122,6 +325,7 @@ export function gpOptions(course) {
 
 export function gpSelectValue(gp, options) {
   if (gp === null || gp === undefined) return "";
+  if (Number(gp) === -1) return "na";
   const match = options.find(([, v]) => Math.abs(v - Number(gp)) < 1e-6);
   return match ? String(match[1]) : String(gp);
 }
@@ -129,7 +333,15 @@ export function gpSelectValue(gp, options) {
 export function fmtScore(n) {
   if (n === null || n === undefined) return "—";
   const v = Number(n);
-  return v > 0 ? `+${v}` : String(v);
+  if (Number.isNaN(v)) return "—";
+  const rounded = Number(v.toFixed(3));
+  return rounded > 0 ? `+${rounded}` : String(rounded);
+}
+
+/** Apply the optional whole-percent rounding used by high-school overall grades. */
+export function roundPercentForCalculation(value, shouldRound) {
+  if (value == null || !Number.isFinite(Number(value))) return value;
+  return shouldRound ? Math.round(Number(value)) : Number(value);
 }
 
 /** Term score: round((GPA − target) × credits × 3). */
@@ -140,6 +352,16 @@ export function termScore(qualityPoints, credits, targetGp = 4.0) {
 
 /** Letter/GPA/score from the course percent, ignoring GP override. */
 export function trueGradeFromCourse(course, targetGp = 4.0) {
+  if (course?.credit_mode === "pass_fail") {
+    const config = course.pass_fail || {};
+    const rows = (config.rows?.length ? config.rows : [{ label: config.pass_label || "S", min_percent: config.min_percent ?? 70 }, { label: config.fail_label || "U", min_percent: 0 }]).slice().sort((a, b) => Number(b.min_percent) - Number(a.min_percent));
+    const automatic = course?.percent == null ? null : (rows.find((row) => Number(course.percent) >= Number(row.min_percent)) || rows.at(-1))?.label || null;
+    return {
+      letter: course.pass_fail_override || automatic,
+      qualityPoints: null,
+      score: null,
+    };
+  }
   const grade = gradeFromPercent(course?.percent, course?.scale, course?.grade_rounding ?? null);
   const letter = grade.letter ?? course?.natural_letter ?? null;
   const qualityPoints = grade.quality_points ?? course?.natural_quality_points ?? null;
@@ -181,9 +403,69 @@ export function letterClass(letter) {
     "D+": "grade-dp",
     D: "grade-d",
     "D-": "grade-dm",
+    S: "grade-ap",
     F: "grade-f",
+    U: "grade-f",
   };
   return map[letter] || "grade-f";
+}
+
+export function passFailToneClass(percent, config = {}, scale = []) {
+  if (percent == null || Number.isNaN(Number(percent))) return "";
+  const rows = (config.rows?.length ? config.rows : [{ label: config.pass_label || "S", min_percent: config.min_percent ?? 70 }, { label: config.fail_label || "U", min_percent: 0 }]).slice().sort((a, b) => Number(b.min_percent) - Number(a.min_percent));
+  const value = Number(percent);
+  const passingFloor = Number(rows.at(-2)?.min_percent ?? rows[0]?.min_percent ?? 70);
+  if (value < passingFloor) return "grade-f";
+  const underlying = gradeFromPercent(value, scale);
+  return letterClass(underlying.letter) || "grade-f";
+}
+
+export function passFailGradeIsFailing(course, letter = course?.letter) {
+  if (course?.credit_mode !== "pass_fail" || !letter) return false;
+  const config = course.pass_fail || {};
+  const rows = (config.rows?.length ? config.rows : [
+    { label: config.pass_label || "S", min_percent: config.min_percent ?? 70 },
+    { label: config.fail_label || "U", min_percent: 0 },
+  ]).slice().sort((a, b) => Number(b.min_percent) - Number(a.min_percent));
+  const row = rows.find((item) => item.label === letter);
+  if (row) return row.is_passing === false || row === rows.at(-1);
+  return letter === (config.fail_label || "U") || letter === "U";
+}
+
+export function passFailGradeAffectsGpa(course, letter = course?.letter) {
+  return course?.pass_fail?.fail_affects_gpa === true && passFailGradeIsFailing(course, letter);
+}
+
+function passFailCourseGradeClass(course, dashboard = false) {
+  if (course?.credit_mode === "pass_fail") {
+    const config = course.pass_fail || {};
+    const rows = (config.rows?.length ? config.rows : [{ label: config.pass_label || "S", min_percent: config.min_percent ?? 70 }, { label: config.fail_label || "U", min_percent: 0 }]).slice().sort((a, b) => Number(b.min_percent) - Number(a.min_percent));
+    const automaticLabel = course.percent == null
+      ? null
+      : (rows.find((row) => Number(course.percent) >= Number(row.min_percent)) || rows.at(-1))?.label;
+    const resolvedLabel = course.pass_fail_override ?? automaticLabel ?? course.letter;
+    const passingLabel = rows[0]?.label || "S";
+    const failingLabel = rows.at(-1)?.label || "U";
+    if (resolvedLabel === passingLabel || resolvedLabel === "S") {
+      if (dashboard || course.pass_fail_override != null) return "grade-ap";
+      return passFailToneClass(course.percent, config, course.scale) || "grade-ap";
+    }
+    if (resolvedLabel === failingLabel || resolvedLabel === "U") return "grade-f";
+    const resolvedRow = rows.find((row) => row.label === resolvedLabel);
+    if (resolvedRow) return passFailToneClass(Number(resolvedRow.min_percent), config, course.scale);
+    return passFailToneClass(course.percent, config, course.scale);
+  }
+  return letterClass(course?.letter);
+}
+
+/** Course/class view grade color: natural pass/fail grades use attained percent cutoffs. */
+export function courseGradeClass(course) {
+  return passFailCourseGradeClass(course, false);
+}
+
+/** GPA dashboard grade color: pass/fail passes always use the A+ color. */
+export function dashboardCourseGradeClass(course) {
+  return passFailCourseGradeClass(course, true);
 }
 
 /** Map a percent to letter + quality points using the course scale (highest cutoff ≤ percent). */
@@ -248,12 +530,16 @@ export function replaceMinWithPercent(cat, replacement) {
   if (replacement == null || Number.isNaN(Number(replacement))) {
     return regular.reduce((sum, n) => sum + n, 0) / regular.length;
   }
-  const scores = [...regular];
-  const lowest = Math.min(...scores);
+  const keep = regular.length - Math.min(Math.max(Number(cat.drop_count) || 0, 0), regular.length - 1);
+  const scores = [...regular].sort((a, b) => b - a).slice(0, keep);
   const exam = Number(replacement);
-  if (exam > lowest) {
-    scores.splice(scores.indexOf(lowest), 1);
-    scores.push(exam);
+  const replacements = Math.min(
+    Math.max(Number(cat.replace_count ?? 1) || 0, 0),
+    scores.length,
+  );
+  for (let index = 0; index < replacements; index += 1) {
+    const lowest = Math.min(...scores);
+    scores.splice(scores.indexOf(lowest), 1, exam);
   }
   return scores.reduce((sum, n) => sum + n, 0) / scores.length;
 }
@@ -297,7 +583,7 @@ function projectPointsPercentFromExam(course, examCategoryId, examPercent) {
 }
 
 /** Overall course percent if `examCategoryId` scores `examPercent`. */
-export function projectPercentFromExam(course, examCategoryId, examPercent) {
+export function projectPercentFromExam(course, examCategoryId, examPercent, weightByCatId = null) {
   if (course == null || examCategoryId == null || examPercent == null || Number.isNaN(Number(examPercent))) {
     return null;
   }
@@ -306,18 +592,24 @@ export function projectPercentFromExam(course, examCategoryId, examPercent) {
   }
   const examPct = Number(examPercent);
   const used = [];
+  const weightFor = (cat) => {
+    if (weightByCatId) {
+      return Number(weightByCatId[String(cat.id)] ?? weightByCatId[cat.id] ?? 0);
+    }
+    return Number(cat.effective_weight || examCategoryWeight(cat)) || 0;
+  };
   for (const cat of course.categories || []) {
     let pct = null;
     let weight = 0;
     if (cat.id === examCategoryId) {
       pct = examPct;
-      weight = examCategoryWeight(cat);
+      weight = weightFor(cat);
     } else if (cat.aggregation !== "points_ratio" && cat.replace_with_category_id === examCategoryId) {
       pct = replaceMinWithPercent(cat, examPct);
-      weight = cat.effective_weight || examCategoryWeight(cat);
-    } else if (cat.percent != null && cat.effective_weight) {
+      weight = weightFor(cat);
+    } else if (cat.percent != null && weightFor(cat)) {
       pct = cat.percent;
-      weight = cat.effective_weight;
+      weight = weightFor(cat);
     }
     if (pct != null && weight) used.push([weight, pct]);
   }
@@ -328,8 +620,8 @@ export function projectPercentFromExam(course, examCategoryId, examPercent) {
 }
 
 /** Exam percent that makes the overall course grade equal `cutoff`. */
-export function examNeededForCutoff(course, examCategoryId, cutoff) {
-  const overall = (exam) => projectPercentFromExam(course, examCategoryId, exam);
+export function examNeededForCutoff(course, examCategoryId, cutoff, weightByCatId = null) {
+  const overall = (exam) => projectPercentFromExam(course, examCategoryId, exam, weightByCatId);
   const p0 = overall(0);
   const p100 = overall(100);
   if (p0 == null || p100 == null) return null;
@@ -360,33 +652,118 @@ export function examNeededForCutoff(course, examCategoryId, cutoff) {
 
 export function examNeededRows(course, examCategoryId) {
   const scale = course?.scale || [];
+  const options = course?.dynamic_weighting_enabled
+    ? (course.dynamic_weighting?.options || []).map((option) => option.weights || {})
+    : [];
+  const weightSchemes = options.length ? options : [null];
   return scale
     .filter((row) => row.letter !== "F")
-    .map((row) => ({
-      letter: row.letter,
-      cutoff_percent: row.min_percent,
-      quality_points: row.quality_points,
-      needed: examNeededForCutoff(
-        course,
-        examCategoryId,
-        cutoffWithRounding(row.min_percent, course?.grade_rounding ?? null)
-      ),
-    }));
+    .map((row) => {
+      const needs = weightSchemes
+        .map((weights) => examNeededForCutoff(
+          course,
+          examCategoryId,
+          cutoffWithRounding(row.min_percent, course?.grade_rounding ?? null),
+          weights
+        ))
+        .filter((value) => value != null && Number.isFinite(value));
+      return {
+        letter: row.letter,
+        cutoff_percent: row.min_percent,
+        quality_points: row.quality_points,
+        needed: needs.length ? Math.min(...needs) : null,
+      };
+    });
+}
+
+export function pointsExamNeededRows(course, examPossible) {
+  const denominator = Number(examPossible);
+  if (!Number.isFinite(denominator) || denominator <= 0) return [];
+  let earned = 0;
+  let possible = 0;
+  let bonusPercent = 0;
+  for (const category of course?.categories || []) {
+    if (category.is_bonus_category) {
+      if (!(category.assignments || []).some((item) => Number(item.possible) === 0)) {
+        bonusPercent += Number(category.percent) || 0;
+      }
+      for (const item of category.assignments || []) {
+        if (item.earned != null && Number(item.possible) === 0) earned += Number(item.earned);
+      }
+      continue;
+    }
+    for (const item of category.assignments || []) {
+      if (item.earned == null) continue;
+      if (item.is_bonus) {
+        if (category.include_bonus) earned += Number(item.earned);
+        continue;
+      }
+      earned += Number(item.earned);
+      const itemPossible = Number(item.possible);
+      possible += Number.isFinite(itemPossible) && itemPossible > 0 ? itemPossible : 100;
+    }
+  }
+  if (possible <= 0) return [];
+  return (course?.scale || [])
+    .filter((row) => row.letter !== "F")
+    .map((row) => {
+      const cutoff = cutoffWithRounding(row.min_percent, course?.grade_rounding ?? null);
+      const neededPoints = ((cutoff - bonusPercent) / 100) * (possible + denominator) - earned;
+      return {
+        letter: row.letter,
+        cutoff_percent: row.min_percent,
+        quality_points: row.quality_points,
+        needed_points: neededPoints,
+        needed_percent: (100 * neededPoints) / denominator,
+      };
+    });
+}
+
+export function pointsPercentFromExam(course, examPossible, examEarned) {
+  const denominator = Number(examPossible);
+  const earnedExam = Number(examEarned);
+  if (!Number.isFinite(denominator) || denominator <= 0 || !Number.isFinite(earnedExam)) return null;
+  let earned = earnedExam;
+  let possible = denominator;
+  let bonusPercent = 0;
+  for (const category of course?.categories || []) {
+    if (category.is_bonus_category) {
+      if (!(category.assignments || []).some((item) => Number(item.possible) === 0)) {
+        bonusPercent += Number(category.percent) || 0;
+      }
+      for (const item of category.assignments || []) {
+        if (item.earned != null && Number(item.possible) === 0) earned += Number(item.earned);
+      }
+      continue;
+    }
+    for (const item of category.assignments || []) {
+      if (item.earned == null) continue;
+      if (item.is_bonus) {
+        if (category.include_bonus) earned += Number(item.earned);
+        continue;
+      }
+      earned += Number(item.earned);
+      const itemPossible = Number(item.possible);
+      possible += Number.isFinite(itemPossible) && itemPossible > 0 ? itemPossible : 100;
+    }
+  }
+  return (100 * earned) / possible + bonusPercent;
 }
 
 export function defaultExamCategoryId(categories) {
-  if (!categories?.length) return null;
-  const finalNamed = categories.find((cat) => /final/i.test(cat.name || ""));
+  const eligible = (categories || []).filter((cat) => !cat.is_bonus_category);
+  if (!eligible.length) return null;
+  const finalNamed = eligible.find((cat) => /final/i.test(cat.name || ""));
   if (finalNamed) return finalNamed.id;
-  const examNamed = categories.find((cat) => /exam/i.test(cat.name || ""));
+  const examNamed = eligible.find((cat) => /exam/i.test(cat.name || ""));
   if (examNamed) return examNamed.id;
-  const empty = categories.find(
+  const empty = eligible.find(
     (cat) => cat.percent == null && (cat.weight || cat.weight_per_item)
   );
   if (empty) return empty.id;
-  const unscored = categories.find((cat) => cat.percent == null);
+  const unscored = eligible.find((cat) => cat.percent == null);
   if (unscored) return unscored.id;
-  return categories[categories.length - 1].id;
+  return eligible[eligible.length - 1].id;
 }
 
 /**
@@ -397,7 +774,14 @@ export function assignmentPercent({ display, earned, possible, isBonus }) {
   if (isBonus && (possible == null || possible === 0)) return null;
 
   if (display !== undefined && display !== null) {
-    const raw = String(display).trim();
+    const rawDisplay = String(display).trim();
+    if (rawDisplay.startsWith("=")) {
+      const expression = parseScoreExpression(rawDisplay);
+      if (expression && Number.isFinite(expression.earned) && Number.isFinite(expression.possible) && expression.possible !== 0) {
+        return (100 * expression.earned) / expression.possible;
+      }
+    }
+    const raw = rawDisplay.replace(/^=/, "").trim();
     if (!raw) return null;
     const ratio = raw.match(/^(-?\d+(?:\.\d+)?)\s*[/,]\s*(-?\d+(?:\.\d+)?)$/);
     if (ratio) {

@@ -1,4 +1,8 @@
-const STORAGE_KEY = "grade-calculator-appearance";
+import { DEFAULT_FLAGS, normalizeFlags } from "./flags.jsx";
+
+// v1 is the clean-install local-storage baseline. Future releases keep this
+// key stable; pre-v1 appearance data is intentionally not imported.
+const STORAGE_KEY = "grade-calculator-appearance-v1";
 
 export const DEFAULT_COLORS = {
   primary: "#e4b86d",
@@ -10,7 +14,21 @@ export const DEFAULT_COLORS = {
 export const DEFAULT_GRADE_SCALE = "classic";
 export const DEFAULT_CREDIT_LABEL = "credits";
 
+const DEFAULT_SEMESTER_TITLES = [
+  { id: "winter", name: "Winter" },
+  { id: "spring", name: "Spring" },
+  { id: "summer", name: "Summer" },
+  { id: "fall", name: "Fall" },
+];
+
+function normalizeSemesterTitles(value) {
+  if (!Array.isArray(value)) return DEFAULT_SEMESTER_TITLES.map((item) => ({ ...item }));
+  if (!value.length) return [];
+  return value;
+}
+
 export const CREDIT_LABEL_OPTIONS = [
+  { id: "classes", name: "Classes", singular: "class", plural: "classes", short: "class" },
   { id: "credits", name: "Credits", singular: "credit", plural: "credits", short: "cr" },
   { id: "units", name: "Units", singular: "unit", plural: "units", short: "u" },
   { id: "hours", name: "Hours", singular: "hour", plural: "hours", short: "hr" },
@@ -30,6 +48,19 @@ export const CREDIT_LABEL_OPTIONS = [
   },
   { id: "other", name: "Other" },
 ];
+
+export const TERM_LABEL_OPTIONS = [
+  { id: "semester", name: "Semester" },
+  { id: "quarter", name: "Quarter" },
+  { id: "trimester", name: "Trimester" },
+  { id: "term", name: "Term" },
+  { id: "custom", name: "Custom" },
+];
+
+export function resolveTermLabel(appearance = {}) {
+  if (appearance.termLabelId === "custom") return String(appearance.termLabelCustom || "").trim() || "Term";
+  return TERM_LABEL_OPTIONS.find((item) => item.id === appearance.termLabelId)?.name || "Semester";
+}
 
 function titleCase(value) {
   return String(value || "")
@@ -250,9 +281,23 @@ export function parseAppearance(parsed) {
   const primary = normalizeHex(parsed.primary) || DEFAULT_COLORS.primary;
   const secondary = normalizeHex(parsed.secondary) || DEFAULT_COLORS.secondary;
   const tertiary = normalizeHex(parsed.tertiary) || DEFAULT_COLORS.tertiary;
+  const classLabels = Array.isArray(parsed.classLabels)
+    ? parsed.classLabels
+      .map((label) => ({ id: String(label?.id || ""), name: String(label?.name || "").trim() }))
+      .filter((label) => label.id && label.name)
+    : [];
+  const courseLabels = parsed.courseLabels && typeof parsed.courseLabels === "object"
+    ? Object.fromEntries(
+      Object.entries(parsed.courseLabels).map(([courseId, labelIds]) => [
+        String(courseId),
+        Array.isArray(labelIds) ? labelIds.map(String).filter((labelId) => classLabels.some((label) => label.id === labelId)) : [],
+      ]).filter(([, labelIds]) => labelIds.length)
+    )
+    : {};
   return {
     gradeColors: parsed.gradeColors !== false,
     showScore: parsed.showScore !== false,
+    tooltips: parsed.tooltips !== false,
     gradeScale: resolveGradeScaleId(parsed.gradeScale, gradeScalePresets),
     customGradeColors: normalizeGradeColors(parsed.customGradeColors),
     gradeScalePresets,
@@ -260,6 +305,12 @@ export function parseAppearance(parsed) {
       ? parsed.creditLabelId
       : DEFAULT_CREDIT_LABEL,
     creditLabelCustom: String(parsed.creditLabelCustom || "").trim(),
+    classType: parsed.classType === "named" ? "named" : "alphanumeric",
+    weightedGpa: parsed.weightedGpa === true,
+    wgpaInSidebar: parsed.wgpaInSidebar === true,
+    semesterTitles: normalizeSemesterTitles(parsed.semesterTitles),
+    termLabelId: TERM_LABEL_OPTIONS.some((item) => item.id === parsed.termLabelId) ? parsed.termLabelId : "semester",
+    termLabelCustom: String(parsed.termLabelCustom || "").trim(),
     primary,
     secondary,
     tertiary,
@@ -267,29 +318,42 @@ export function parseAppearance(parsed) {
     themePresets,
     autoContrastText: parsed.autoContrastText !== false,
     textColor: normalizeHex(parsed.textColor) || DEFAULT_COLORS.text,
+    flags: normalizeFlags(parsed.flags),
+    colorFlaggedAssignments: parsed.colorFlaggedAssignments === true,
+    readableTextBackground: parsed.readableTextBackground !== false,
+    classLabels,
+    courseLabels,
   };
 }
 
 function defaultAppearance() {
-  const legacyLight = window.localStorage.getItem("grade-calculator-light-mode") === "true";
-  const primary = legacyLight ? "#a87526" : DEFAULT_COLORS.primary;
-  const secondary = legacyLight ? "#f4f1e9" : DEFAULT_COLORS.secondary;
-  const tertiary = legacyLight ? "#356da8" : DEFAULT_COLORS.tertiary;
   return {
-    gradeColors: window.localStorage.getItem("grade-calculator-grade-colors") !== "false",
+    gradeColors: true,
     showScore: true,
+    tooltips: true,
     gradeScale: DEFAULT_GRADE_SCALE,
     customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
     gradeScalePresets: [],
     creditLabelId: DEFAULT_CREDIT_LABEL,
     creditLabelCustom: "",
-    primary,
-    secondary,
-    tertiary,
-    themeScale: legacyLight ? "light" : DEFAULT_THEME_SCALE,
+    classType: "alphanumeric",
+    weightedGpa: false,
+    wgpaInSidebar: false,
+    semesterTitles: DEFAULT_SEMESTER_TITLES.map((item) => ({ ...item })),
+    termLabelId: "semester",
+    termLabelCustom: "",
+    primary: DEFAULT_COLORS.primary,
+    secondary: DEFAULT_COLORS.secondary,
+    tertiary: DEFAULT_COLORS.tertiary,
+    themeScale: DEFAULT_THEME_SCALE,
     themePresets: [],
     autoContrastText: true,
     textColor: DEFAULT_COLORS.text,
+    flags: DEFAULT_FLAGS.map((flag) => ({ ...flag })),
+    colorFlaggedAssignments: false,
+    readableTextBackground: true,
+    classLabels: [],
+    courseLabels: {},
   };
 }
 
@@ -297,11 +361,15 @@ export function appearancePayload(appearance) {
   return {
     gradeColors: appearance.gradeColors,
     showScore: appearance.showScore !== false,
+    tooltips: appearance.tooltips !== false,
     gradeScale: resolveGradeScaleId(appearance.gradeScale, appearance.gradeScalePresets),
     customGradeColors: normalizeGradeColors(appearance.customGradeColors),
     gradeScalePresets: normalizeGradeScalePresets(appearance.gradeScalePresets),
     creditLabelId: appearance.creditLabelId || DEFAULT_CREDIT_LABEL,
     creditLabelCustom: String(appearance.creditLabelCustom || "").trim(),
+    semesterTitles: normalizeSemesterTitles(appearance.semesterTitles),
+    termLabelId: appearance.termLabelId || "semester",
+    termLabelCustom: String(appearance.termLabelCustom || "").trim(),
     primary: appearance.primary,
     secondary: appearance.secondary,
     tertiary: appearance.tertiary,
@@ -309,6 +377,11 @@ export function appearancePayload(appearance) {
     themePresets: normalizeThemePresets(appearance.themePresets),
     autoContrastText: appearance.autoContrastText !== false,
     textColor: normalizeHex(appearance.textColor) || DEFAULT_COLORS.text,
+    flags: normalizeFlags(appearance.flags),
+    colorFlaggedAssignments: appearance.colorFlaggedAssignments === true,
+    readableTextBackground: appearance.readableTextBackground !== false,
+    classLabels: Array.isArray(appearance.classLabels) ? appearance.classLabels : [],
+    courseLabels: appearance.courseLabels && typeof appearance.courseLabels === "object" ? appearance.courseLabels : {},
   };
 }
 
@@ -329,8 +402,6 @@ export function saveAppearance(appearance) {
   const payload = appearancePayload(appearance);
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    window.localStorage.removeItem("grade-calculator-light-mode");
-    window.localStorage.removeItem("grade-calculator-grade-colors");
   } catch (err) {
     console.warn("Failed to save appearance to localStorage", err);
   }

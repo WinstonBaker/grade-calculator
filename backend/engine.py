@@ -23,6 +23,26 @@ DEFAULT_SCALE: list[tuple[str, float, float]] = [
     ("F", 0.0, 0.0),
 ]
 
+DEFAULT_PASS_FAIL = {
+    "rows": [{"label": "S", "min_percent": 70.0}, {"label": "U", "min_percent": 0.0}],
+}
+
+PRESET_PASS_FAIL = {
+    "ncsu": {"rows": [{"label": "S", "min_percent": 70.0}, {"label": "U", "min_percent": 0.0}]},
+    "unc": {"rows": [{"label": "PS", "min_percent": 73.0, "is_passing": False}, {"label": "LP", "min_percent": 60.0, "is_passing": True}, {"label": "F", "min_percent": 0.0, "is_passing": False}], "fail_affects_gpa": True},
+    "clemson": {"rows": [{"label": "P", "min_percent": 60.0}, {"label": "NP", "min_percent": 0.0}]},
+    "ecu": {"rows": [{"label": "P", "min_percent": 60.0}, {"label": "F", "min_percent": 0.0}]},
+    "uncw": {"rows": [{"label": "P", "min_percent": 60.0}, {"label": "F", "min_percent": 0.0}]},
+    "uncc": {"rows": [{"label": "P", "min_percent": 60.0}, {"label": "N", "min_percent": 0.0}]},
+    "duke": {"rows": [{"label": "S", "min_percent": 70.0}, {"label": "U", "min_percent": 0.0}]},
+    "cofc": {"rows": [{"label": "P", "min_percent": 73.0}, {"label": "NP", "min_percent": 0.0}]},
+}
+
+PRESET_MINIMUM_PASSING = {
+    "ncsu": "C-", "unc": "C", "clemson": "D", "ecu": "D-",
+    "uncw": "D-", "uncc": "D", "duke": "C-", "cofc": "C",
+}
+
 VALID_QUALITY_POINTS = {qp for _, _, qp in DEFAULT_SCALE}
 
 # School GPA tables. Percent cutoffs are typical 10-point plus/minus bands;
@@ -31,13 +51,14 @@ VALID_QUALITY_POINTS = {qp for _, _, qp in DEFAULT_SCALE}
 SCALE_PRESETS: list[dict] = [
     {
         "id": "ncsu",
-        "name": "NC State",
+        "name": "North Carolina State University",
         "description": "A+ is 4.333; plus/minus in thirds",
         "rows": DEFAULT_SCALE,
+        "pass_fail": DEFAULT_PASS_FAIL,
     },
     {
         "id": "unc",
-        "name": "UNC",
+        "name": "UNC Chapel Hill",
         "description": "No A+ or D-; plus/minus at 3.7 / 3.3",
         "rows": [
             ("A", 93.0, 4.0),
@@ -55,7 +76,7 @@ SCALE_PRESETS: list[dict] = [
     },
     {
         "id": "clemson",
-        "name": "Clemson",
+        "name": "Clemson University",
         "description": "A–F only; no plus/minus",
         "rows": [
             ("A", 90.0, 4.0),
@@ -67,7 +88,7 @@ SCALE_PRESETS: list[dict] = [
     },
     {
         "id": "ecu",
-        "name": "ECU",
+        "name": "East Carolina University",
         "description": "No A+; plus/minus at 3.7 / 3.3",
         "rows": [
             ("A", 93.0, 4.0),
@@ -86,7 +107,7 @@ SCALE_PRESETS: list[dict] = [
     },
     {
         "id": "uncw",
-        "name": "UNCW",
+        "name": "UNC Wilmington",
         "description": "No A+; plus/minus in thirds",
         "rows": [
             ("A", 93.0, 4.0),
@@ -105,7 +126,7 @@ SCALE_PRESETS: list[dict] = [
     },
     {
         "id": "uncc",
-        "name": "UNCC",
+        "name": "UNC Charlotte",
         "description": "A–F only; no plus/minus",
         "rows": [
             ("A", 90.0, 4.0),
@@ -117,7 +138,7 @@ SCALE_PRESETS: list[dict] = [
     },
     {
         "id": "duke",
-        "name": "Duke",
+        "name": "Duke University",
         "description": "A+ same as A (4.0); plus/minus at 3.7 / 3.3",
         "rows": [
             ("A+", 97.0, 4.0),
@@ -168,6 +189,8 @@ def preset_payload() -> list[dict]:
             "name": preset["name"],
             "description": preset["description"],
             "rows": scale_as_dicts(preset["rows"]),
+            "pass_fail": dict(preset.get("pass_fail", PRESET_PASS_FAIL.get(preset["id"], DEFAULT_PASS_FAIL))),
+            "minimum_passing_letter": preset.get("minimum_passing_letter", PRESET_MINIMUM_PASSING.get(preset["id"], "C-")),
         }
         for preset in SCALE_PRESETS
     ]
@@ -215,9 +238,10 @@ def quality_points_set(scale: Iterable["ScaleRow"]) -> set[float]:
     return {row.quality_points for row in scale}
 
 
-SEASON_ORDER = {"transfer": 0, "spring": 1, "summer": 2, "fall": 3}
+SEASON_ORDER = {"transfer": 0, "winter": 1, "spring": 2, "summer": 3, "fall": 4}
 SEASON_LABELS = {
     "transfer": "Transfer",
+    "winter": "Winter",
     "spring": "Spring",
     "summer": "Summer",
     "fall": "Fall",
@@ -255,15 +279,12 @@ def course_without_category_scores(course: CourseInput, category_id: int) -> Cou
 
 def exam_impact(
     course: CourseInput,
-    test_category_ids: list[int] | int | None,
+    test_category_ids: list[int] | None,
     exam_category_id: int | None,
     target_gp: float = 4.0,
 ) -> dict | None:
     """Post-exam vs tests: score delta and letter movement. Ignores GP override."""
-    if isinstance(test_category_ids, int):
-        test_ids = [test_category_ids]
-    else:
-        test_ids = [int(item) for item in (test_category_ids or []) if item is not None]
+    test_ids = [int(item) for item in (test_category_ids or []) if item is not None]
     # Preserve order, drop duplicates.
     seen: set[int] = set()
     ordered_ids: list[int] = []
@@ -302,12 +323,13 @@ def exam_impact(
             else:
                 letter_change = "same"
     return {
-        "test_category_id": ordered_ids[0],
         "test_category_ids": ordered_ids,
         "exam_category_id": exam_category_id,
         "test_percent": test_pct,
         "exam_percent": exam_pct,
         "delta": delta,
+        "percent_before": before.percent if test_pct is not None and exam_pct is not None else None,
+        "percent_after": after.percent if test_pct is not None and exam_pct is not None else None,
         "letter_before": letter_before,
         "letter_after": letter_after,
         "letter_change": letter_change,
@@ -317,24 +339,20 @@ AGGREGATIONS = (
     "average",
     "points_ratio",
 )
-LEGACY_AGGREGATIONS = (
-    "drop_lowest",
-    "average_plus_bonus",
-    "replace_min_with",
-)
-ACCEPTED_AGGREGATIONS = AGGREGATIONS + LEGACY_AGGREGATIONS
 AGGREGATION_LABELS = {
     "average": "Average",
-    "points_ratio": "Points ratio",
+    "points_ratio": "Points",
 }
 
 
 @dataclass
 class AssignmentInput:
+    id: int = 0
     name: str = ""
     earned: float | None = None
     possible: float | None = None
     is_bonus: bool = False
+    bonus_type: str | None = None
 
     def has_score(self) -> bool:
         return self.earned is not None
@@ -363,7 +381,9 @@ class CategoryInput:
     weight_per_item: float | None = None
     aggregation: str = "average"
     drop_count: int = 0
+    replace_count: int = 1
     include_bonus: bool = False
+    is_bonus_category: bool = False
     replace_with_category_id: int | None = None
     assignments: list[AssignmentInput] = field(default_factory=list)
 
@@ -376,16 +396,26 @@ class ScaleRow:
 
 
 @dataclass
+class PassFailScale:
+    rows: list[dict] = field(default_factory=lambda: [{"label": "S", "min_percent": 70.0}, {"label": "U", "min_percent": 0.0}])
+    fail_affects_gpa: bool = False
+
+
+@dataclass
 class CourseInput:
     id: int | None = None
     code: str = ""
     credits: float = 0.0
     bonus_points: float = 0.0
+    bonus_mode: str = "none"
     gp_override: float | None = None
     grade_rounding: int | None = None
     categories: list[CategoryInput] = field(default_factory=list)
     scale: list[ScaleRow] = field(default_factory=list)
     grading_mode: str = "weighted"
+    credit_mode: str = "for_credit"
+    pass_fail: PassFailScale = field(default_factory=PassFailScale)
+    pass_fail_override: str | None = None
 
 
 @dataclass
@@ -423,13 +453,109 @@ class CourseResult:
     natural_score: int | None = None
 
 
+class _ExpressionParser:
+    def __init__(self, text: str):
+        self.text = text
+        self.index = 0
+
+    def parse(self) -> float:
+        value = self.expression()
+        self.skip_space()
+        if self.index != len(self.text) or not math.isfinite(value):
+            raise ValueError("Invalid score expression")
+        return value
+
+    def skip_space(self) -> None:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
+
+    def expression(self) -> float:
+        value = self.term()
+        while True:
+            self.skip_space()
+            if self.index >= len(self.text) or self.text[self.index] not in "+-":
+                return value
+            operator = self.text[self.index]
+            self.index += 1
+            right = self.term()
+            value = value + right if operator == "+" else value - right
+
+    def term(self) -> float:
+        value = self.factor()
+        while True:
+            self.skip_space()
+            if self.index >= len(self.text) or self.text[self.index] not in "*/":
+                return value
+            operator = self.text[self.index]
+            self.index += 1
+            right = self.factor()
+            if operator == "/" and right == 0:
+                raise ValueError("Invalid score expression")
+            value = value * right if operator == "*" else value / right
+
+    def factor(self) -> float:
+        self.skip_space()
+        sign = 1.0
+        if self.index < len(self.text) and self.text[self.index] in "+-":
+            if self.text[self.index] == "-":
+                sign = -1.0
+            self.index += 1
+            self.skip_space()
+        if self.index < len(self.text) and self.text[self.index] == "(":
+            self.index += 1
+            value = self.expression()
+            self.skip_space()
+            if self.index >= len(self.text) or self.text[self.index] != ")":
+                raise ValueError("Invalid score expression")
+            self.index += 1
+            return sign * value
+        match = re.match(r"(?:\d+(?:\.\d*)?|\.\d+)", self.text[self.index:])
+        if not match:
+            raise ValueError("Invalid score expression")
+        self.index += len(match.group(0))
+        return sign * float(match.group(0))
+
+
+def evaluate_score_expression(raw: str) -> tuple[float, float]:
+    """Evaluate = expressions, treating one top-level slash as a score ratio."""
+    text = str(raw or "").strip()
+    if not text.startswith("="):
+        raise ValueError("Score expressions must start with =")
+    body = text[1:].strip()
+    if not body:
+        raise ValueError("Invalid score expression")
+    depth = 0
+    slash_index = None
+    for index, char in enumerate(body):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Invalid score expression")
+        elif char == "/" and depth == 0:
+            if slash_index is not None:
+                slash_index = -1
+                break
+            slash_index = index
+    if depth != 0 or slash_index == -1:
+        return _ExpressionParser(body).parse(), 100.0
+    if slash_index is None:
+        return _ExpressionParser(body).parse(), 100.0
+    earned = _ExpressionParser(body[:slash_index]).parse()
+    possible = _ExpressionParser(body[slash_index + 1:]).parse()
+    return earned, possible
+
+
 def parse_score(raw: str | None) -> tuple[float | None, float | None]:
-    """Parse 95, 19/20, or 19,20 into (earned, possible)."""
+    """Parse 95, 19/20, 19,20, or = arithmetic expressions."""
     if raw is None:
         return None, None
     text = str(raw).strip()
     if text == "":
         return None, None
+    if text.startswith("="):
+        return evaluate_score_expression(text)
     for sep in ("/", ",", " "):
         if sep in text:
             parts = [p.strip() for p in text.replace("/", sep).split(sep) if p.strip()]
@@ -444,19 +570,15 @@ def resolve_category_policy(
     include_bonus: bool = False,
     replace_with_category_id: int | None = None,
 ) -> CategoryPolicy:
-    """Map exclusive legacy modes onto base + drop + bonus + replace knobs."""
-    drop = max(int(drop_count or 0), 0)
-    bonus = bool(include_bonus)
-    replace_id = replace_with_category_id
-    if aggregation == "drop_lowest":
-        return CategoryPolicy("average", drop if drop else 1, bonus, replace_id)
-    if aggregation == "average_plus_bonus":
-        return CategoryPolicy("average", drop, True, replace_id)
-    if aggregation == "replace_min_with":
-        return CategoryPolicy("average", drop, bonus, replace_id)
-    if aggregation == "points_ratio":
-        return CategoryPolicy("points_ratio", drop, bonus, replace_id)
-    return CategoryPolicy("average", drop, bonus, replace_id)
+    """Validate and normalize the current orthogonal category settings."""
+    if aggregation not in AGGREGATIONS:
+        raise ValueError(f"Unknown aggregation {aggregation}")
+    return CategoryPolicy(
+        aggregation,
+        max(int(drop_count or 0), 0),
+        bool(include_bonus),
+        replace_with_category_id,
+    )
 
 
 def _kept_scores(values: list[float], drop: int) -> list[float]:
@@ -493,6 +615,58 @@ def points_ratio(assignments: Iterable[AssignmentInput]) -> float | None:
     return 100.0 * earned / possible
 
 
+def _points_possible(item: AssignmentInput) -> float:
+    return float(item.possible) if item.possible not in (None, 0) else 100.0
+
+
+def _ranked_points_subset(
+    assignments: list[AssignmentInput], drop: int, ratio: float
+) -> list[AssignmentInput]:
+    fixed = [item for item in assignments if item.possible in (None, 0)]
+    eligible = [item for item in assignments if item.possible not in (None, 0)]
+    keep_count = len(eligible) - min(max(drop, 0), max(len(eligible) - 1, 0))
+    return fixed + sorted(
+        eligible,
+        key=lambda item: item.earned - ratio * _points_possible(item),
+        reverse=True,
+    )[:keep_count]
+
+
+def _best_points_subset(
+    assignments: list[AssignmentInput],
+    drop: int,
+    base_earned: float = 0.0,
+    base_possible: float = 0.0,
+) -> list[AssignmentInput]:
+    """Keep the fixed-size subset that maximizes the resulting points ratio.
+
+    For a candidate ratio r, the best k-row subset is the k rows with the
+    largest (earned - r * possible) contribution. Binary search over r finds
+    the optimal ratio without enumerating every combination of rows.
+    """
+    if not assignments:
+        return []
+    keep_count = len(assignments) - min(max(drop, 0), len(assignments) - 1)
+    if keep_count >= len(assignments):
+        return assignments
+
+    low = -1_000_000.0
+    high = 1_000_000.0
+    for _ in range(70):
+        ratio = (low + high) / 2.0
+        kept = _ranked_points_subset(assignments, drop, ratio)
+        contribution = base_earned + sum(item.earned for item in kept if item.earned is not None)
+        contribution -= ratio * (
+            base_possible + sum(_points_possible(item) for item in kept)
+        )
+        if contribution >= 0:
+            low = ratio
+        else:
+            high = ratio
+
+    return _ranked_points_subset(assignments, drop, low)
+
+
 def _regular_percents(category: CategoryInput) -> list[float]:
     out: list[float] = []
     for item in category.assignments:
@@ -523,39 +697,49 @@ def category_percent(
         category.replace_with_category_id,
     )
     regular = _regular_percents(category)
-    bonuses = _bonus_values(category) if policy.include_bonus else []
+    bonuses = _bonus_values(category)
+
+    if category.is_bonus_category:
+        return sum(bonuses)
 
     if policy.aggregation == "points_ratio":
         scored = [a for a in category.assignments if a.has_score() and not a.is_bonus]
+        if policy.drop_count:
+            scored = _best_points_subset(scored, policy.drop_count, 0)
         pct = points_ratio(scored)
-        if pct is None or not bonuses:
-            return pct
-        earned = sum(item.earned for item in scored if item.earned is not None)
-        possible = sum(
-            item.possible if item.possible not in (None, 0) else 0.0 for item in scored
-        )
-        if possible == 0:
-            return None
-        return 100.0 * (earned + sum(bonuses)) / possible
+        return pct
 
     if not regular:
         return None
 
-    scores = list(regular)
+    scores = _kept_scores(regular, policy.drop_count)
+    if not scores:
+        return None
     if policy.replace_with_category_id is not None and categories:
         other = next((c for c in categories if c.id == policy.replace_with_category_id), None)
         if other is not None:
             replacement = category_percent(replace(other, replace_with_category_id=None), None)
             if replacement is not None:
-                lowest = min(scores)
-                if replacement > lowest:
+                replacements = min(
+                    max(int(category.replace_count or 0), 0),
+                    len(scores),
+                )
+                for _ in range(replacements):
+                    lowest = min(scores)
                     scores.remove(lowest)
                     scores.append(replacement)
 
-    kept = _kept_scores(scores, policy.drop_count)
-    if not kept:
-        return None
-    return (sum(kept) + sum(bonuses)) / len(kept)
+    assignment_bonuses = [
+        item.earned
+        for item in category.assignments
+        if item.is_bonus and item.bonus_type != "category" and item.earned is not None
+    ]
+    category_bonuses = [
+        item.earned
+        for item in category.assignments
+        if item.is_bonus and item.bonus_type == "category" and item.earned is not None
+    ]
+    return (sum(scores) + sum(assignment_bonuses)) / len(scores) + sum(category_bonuses)
 
 
 def effective_weight(category: CategoryInput) -> float:
@@ -572,28 +756,77 @@ def _assignment_possible(item: AssignmentInput) -> float:
 
 def course_points_percent(course: CourseInput) -> float | None:
     """Overall percent from total earned / possible, ignoring category weights."""
+    scored_by_category: list[tuple[CategoryInput, list[AssignmentInput]]] = []
     earned = 0.0
     possible = 0.0
     bonus = 0.0
+    fixed_earned = 0.0
     any_row = False
     for cat in course.categories:
-        for item in cat.assignments:
-            if item.is_bonus:
-                if cat.include_bonus and item.earned is not None:
-                    bonus += item.earned
-                continue
-            if item.earned is None:
-                continue
-            any_row = True
+        scored = [item for item in cat.assignments if not item.is_bonus and item.earned is not None]
+        scored_by_category.append((cat, scored))
+        any_row = any_row or bool(scored)
+        for item in scored:
             earned += item.earned
             possible += _assignment_possible(item)
+        for item in cat.assignments:
+            if item.is_bonus:
+                if (
+                    cat.is_bonus_category
+                    and cat.aggregation == "points_ratio"
+                    and course.bonus_mode == "category"
+                    and item.earned is not None
+                ):
+                    earned += item.earned
+                    fixed_earned += item.earned
+                    any_row = True
+                elif cat.include_bonus and not cat.is_bonus_category and item.earned is not None:
+                    bonus += item.earned
+
+    if any(category.drop_count for category, _ in scored_by_category):
+        low = -1_000_000.0
+        high = 1_000_000.0
+        for _ in range(70):
+            ratio = (low + high) / 2.0
+            candidate_earned = fixed_earned + bonus
+            candidate_possible = 0.0
+            for category, scored in scored_by_category:
+                if not scored:
+                    continue
+                drop = resolve_category_policy(
+                    "points_ratio", category.drop_count, False, None
+                ).drop_count
+                kept = _ranked_points_subset(scored, drop, ratio)
+                candidate_earned += sum(item.earned for item in kept if item.earned is not None)
+                candidate_possible += sum(_assignment_possible(item) for item in kept)
+            if candidate_earned - ratio * candidate_possible >= 0:
+                low = ratio
+            else:
+                high = ratio
+
+        earned = fixed_earned
+        possible = 0.0
+        for category, scored in scored_by_category:
+            if not scored:
+                continue
+            drop = resolve_category_policy(
+                "points_ratio", category.drop_count, False, None
+            ).drop_count
+            kept = _ranked_points_subset(scored, drop, low)
+            earned += sum(item.earned for item in kept if item.earned is not None)
+            possible += sum(_assignment_possible(item) for item in kept)
     if not any_row or possible == 0:
         return None
-    return 100.0 * (earned + bonus) / possible
+    static_points = course.bonus_points if course.bonus_mode == "static_points" else 0.0
+    return 100.0 * (earned + bonus + static_points) / possible
 
 
 def is_points_based(course: CourseInput) -> bool:
     return (course.grading_mode or "weighted") == "points"
+
+
+def is_pass_fail(course: CourseInput) -> bool:
+    return (course.credit_mode or "for_credit") == "pass_fail"
 
 
 def round_half_up(percent: float | None, decimals: int | None) -> float | None:
@@ -634,15 +867,20 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
     cat_results: list[CategoryResult] = []
 
     for cat in course.categories:
-        pct = category_percent(cat, course.categories)
-        weight = effective_weight(cat)
+        calculated_cat = (
+            replace(cat, aggregation="points_ratio")
+            if is_points_based(course) and not cat.is_bonus_category
+            else cat
+        )
+        pct = category_percent(calculated_cat, course.categories)
+        weight = effective_weight(calculated_cat)
         weighted = weight * pct if pct is not None and weight else None
         cat_results.append(
             CategoryResult(
                 id=cat.id,
                 name=cat.name,
-                aggregation=cat.aggregation,
-                weight=cat.weight,
+                aggregation=calculated_cat.aggregation,
+                weight=calculated_cat.weight,
                 effective_weight=weight,
                 percent=pct,
                 weighted=weighted,
@@ -651,22 +889,58 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
         )
 
     used = [(c.effective_weight, c.percent) for c in cat_results if c.percent is not None and c.effective_weight]
+    category_bonus = sum(
+        result.percent or 0.0
+        for result, category in zip(cat_results, course.categories)
+        if category.is_bonus_category
+        and category.aggregation != "points_ratio"
+        and result.percent is not None
+    )
+    applied_bonus = (
+        category_bonus
+        if course.bonus_mode == "category"
+        else 0.0
+        if course.bonus_mode in {"none", "static_points"}
+        else course.bonus_points or 0.0
+    )
     if is_points_based(course):
         raw = course_points_percent(course)
-        percent = (raw + (course.bonus_points or 0.0)) if raw is not None else None
+        percent = (raw + applied_bonus) if raw is not None else None
     elif used:
         raw = sum(w * p for w, p in used) / sum(w for w, _ in used)
-        percent = raw + (course.bonus_points or 0.0)
+        percent = raw + applied_bonus
     else:
         percent = None
 
     letter, gp = letter_from_percent(round_half_up(percent, course.grade_rounding), scale)
     natural_letter, natural_gp = letter, gp
+    if is_pass_fail(course):
+        pf = course.pass_fail or PassFailScale()
+        options = sorted(pf.rows or [], key=lambda row: float(row.get("min_percent", 0)), reverse=True)
+        eligible = [row for row in options if percent is not None and percent >= float(row.get("min_percent", 0))]
+        natural_row = max(eligible, key=lambda row: float(row.get("min_percent", 0))) if eligible else None
+        natural_letter = natural_row.get("label") if natural_row else None
+        natural_gp = None
+        letter = course.pass_fail_override or natural_letter
+        effective_row = next((row for row in options if row.get("label") == letter), natural_row)
+        gp = 0.0 if pf.fail_affects_gpa and effective_row and not effective_row.get("is_passing", False) else None
     valid_qp = quality_points_set(scale) or VALID_QUALITY_POINTS
-    if course.gp_override is not None and course.gp_override in valid_qp:
+    if course.gp_override == -1 and not is_pass_fail(course):
+        return CourseResult(
+            percent=percent,
+            letter="N/A",
+            quality_points=None,
+            score=None,
+            natural_letter=natural_letter,
+            natural_quality_points=natural_gp,
+            natural_score=term_score(natural_gp, course.credits, target_gp) if natural_gp is not None else None,
+            categories=cat_results,
+            what_if=[],
+        )
+    if not is_pass_fail(course) and course.gp_override is not None and course.gp_override in valid_qp:
         gp = course.gp_override
         letter = next((row.letter for row in scale if row.quality_points == gp), letter)
-    elif course.gp_override is not None:
+    elif not is_pass_fail(course) and course.gp_override is not None:
         # Invalid override is ignored, matching the spreadsheet MATCH check.
         pass
 
@@ -688,7 +962,10 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
 def course_grade(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
     scale = course.scale or [ScaleRow(*row) for row in DEFAULT_SCALE]
     result = evaluate_course(course, target_gp)
-    return replace(result, what_if=what_if_needed(course, result.categories, scale, result.percent))
+    return replace(
+        result,
+        what_if=[] if course.gp_override == -1 or is_pass_fail(course) else what_if_needed(course, result.categories, scale, result.percent),
+    )
 
 
 def course_with_exam_score(
@@ -839,13 +1116,13 @@ def what_if_needed(
     return rows
 
 
-def weighted_gpa(pairs: Iterable[tuple[float, float]]) -> float | None:
-    """pairs of (credits, quality_points). Only positive GP counts, matching SUMIF(gp>0)."""
+def weighted_gpa(pairs: Iterable[tuple[float, float]], include_zero: bool = False) -> float | None:
+    """Return the credit-weighted GPA, optionally including zero-GP courses."""
     cred = 0.0
     points = 0.0
     any_row = False
     for credits, gp in pairs:
-        if gp and gp > 0 and credits:
+        if credits and (gp > 0 or (include_zero and gp == 0)):
             any_row = True
             cred += credits
             points += credits * gp
@@ -861,7 +1138,7 @@ def overall_gpa_from_score(score: float, credits: float, target_gp: float) -> fl
 
 
 def future_guess_delta(
-    counts_by_credits: dict[int, dict[str, int]],
+    counts_by_credits: dict[float, dict[str, float]],
     scale: list[ScaleRow],
     target_gp: float,
 ) -> tuple[int | None, float, int | None]:
@@ -871,9 +1148,9 @@ def future_guess_delta(
     raw = 0.0
     any_count = False
     for credits, letters in counts_by_credits.items():
-        ch = int(credits)
+        ch = float(credits)
         for letter, count in letters.items():
-            n = int(count or 0)
+            n = float(count or 0)
             if n <= 0:
                 continue
             gp = letter_to_gp.get(letter)
@@ -890,6 +1167,22 @@ def future_guess_delta(
 
 
 def fumble_delta(did_gp: float, should_gp: float, credits: float, target_gp: float) -> int:
+    """Return the original single-term fumble score delta."""
     did = term_score(did_gp, credits, target_gp) or 0
     should = term_score(should_gp, credits, target_gp) or 0
     return should - did
+
+
+def unit_weighted_fumble_delta(
+    did_gp: float, should_gp: float, units: float, target_gp: float
+) -> float:
+    """Return a multi-term delta while preserving fractional class units.
+
+    The grade-step change is rounded once, then multiplied by the class's
+    academic-period unit share. This keeps a two-step change across one-third
+    of a class at 0.667 instead of rounding it up to 1.
+    """
+    if did_gp is None or should_gp is None or units is None:
+        return 0.0
+    grade_step_delta = round((float(should_gp) - float(did_gp)) * 3.0)
+    return grade_step_delta * float(units)

@@ -8,7 +8,8 @@ function prefersReducedMotion() {
  * Eases toward `target` for counter-style stats.
  * The final frame is the exact target, so displayed precision never drifts.
  */
-export function useAnimatedNumber(target, duration = 600) {
+export function useAnimatedNumber(target, duration = 600, options = {}) {
+  const integerFrames = options?.integerFrames === true;
   const [value, setValue] = useState(target);
   const fromRef = useRef(Number(target) || 0);
   const frameRef = useRef(0);
@@ -32,7 +33,8 @@ export function useAnimatedNumber(target, duration = 600) {
       const progress = Math.min(1, (now - start) / duration);
       const eased = 1 - (1 - progress) ** 3;
       if (progress < 1) {
-        setValue(from + (to - from) * eased);
+        const next = from + (to - from) * eased;
+        setValue(integerFrames ? Math.round(next) : next);
         frameRef.current = requestAnimationFrame(step);
       } else {
         setValue(to);
@@ -42,7 +44,7 @@ export function useAnimatedNumber(target, duration = 600) {
 
     frameRef.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frameRef.current);
-  }, [target, duration]);
+  }, [target, duration, integerFrames]);
 
   return value;
 }

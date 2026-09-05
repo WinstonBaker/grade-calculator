@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import snoozeIcon from "./assets/Snooze.svg";
 
 const ToastContext = createContext(null);
 
@@ -88,13 +89,17 @@ function ToastCard({ toast, onDismiss }) {
             <button
               type="button"
               className="toast-action toast-dismiss"
-              aria-label="Dismiss"
+              aria-label={toast.dismissLabel || "Dismiss"}
               onClick={() => {
                 toast.onDismissAction?.();
                 onDismiss(toast.id);
               }}
             >
-              ×
+              {toast.dismissIcon === "zzz" ? (
+                <img className="toast-snooze-icon" src={snoozeIcon} alt="" aria-hidden="true" />
+              ) : (
+                toast.dismissIcon || "×"
+              )}
             </button>
           )}
         </div>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 const DEFAULT_REPO = "WinstonBaker/grade-calculator";
 
@@ -7,12 +8,16 @@ export default function FeedbackBubble({ repo }) {
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
   const panelRef = useRef(null);
+  const bubbleRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
-    panelRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
     function onPointerDown(event) {
-      if (panelRef.current && !panelRef.current.contains(event.target)) {
+      if (
+        panelRef.current
+        && !panelRef.current.contains(event.target)
+        && !bubbleRef.current?.contains(event.target)
+      ) {
         setOpen(false);
       }
     }
@@ -47,9 +52,7 @@ export default function FeedbackBubble({ repo }) {
     setOpen(false);
   }
 
-  return (
-    <div className="feedback-bubble" ref={panelRef}>
-      {open ? (
+  const panel = open ? createPortal(
         <form className="feedback-panel" onSubmit={submit}>
           <div className="feedback-panel-head">
             <strong>Send feedback</strong>
@@ -84,7 +87,11 @@ export default function FeedbackBubble({ repo }) {
             Continue on GitHub
           </button>
         </form>
-      ) : null}
+      , document.body) : null;
+
+  return (
+    <div className="feedback-bubble" ref={bubbleRef}>
+      {panel}
       <button
         className={`feedback-fab ${open ? "active" : ""}`}
         type="button"

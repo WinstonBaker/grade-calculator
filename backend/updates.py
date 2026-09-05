@@ -6,7 +6,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,7 +60,7 @@ def update_state_path() -> Path:
 
 def load_update_state() -> dict:
     path = update_state_path()
-    empty = {"last_update_check_at": None, "dismissed_update_version": None}
+    empty = {"last_update_check_at": None, "dismissed_update_version": None, "notifications_disabled": False}
     if not path.is_file():
         return empty
     try:
@@ -70,6 +72,7 @@ def load_update_state() -> dict:
     return {
         "last_update_check_at": data.get("last_update_check_at"),
         "dismissed_update_version": data.get("dismissed_update_version"),
+        "notifications_disabled": data.get("notifications_disabled") is True,
     }
 
 
@@ -122,6 +125,69 @@ def dismiss_update(version: str) -> dict:
         raise ValueError("Version is required")
     state = save_update_state({"dismissed_update_version": normalized})
     return {"ok": True, **state}
+
+
+def set_update_notifications_disabled(disabled: bool) -> dict:
+    state = save_update_state({"notifications_disabled": bool(disabled)})
+    return {"ok": True, **state}
+
+
+def create_update_backup(version: str) -> Path:
+    root = user_data_dir()
+    folder = root / "Backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d")
+    target = folder / f"updatebackup-{stamp}-Version{normalize_version(version) or __version__}.zip"
+    index = 2
+    while target.exists():
+        target = folder / f"updatebackup-{stamp}-Version{normalize_version(version) or __version__}-{index}.zip"
+        index += 1
+    # Never archive Backups itself: that would include prior archives and can
+    # attempt to include the archive currently being written.
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in root.rglob("*"):
+            relative = path.relative_to(root)
+            if path.is_file() and "Backups" not in relative.parts:
+                archive.write(path, relative)
+    return target
+
+
+def schedule_uninstall() -> dict:
+    if not frozen() or current_platform() not in {"windows", "macos"}:
+        return {"ok": False, "supported": False}
+    executable = Path(sys.executable)
+    data_dir = user_data_dir()
+    script_root = Path(tempfile.gettempdir()) / "GradeCalculator-uninstall"
+    script_root.mkdir(parents=True, exist_ok=True)
+
+    def powershell_literal(path: Path) -> str:
+        return str(path).replace("'", "''")
+
+    def shell_literal(path: Path) -> str:
+        return "'" + str(path).replace("'", "'\\\"'\\\"'") + "'"
+
+    if current_platform() == "windows":
+        script = script_root / "uninstall-grade-calculator.ps1"
+        script.write_text(
+            "Start-Sleep -Seconds 2\n"
+            f"Remove-Item -LiteralPath '{powershell_literal(executable)}' -Force\n"
+            f"Remove-Item -LiteralPath '{powershell_literal(data_dir)}' -Recurse -Force\n",
+            encoding="utf-8",
+        )
+        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        app_bundle = executable.parents[2] if executable.parent.name == "MacOS" and executable.parent.parent.name == "Contents" else executable
+        script = script_root / "uninstall-grade-calculator.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "sleep 2\n"
+            f"rm -rf {shell_literal(app_bundle)} {shell_literal(data_dir)}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        subprocess.Popen(["/bin/bash", str(script)])
+    schedule_app_exit()
+    return {"ok": True, "restarting": True}
 
 
 def _now_iso() -> str:
@@ -182,7 +248,8 @@ def _attach_toast_state(payload: dict) -> dict:
     dismissed = state.get("dismissed_update_version")
     payload["last_update_check_at"] = state.get("last_update_check_at")
     payload["dismissed_update_version"] = dismissed
-    payload["show_toast"] = should_show_update_toast(
+    payload["notifications_disabled"] = state.get("notifications_disabled") is True
+    payload["show_toast"] = not payload["notifications_disabled"] and should_show_update_toast(
         bool(payload.get("update_available")),
         str(payload.get("latest_version") or ""),
         dismissed,
@@ -558,6 +625,7 @@ def apply_update() -> dict:
         raise RuntimeError("No desktop installer is published for this platform")
     url = _validate_release_url(str(download_url))
     version = str(info.get("latest_version") or "")
+    backup = create_update_backup(__version__)
 
     staged = _staging_dir() / str(asset_name)
     _download_file(url, staged)
@@ -576,6 +644,7 @@ def apply_update() -> dict:
         "restarting": True,
         "version": version,
         "staged_path": str(staged),
+        "backup_path": str(backup),
     }
 
 

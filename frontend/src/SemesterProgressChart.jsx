@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, fmtGpa, fmtPct } from "./api";
+import { Tooltip } from "./creditLabel.jsx";
 
 const COURSE_COLORS = [
   "#4cc9f0",
@@ -31,6 +32,17 @@ function gpaKey(snapshotId) {
   return `g:${snapshotId}`;
 }
 
+const SNAPSHOT_UPDATE_KEY = "grade-calculator-snapshots-updated-v1";
+
+function notifySnapshotUpdate() {
+  window.dispatchEvent(new CustomEvent("grade-snapshots-updated"));
+  try {
+    window.localStorage.setItem(SNAPSHOT_UPDATE_KEY, String(Date.now()));
+  } catch {
+    // Storage can be unavailable in private or embedded browser contexts.
+  }
+}
+
 function parseSelectedKeys(keys) {
   const course_points = [];
   const gpa_snapshot_ids = [];
@@ -45,7 +57,7 @@ function parseSelectedKeys(keys) {
   return { course_points, gpa_snapshot_ids };
 }
 
-export default function SemesterProgressChart({ semesterId, locked = false, onLock, onToast }) {
+export default function SemesterProgressChart({ semesterId, locked = false, onLock, onToast, weightedGpa = false, currentGpa, currentWgpa }) {
   const [snapshots, setSnapshots] = useState([]);
   const [busy, setBusy] = useState(false);
   const [hover, setHover] = useState(null);
@@ -69,9 +81,38 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     function onUpdated() {
       load().catch(() => {});
     }
+    function onStorage(event) {
+      if (event.key !== SNAPSHOT_UPDATE_KEY) return;
+      load().catch(() => {});
+    }
     window.addEventListener("grade-snapshots-updated", onUpdated);
-    return () => window.removeEventListener("grade-snapshots-updated", onUpdated);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("grade-snapshots-updated", onUpdated);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [semesterId]);
+
+  useEffect(() => {
+    if (!weightedGpa && view === "wgpa") {
+      setView("gpa");
+      setFocused(null);
+    }
+  }, [weightedGpa, view]);
+
+  const displayedSnapshots = useMemo(() => {
+    if (!snapshots.length) return snapshots;
+    const latestIndex = snapshots.length - 1;
+    return snapshots.map((snapshot, index) => {
+      if (index !== latestIndex) return snapshot;
+      const latest = { ...snapshot };
+      // A checkpoint keeps its historical course points, while its latest
+      // summary follows the current term so weight-tag edits are visible.
+      if (currentGpa != null) latest.term_gpa = currentGpa;
+      if (currentWgpa != null) latest.term_wgpa = currentWgpa;
+      return latest;
+    });
+  }, [snapshots, currentGpa, currentWgpa]);
 
   async function recordGrades() {
     if (!semesterId || busy || locked || deleting) return;
@@ -120,6 +161,9 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     setBusy(true);
     try {
       await api.deleteSemesterSnapshots(semesterId, { course_points, gpa_snapshot_ids });
+      // Notify every mounted chart immediately. The current chart also reloads
+      // below, while charts on other pages/terms fetch the updated checkpoints.
+      notifySnapshotUpdate();
       setDeleting(false);
       setSelected(new Set());
       await load();
@@ -132,7 +176,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
 
   const series = useMemo(() => {
     const codes = new Map();
-    for (const snap of snapshots) {
+    for (const snap of displayedSnapshots) {
       for (const course of snap.courses || []) {
         if (!codes.has(course.course_id)) {
           codes.set(course.course_id, {
@@ -144,7 +188,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       }
     }
     return [...codes.values()];
-  }, [snapshots]);
+  }, [displayedSnapshots]);
 
   const width = 860;
   const height = 300;
@@ -152,18 +196,21 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const showClasses = view === "classes";
+  const showWeighted = view === "wgpa";
+  const gpaLabel = showWeighted ? "WGPA" : "GPA";
+  const snapshotGpa = (snap) => (showWeighted ? snap.term_wgpa : snap.term_gpa);
 
-  const percents = snapshots.flatMap((snap) =>
+  const percents = displayedSnapshots.flatMap((snap) =>
     (snap.courses || []).map((c) => c.percent).filter((n) => n != null && Number.isFinite(Number(n)))
   );
-  const gpas = snapshots.map((snap) => snap.term_gpa).filter((n) => n != null && Number.isFinite(Number(n)));
+  const gpas = displayedSnapshots.map(snapshotGpa).filter((n) => n != null && Number.isFinite(Number(n)));
   const pctMin = percents.length ? Math.max(0, Math.floor(Math.min(...percents) / 5) * 5 - 5) : 0;
   const pctMax = percents.length ? Math.min(110, Math.ceil(Math.max(...percents) / 5) * 5 + 5) : 100;
   const gpaMin = gpas.length ? Math.max(0, Math.floor((Math.min(...gpas) - 0.1) * 4) / 4) : 0;
   const gpaMax = gpas.length ? Math.min(5, Math.ceil((Math.max(...gpas) + 0.1) * 4) / 4) : 4;
 
   const x = (index) =>
-    margin.left + (snapshots.length === 1 ? plotWidth / 2 : (index / (snapshots.length - 1)) * plotWidth);
+    margin.left + (displayedSnapshots.length === 1 ? plotWidth / 2 : (index / (displayedSnapshots.length - 1)) * plotWidth);
   const yPct = (value) => margin.top + ((pctMax - value) / (pctMax - pctMin || 1)) * plotHeight;
   const yGpa = (value) => margin.top + ((gpaMax - value) / (gpaMax - gpaMin || 1)) * plotHeight;
 
@@ -172,31 +219,44 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     pctTicks.push(value);
   }
   const gpaTicks = [];
-  const gpaStep = gpaMax - gpaMin <= 1 ? 0.25 : 0.5;
+  const gpaStep = 0.125;
   for (let value = gpaMin; value <= gpaMax + 1e-8; value += gpaStep) {
     gpaTicks.push(Number(value.toFixed(3)));
   }
 
   function courseLine(courseId) {
-    return snapshots
-      .map((snap, index) => {
-        const course = (snap.courses || []).find((item) => item.course_id === courseId);
-        if (course?.percent == null || !Number.isFinite(Number(course.percent))) return null;
-        return `${x(index)},${yPct(Number(course.percent))}`;
-      })
-      .filter(Boolean)
-      .join(" ");
+    const segments = [];
+    let segment = [];
+    displayedSnapshots.forEach((snap, index) => {
+      const course = (snap.courses || []).find((item) => item.course_id === courseId);
+      if (course?.percent == null || !Number.isFinite(Number(course.percent))) {
+        if (segment.length) segments.push(segment.join(" "));
+        segment = [];
+        return;
+      }
+      segment.push(`${x(index)},${yPct(Number(course.percent))}`);
+    });
+    if (segment.length) segments.push(segment.join(" "));
+    return segments;
   }
 
-  const gpaLine = snapshots
-    .map((snap, index) => {
-      if (snap.term_gpa == null || !Number.isFinite(Number(snap.term_gpa))) return null;
-      return `${x(index)},${yGpa(Number(snap.term_gpa))}`;
-    })
-    .filter(Boolean)
-    .join(" ");
+  const gpaLine = (() => {
+    const segments = [];
+    let segment = [];
+    displayedSnapshots.forEach((snap, index) => {
+      const gpa = snapshotGpa(snap);
+      if (gpa == null || !Number.isFinite(Number(gpa))) {
+        if (segment.length) segments.push(segment.join(" "));
+        segment = [];
+        return;
+      }
+      segment.push(`${x(index)},${yGpa(Number(gpa))}`);
+    });
+    if (segment.length) segments.push(segment.join(" "));
+    return segments;
+  })();
 
-  const active = hover == null ? null : snapshots[hover];
+  const active = hover == null ? null : displayedSnapshots[hover];
 
   const subtitle = locked
     ? "Progression locked. Unlock to record new checkpoints."
@@ -204,42 +264,58 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       ? "Click individual points to select them, then Save to delete."
       : showClasses
         ? "Class percents over recorded checkpoints. Click a point to see its score."
-        : "Semester GPA over recorded checkpoints. Click a point to see its score.";
+        : `${gpaLabel} over recorded checkpoints. Click a point to see its score.`;
 
   return (
     <section className={`panel grade-progress ${deleting ? "is-deleting" : ""}`} aria-label="Grade progression">
       <div className="gpa-trends-head">
         <div>
-          <h2>Grade progression</h2>
-          <p className="muted">{subtitle}</p>
-          {snapshots.length ? (
-            <div className="grade-progress-toggle" role="tablist" aria-label="Chart view">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={showClasses}
-                className={showClasses ? "active" : ""}
-                onClick={() => {
-                  setView("classes");
-                  setFocused(null);
-                }}
-              >
-                Class grades
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={!showClasses}
-                className={!showClasses ? "active" : ""}
-                onClick={() => {
-                  setView("gpa");
-                  setFocused(null);
-                }}
-              >
-                Semester GPA
-              </button>
-            </div>
-          ) : null}
+          <div className="tooltip-heading">
+            <h2>Grade progression</h2>
+            <Tooltip text={subtitle} />
+            {snapshots.length ? (
+              <div className="grade-progress-toggle" role="tablist" aria-label="Chart view">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={showClasses}
+                  className={showClasses ? "active" : ""}
+                  onClick={() => {
+                    setView("classes");
+                    setFocused(null);
+                  }}
+                >
+                  Grades
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "gpa"}
+                  className={view === "gpa" ? "active" : ""}
+                  onClick={() => {
+                    setView("gpa");
+                    setFocused(null);
+                  }}
+                >
+                  GPA
+                </button>
+                {weightedGpa ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={showWeighted}
+                    className={showWeighted ? "active" : ""}
+                    onClick={() => {
+                      setView("wgpa");
+                      setFocused(null);
+                    }}
+                  >
+                    WGPA
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="grade-progress-actions">
           <button
@@ -253,7 +329,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
             <button
               className={`btn small ${deleting ? "primary" : ""}`}
               type="button"
-              disabled={busy}
+              disabled={busy || locked}
               onClick={onDeleteModeClick}
             >
               {deleting ? "Save" : "Delete points"}
@@ -280,7 +356,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
               : (
                 <span>
                   <i className="gpa" />
-                  Semester GPA
+                  {gpaLabel}
                 </span>
               )}
           </div>
@@ -288,7 +364,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
             <svg
               viewBox={`0 0 ${width} ${height}`}
               role="img"
-              aria-label={showClasses ? "Class percents over time" : "Semester GPA over time"}
+              aria-label={showClasses ? "Class percents over time" : `${gpaLabel} over time`}
               onMouseLeave={() => setHover(null)}
             >
               {showClasses
@@ -321,19 +397,19 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                     </g>
                   ))}
               {showClasses
-                ? series.map((item) => (
+                ? series.flatMap((item) => courseLine(item.courseId).map((points, index) => (
                     <polyline
-                      key={item.courseId}
+                      key={`${item.courseId}-${index}`}
                       className="grade-progress-line"
                       style={{ stroke: item.color }}
-                      points={courseLine(item.courseId)}
+                      points={points}
                       fill="none"
                     />
-                  ))
+                  )))
                 : (
-                  <polyline className="gpa-trend-line cumulative grade-progress-gpa" points={gpaLine} fill="none" />
+                  gpaLine.map((points, index) => <polyline key={`gpa-${index}`} className="gpa-trend-line cumulative grade-progress-gpa" points={points} fill="none" />)
                 )}
-              {snapshots.map((snap, index) => {
+              {displayedSnapshots.map((snap, index) => {
                 const gpaMarked = selected.has(gpaKey(snap.id));
                 const gpaFocused = focused?.kind === "gpa" && focused.snapshotId === snap.id;
                 const gpaRadius = gpaMarked || gpaFocused || hover === index ? 8 : 6.5;
@@ -380,19 +456,20 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                           />
                         );
                       })
-                    : snap.term_gpa != null && Number.isFinite(Number(snap.term_gpa)) ? (
+                    : snapshotGpa(snap) != null && Number.isFinite(Number(snapshotGpa(snap))) ? (
                       <circle
                         className={`grade-progress-dot gpa ${gpaMarked || gpaFocused ? "is-selected" : ""}`}
                         cx={x(index)}
-                        cy={yGpa(Number(snap.term_gpa))}
+                        cy={yGpa(Number(snapshotGpa(snap)))}
                         r={gpaRadius}
                         onMouseEnter={() => setHover(index)}
                         onClick={(event) =>
                           onPointClick(event, gpaKey(snap.id), {
                             kind: "gpa",
+                            metric: showWeighted ? "wgpa" : "gpa",
                             snapshotId: snap.id,
                             recordedAt: snap.recorded_at,
-                            value: Number(snap.term_gpa),
+                            value: Number(snapshotGpa(snap)),
                           })
                         }
                       />
@@ -410,7 +487,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
               <>
                 <strong>{mmdd(focused.recordedAt)}</strong>
                 <span>
-                  {focused.kind === "gpa" ? "Semester GPA" : focused.code}{" "}
+                  {focused.kind === "gpa" ? (focused.metric === "wgpa" ? "WGPA" : "GPA") : focused.code}{" "}
                   <b className="mono">
                     {focused.kind === "gpa" ? fmtGpa(focused.value) : fmtPct(focused.value)}
                   </b>
@@ -424,12 +501,12 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                     .filter((c) => c.percent != null)
                     .map((c) => (
                       <span key={c.course_id}>
-                        {c.code} <b className="mono">{fmtPct(c.percent)}</b>
+                        {c.display_code || c.code} <b className="mono">{fmtPct(c.percent)}</b>
                       </span>
                     ))
                 ) : (
                   <span>
-                    Semester GPA <b className="mono">{fmtGpa(active.term_gpa)}</b>
+                    {gpaLabel} <b className="mono">{fmtGpa(snapshotGpa(active))}</b>
                   </span>
                 )}
               </>

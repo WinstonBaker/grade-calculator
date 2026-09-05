@@ -1,3 +1,5 @@
+import pytest
+
 from backend.engine import (
     AssignmentInput,
     CategoryInput,
@@ -6,6 +8,7 @@ from backend.engine import (
     avg_drop_x,
     category_percent,
     course_grade,
+    course_points_percent,
     course_level_band,
     effective_weight,
     exam_impact,
@@ -21,6 +24,7 @@ from backend.engine import (
     resolve_category_policy,
     scale_rows_from_tuples,
     term_score,
+    unit_weighted_fumble_delta,
     DEFAULT_SCALE,
     SCALE_PRESETS,
 )
@@ -51,19 +55,14 @@ def test_avg_drop_x_drops_all_but_one():
     assert avg_drop_x([70, 80, 90], 10) == 90
 
 
-def test_resolve_legacy_modes():
-    dropped = resolve_category_policy("drop_lowest", 0)
-    assert dropped.aggregation == "average"
-    assert dropped.drop_count == 1
-    assert resolve_category_policy("drop_lowest", 2).drop_count == 2
-    bonus = resolve_category_policy("average_plus_bonus")
-    assert bonus.aggregation == "average"
-    assert bonus.include_bonus is True
-    assert bonus.drop_count == 0
-    replaced = resolve_category_policy("replace_min_with", 0, False, 9)
-    assert replaced.aggregation == "average"
-    assert replaced.replace_with_category_id == 9
-    assert replaced.drop_count == 0
+def test_resolve_current_category_policy():
+    policy = resolve_category_policy("average", 2, True, 9)
+    assert policy.aggregation == "average"
+    assert policy.drop_count == 2
+    assert policy.include_bonus is True
+    assert policy.replace_with_category_id == 9
+    with pytest.raises(ValueError, match="Unknown aggregation"):
+        resolve_category_policy("drop_lowest")
 
 
 def test_drop_two_lowest():
@@ -95,11 +94,35 @@ def test_points_ratio():
     assert abs(points_ratio(rows) - expected) < 1e-9
 
 
+def test_points_drop_maximizes_ratio_instead_of_points_lost():
+    cat = CategoryInput(
+        aggregation="points_ratio",
+        drop_count=1,
+        assignments=[P(90, 100), P(1, 2)],
+    )
+    assert abs(category_percent(cat) - 90.0) < 1e-9
+
+
+def test_points_course_drop_maximizes_overall_ratio():
+    course = CourseInput(
+        grading_mode="points",
+        categories=[
+            CategoryInput(
+                id=1,
+                aggregation="points_ratio",
+                drop_count=1,
+                assignments=[P(90, 100), P(1, 2)],
+            )
+        ],
+    )
+    assert abs(course_points_percent(course) - 90.0) < 1e-9
+
+
 def test_replace_min_with_final():
     tests = CategoryInput(
         id=1,
         name="Tests",
-        aggregation="replace_min_with",
+        aggregation="average",
         replace_with_category_id=2,
         assignments=[P(95), P(93)],
     )
@@ -108,10 +131,54 @@ def test_replace_min_with_final():
     assert abs(pct - 96.565) < 1e-9
 
 
+def test_replace_min_with_final_happens_after_drop():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        drop_count=1,
+        replace_with_category_id=2,
+        assignments=[P(95), P(93), P(70)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(98)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 96.5) < 1e-9
+
+
+def test_replace_count_is_independent_from_drop_count():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        aggregation="average",
+        drop_count=1,
+        replace_count=2,
+        replace_with_category_id=2,
+        assignments=[P(95), P(93), P(70), P(60)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(98)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 97.0) < 1e-9
+
+
+def test_replace_count_replaces_undropped_grades_even_when_replacement_is_lower():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        aggregation="average",
+        drop_count=1,
+        replace_count=1,
+        replace_with_category_id=2,
+        assignments=[P(95), P(93), P(70)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(80)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 87.5) < 1e-9
+
+
 def test_average_plus_bonus():
     hw = CategoryInput(
         id=1,
-        aggregation="average_plus_bonus",
+        aggregation="average",
+        include_bonus=True,
         assignments=[
             P(100, bonus=True),
             P(99),
@@ -209,7 +276,8 @@ def test_what_if_needed_on_final():
                 id=2,
                 name="Tests",
                 weight_per_item=0.15,
-                aggregation="average_plus_bonus",
+                aggregation="average",
+                include_bonus=True,
                 assignments=[P(92), P(92), P(98), P(10, bonus=True), P(50, bonus=True)],
             ),
             CategoryInput(id=3, name="Final", weight=0.4, assignments=[]),
@@ -232,7 +300,8 @@ def test_project_from_exam_hits_cutoff():
                 id=2,
                 name="Tests",
                 weight_per_item=0.15,
-                aggregation="average_plus_bonus",
+                aggregation="average",
+                include_bonus=True,
                 assignments=[P(92), P(92), P(98), P(10, bonus=True), P(50, bonus=True)],
             ),
             CategoryInput(id=3, name="Final", weight=0.4, assignments=[]),
@@ -255,7 +324,7 @@ def test_project_from_exam_replace_min_with():
                 id=1,
                 name="Tests",
                 weight=0.5,
-                aggregation="replace_min_with",
+                aggregation="average",
                 replace_with_category_id=2,
                 assignments=[P(70), P(90)],
             ),
@@ -333,6 +402,7 @@ def test_fumble_delta():
     assert fumble_delta(4.0, 4.333, 2, 4.0) == 2
     assert fumble_delta(3.667, 4.333, 3, 4.0) == 6
     assert fumble_delta(4.0, 4.333, 3, 4.0) == 3
+    assert unit_weighted_fumble_delta(3.333, 4.0, 1 / 3, 4.0) == pytest.approx(2 / 3)
 
 
 def test_future_guess_delta():
@@ -479,4 +549,3 @@ def test_exam_impact_delta_and_letter_change():
     assert missing_tests["letter_change"] is None
     assert missing_tests["letter_before"] is None
     assert missing_tests["letter_after"] is None
-
