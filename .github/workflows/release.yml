@@ -85,6 +85,10 @@ jobs:
           generate_release_notes: true
           make_latest: true
           body: |
+            ## v2.0.0
+
+            This release packages the current Grade Calculator experience with the latest gradebook, GPA dashboard, import/export, and update improvements.
+
             ## Download
             - **Windows:** [GradeCalculator-Windows.exe](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-Windows.exe) — download and open
             - **macOS:** [GradeCalculator-macOS.dmg](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image and drag Grade Calculator to Applications
