@@ -591,7 +591,10 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     const units = (course) => gpaSettings.gpa_basis === "classes" ? 1 : Number(course.credits) || 0;
     const totalUnits = graded.reduce((sum, course) => sum + units(course), 0);
     if (!totalUnits) return current.term_gpa;
-    return graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.natural_quality_points ?? course.quality_points) * units(course), 0) / totalUnits;
+    // `quality_points` is the effective value for college terms, including a
+    // GP override. High-school terms expose the corresponding unweighted
+    // effective value as `base_quality_points`.
+    return graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.quality_points) * units(course), 0) / totalUnits;
   })();
   const termWgpa = weightedGpa ? (() => {
     const graded = gradedCourses;
