@@ -22,9 +22,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
-OutputDir=build\installer
+OutputDir=..\build\installer
 OutputBaseFilename=GradeCaculatorWindowsInstaller
-SetupIconFile=packaging\icon.ico
+SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma
 SolidCompression=yes
@@ -35,7 +35,7 @@ VersionInfoDescription={#MyAppName} installer
 VersionInfoCopyright=Copyright (c) {#MyAppPublisher}
 
 [Files]
-Source: "dist\Grade Calculator.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\Grade Calculator.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
