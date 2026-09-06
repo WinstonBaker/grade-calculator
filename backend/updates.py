@@ -172,13 +172,16 @@ def schedule_uninstall() -> dict:
             "$ErrorActionPreference = 'Stop'\n"
             "Start-Sleep -Seconds 2\n"
             f"$executable = '{powershell_literal(executable)}'\n"
+            "$installDir = Split-Path -Parent $executable\n"
             "$uninstaller = Join-Path (Split-Path -Parent $executable) 'unins000.exe'\n"
             "if (Test-Path -LiteralPath $uninstaller) {\n"
             "  Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait\n"
+            "  Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue\n"
             "} else {\n"
             "  Remove-Item -LiteralPath $executable -Force -ErrorAction SilentlyContinue\n"
             "}\n"
-            f"Remove-Item -LiteralPath '{powershell_literal(data_dir)}' -Recurse -Force\n",
+            f"Remove-Item -LiteralPath '{powershell_literal(data_dir)}' -Recurse -Force\n"
+            "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n",
             encoding="utf-8",
         )
         subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -190,9 +193,9 @@ def schedule_uninstall() -> dict:
         script.write_text(
             "#!/bin/bash\n"
             "sleep 2\n"
-            f"rm -rf {shell_literal(app_bundle)} {shell_literal(data_dir)}\n"
-            + (f"rmdir {shell_literal(app_folder)} 2>/dev/null || true\n" if app_folder else "")
-            + f"if [ -L {shell_literal(desktop_shortcut)} ]; then rm -f {shell_literal(desktop_shortcut)}; fi\n",
+            + (f"rm -rf {shell_literal(app_folder)} {shell_literal(data_dir)}\n" if app_folder else f"rm -rf {shell_literal(app_bundle)} {shell_literal(data_dir)}\n")
+            + f"if [ -L {shell_literal(desktop_shortcut)} ]; then rm -f {shell_literal(desktop_shortcut)}; fi\n"
+            + "rm -f \"$0\"\n",
             encoding="utf-8",
         )
         script.chmod(0o755)
