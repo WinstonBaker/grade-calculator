@@ -178,6 +178,7 @@ def test_apply_update_rejects_unexpected_url(monkeypatch):
 def test_windows_apply_update_stages_the_installer(monkeypatch, tmp_path):
     monkeypatch.setattr("backend.updates.frozen", lambda: True)
     monkeypatch.setattr("backend.updates.current_platform", lambda: "windows")
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "backend.updates.check_for_updates",
         lambda: _latest_info(
@@ -240,8 +241,13 @@ def test_windows_installer_script_waits_for_app_and_records_result():
         log=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\apply.log"),
         pid=4242,
         version="2.0.0",
+        webview_dir=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\webview"),
     )
     assert "$appPid = 4242" in script
+    assert "$webviewDir = 'C:\\Users\\me\\AppData\\Roaming\\Grade Calculator\\webview'" in script
+    assert "EBWebView\\lockfile" in script
+    assert "Test-LockedFile" in script
+    assert "Stop-GradeCalculatorWebView" in script
     assert "Start-Process -FilePath $installer" in script
     assert "'/SILENT', '/NORESTART'" in script
     assert "Write-Status 'applied'" in script
