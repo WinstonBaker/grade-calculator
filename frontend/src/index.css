@@ -3764,7 +3764,7 @@ th button.active {
 
 .distribution-summary-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 12px;
   align-items: start;
   min-width: 0;
@@ -3773,6 +3773,10 @@ th button.active {
 .distribution-summary-grid .dist-charts-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
+}
+
+.distribution-summary-grid .dist-charts-row.score-chart-count-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .distribution-summary-grid .donut-card.compact {
@@ -3795,9 +3799,9 @@ th button.active {
   width: 100%;
   min-width: 0;
   gap: 0;
-  padding: 8px 4px 4px;
-  border-radius: 12px;
-  background: var(--surface-soft);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .distribution-summary-grid .distribution-hover-hint {
@@ -3812,16 +3816,23 @@ th button.active {
 .distribution-summary-grid > table {
   margin-top: 0 !important;
   min-width: 0;
-  width: 100%;
+  width: max-content;
   max-width: none;
   table-layout: auto;
+  justify-self: end;
 }
 
 .distribution-summary-grid > table th,
 .distribution-summary-grid > table td {
-  padding: 6px 4px;
+  padding: 4px 5px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.distribution-summary-grid > table th + th,
+.distribution-summary-grid > table td + td {
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
 }
 
 .distribution-summary-grid > table th:first-child,
@@ -3887,6 +3898,7 @@ th button.active {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  transform: translateY(-2px);
   pointer-events: none;
 }
 
@@ -4169,6 +4181,10 @@ th button.active {
     grid-template-columns: 1fr;
   }
 
+  .distribution-summary-grid .dist-charts-row.score-chart-count-3 {
+    grid-template-columns: 1fr;
+  }
+
   .distribution-summary-grid {
     grid-template-columns: 1fr;
   }
@@ -4237,7 +4253,7 @@ th button.active {
 }
 
 .level-course-table {
-  width: min(100%, 700px);
+  width: 100%;
   max-width: 100%;
 }
 

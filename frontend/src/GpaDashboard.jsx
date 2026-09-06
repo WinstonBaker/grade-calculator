@@ -435,13 +435,23 @@ function truncateDistribution(distribution) {
 function DistributionTable({ distribution, courses = [], displayCodes = new Map(), simplified = false, periodMode = false, showUnits = false }) {
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
-  const rows = truncateDistribution(distribution);
   const uniformCredits = courses.length > 0 && new Set(courses.map((course) => Number(course.credits) || 0)).size === 1;
   const hideCreditColumns = periodMode || showUnits || classBasis || uniformCredits;
   const [expanded, setExpanded] = useState({});
   const passFailCourses = courses.filter((course) => course.credit_mode === "pass_fail");
   const passFailCredits = passFailCourses.reduce((sum, course) => sum + (Number(course.credits) || 0), 0);
   const hasPassFail = passFailCourses.length > 0;
+  const passFailLabels = new Set(
+    passFailCourses
+      .map((course) => course.pass_fail_override || course.letter)
+      .filter(Boolean)
+  );
+  // Pass/fail courses are rendered below with their configured labels (S/U,
+  // or a custom pair). Do not also render the generic fallback row from an
+  // older distribution payload, or the same courses are counted twice.
+  const rows = truncateDistribution(distribution).filter(
+    (row) => !(hasPassFail && (row.letter === "Pass/Fail" || passFailLabels.has(row.letter)))
+  );
   if (!rows.length && !hasPassFail) return null;
   const passFailPills = [...new Map(
     passFailCourses
@@ -478,9 +488,9 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
           </th>
           {showUnits ? <th>Units</th> : null}
           {!hideCreditColumns ? <th>{creditTerms.label}</th> : null}
-          {!hideCreditColumns ? <th>% {creditTerms.plural}</th> : null}
+          {!hideCreditColumns ? <th>% {creditTerms.singular}</th> : null}
           <th>Courses</th>
-          <th>% courses</th>
+          <th>% course</th>
         </tr>
       </thead>
       <tbody>
@@ -712,7 +722,7 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false, 
       <div className={rowClasses}>
         {showCreditChart ? (
           <DonutChart
-            title={`By ${creditTerms.plural}`}
+            title={creditTerms.label}
             slices={byCredits.slices}
             total={byCredits.total}
             unit={creditTerms.plural}
@@ -722,7 +732,7 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false, 
           />
         ) : null}
         <DonutChart
-          title="By courses"
+          title="Courses"
           slices={byCourses.slices}
           total={byCourses.total}
           unit="courses"
@@ -732,7 +742,7 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false, 
         />
         {showScoreChart ? (
           <DonutChart
-            title="By score"
+            title="Score"
             slices={byScore.slices}
             total={byScore.total}
             centerTotal={fmtScore(scoreTotal ?? byScore.netScore)}
@@ -1255,7 +1265,7 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS, embedded = fal
                           <div className="code-detail-panel" onClick={(e) => e.stopPropagation()}>
                             {r.items.length > 1 ? (
                               <div className="distribution-summary-grid">
-                                <GradeDistributionCharts distribution={r.distribution} courses={r.items} compact />
+                                <GradeDistributionCharts distribution={r.distribution} courses={r.items} showScoreChart={showScore} compact />
                                 <DistributionTable distribution={r.distribution} courses={r.items} displayCodes={displayCodes} simplified />
                               </div>
                             ) : null}
@@ -1485,6 +1495,7 @@ function CourseLevelStats({ rows, terms, letterOrder = FALLBACK_LETTERS, embedde
                               <GradeDistributionCharts
                                 distribution={distributionFromCourses(levelCourses, letterOrder)}
                                 courses={levelCourses}
+                                showScoreChart={showScore}
                                 compact
                               />
                               <DistributionTable
@@ -1749,7 +1760,7 @@ function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrd
                         <div className="level-course-dropdown">
                           {row.items.length > 1 ? (
                             <div className="distribution-summary-grid">
-                              <GradeDistributionCharts distribution={row.distribution} courses={row.items} compact />
+                              <GradeDistributionCharts distribution={row.distribution} courses={row.items} showScoreChart={showScore} compact />
                               <DistributionTable
                                 distribution={row.distribution}
                                 courses={row.items}
@@ -2166,7 +2177,7 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
                         <div className="level-course-dropdown" onClick={(event) => event.stopPropagation()}>
                           {row.items.length ? (
                             <div className="distribution-summary-grid">
-                              <GradeDistributionCharts distribution={row.distribution} courses={row.items.map((course) => ({ ...course, credits: course.units ?? course.gpa_units ?? course.credits }))} compact />
+                              <GradeDistributionCharts distribution={row.distribution} courses={row.items.map((course) => ({ ...course, credits: course.units ?? course.gpa_units ?? course.credits }))} showScoreChart={showScore} compact />
                               <DistributionTable
                                 distribution={row.distribution}
                                 courses={row.items.map((course) => ({ ...course, credits: course.units ?? course.gpa_units ?? course.credits }))}
@@ -3028,7 +3039,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         {summaryView === "grade" ? (
           <div>
             <div>
-              <GradeDistributionCharts distribution={summaryDistribution} courses={distributionCourses} showScoreChart scoreTotal={overallScore} />
+              <GradeDistributionCharts distribution={summaryDistribution} courses={distributionCourses} showScoreChart={showScore} scoreTotal={overallScore} />
               <DistributionTable
                 distribution={summaryDistribution}
                 courses={distributionCourses}
