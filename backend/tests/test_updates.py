@@ -8,6 +8,7 @@ from backend.updates import (
     _validate_release_url,
     _windows_installer_script,
     _windows_apply_script,
+    _windows_uninstall_script,
     acknowledge_update_status,
     apply_update,
     create_update_backup,
@@ -58,6 +59,10 @@ def test_create_update_backup_uses_program_backups_folder(tmp_path, monkeypatch)
     program.mkdir()
     data.mkdir()
     (data / "data.txt").write_text("keep me", encoding="utf-8")
+    (data / "webview" / "EBWebView").mkdir(parents=True)
+    (data / "webview" / "EBWebView" / "lockfile").write_text("runtime lock", encoding="utf-8")
+    (data / "updates").mkdir()
+    (data / "updates" / "staged-installer.exe").write_bytes(b"runtime staging")
     monkeypatch.setattr("backend.updates.program_dir", lambda: program)
     monkeypatch.setattr("backend.updates.user_data_dir", lambda: data)
 
@@ -252,6 +257,20 @@ def test_windows_installer_script_waits_for_app_and_records_result():
     assert "'/SILENT', '/NORESTART'" in script
     assert "Write-Status 'applied'" in script
     assert "Write-Status 'failed'" in script
+
+
+def test_windows_uninstall_script_waits_for_webview_and_retries_cleanup():
+    script = _windows_uninstall_script(
+        executable=Path(r"C:\Users\me\AppData\Local\Programs\Grade Calculator\Grade Calculator.exe"),
+        data_dir=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator"),
+        script=Path(r"C:\Users\me\AppData\Local\Temp\GradeCalculator-uninstall\uninstall-grade-calculator.ps1"),
+        pid=4242,
+    )
+    assert "$appPid = 4242" in script
+    assert "Stop-GradeCalculatorWebView" in script
+    assert "EBWebView\\lockfile" in script
+    assert "Start-Process -FilePath $uninstaller" in script
+    assert "Some Grade Calculator files are still in use" in script
 
 
 def test_apply_status_survives_and_can_be_acked(tmp_path, monkeypatch):

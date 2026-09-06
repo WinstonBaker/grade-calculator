@@ -1,8 +1,7 @@
 """Portable gradebook setup import and export helpers.
 
-The transfer format deliberately contains structure only: gradebook settings,
-periods, terms, classes, grading configuration, and empty categories. It never
-serializes assignments, grade snapshots, overrides, or other entered grades.
+The transfer format contains gradebook structure by default. Assignments and
+entered grades are included only when the export explicitly requests them.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload
 
 from backend.engine import SEASON_LABELS
-from backend.models import AcademicYear, Category, Course, GradeScale, ScaleProfile, ScaleProfileRow, Semester, Settings
+from backend.models import AcademicYear, Assignment, Category, Course, GradeScale, ScaleProfile, ScaleProfileRow, Semester, Settings
 from backend.service import GRADEBOOK_SETTING_DEFAULTS, _gradebook_settings_map, _gradebook_values
 
 
@@ -60,7 +59,22 @@ def _settings_payload(db: Session, gradebook_id: str) -> dict:
     }
 
 
-def _course_payload(course: Course) -> dict:
+def _assignment_payload(assignment: Assignment) -> dict:
+    return {
+        "name": assignment.name,
+        "earned": assignment.earned,
+        "possible": assignment.possible,
+        "score_text": assignment.score_text,
+        "composite_json": assignment.composite_json,
+        "is_bonus": assignment.is_bonus is True,
+        "bonus_type": assignment.bonus_type,
+        "comment": assignment.comment,
+        "flag_ids": _json(assignment.flag_ids_json, []),
+        "sort_order": int(assignment.sort_order or 0),
+    }
+
+
+def _course_payload(course: Course, include_entered_assignments: bool = False) -> dict:
     categories = sorted(course.categories, key=lambda item: (item.sort_order, item.id))
     category_keys = {item.id: f"category-{item.id}" for item in categories}
     dynamic = _json(course.dynamic_weighting_json, {})
@@ -81,7 +95,7 @@ def _course_payload(course: Course) -> dict:
             ],
         }
     test_ids = _json(course.test_category_ids_json, [])
-    return {
+    payload = {
         "key": f"course-{course.id}",
         "code": course.code,
         "credits": float(course.credits),
@@ -115,10 +129,22 @@ def _course_payload(course: Course) -> dict:
                 "is_bonus_category": category.is_bonus_category is True,
                 "replace_with_key": category_keys.get(category.replace_with_category_id),
                 "sort_order": int(category.sort_order),
+                **({
+                    "assignments": [
+                        _assignment_payload(assignment)
+                        for assignment in sorted(category.assignments, key=lambda item: (item.sort_order, item.id))
+                    ]
+                } if include_entered_assignments else {}),
             }
             for category in categories
         ],
     }
+    if include_entered_assignments:
+        payload.update({
+            "gp_override": course.gp_override,
+            "final_gp_override": course.final_gp_override,
+        })
+    return payload
 
 
 def gradebook_setup_inventory(db: Session, gradebooks: list[dict]) -> dict:
@@ -196,8 +222,8 @@ def _inventory_term(semester: Semester, gradebook_type: str = "college") -> dict
     }
 
 
-def export_gradebook_setups(db: Session, selections: list[dict]) -> dict:
-    """Create a portable setup-only export for the selected tree leaves."""
+def export_gradebook_setups(db: Session, selections: list[dict], include_entered_assignments: bool = False) -> dict:
+    """Create a portable export for the selected tree leaves."""
     result = []
     for selection in selections:
         gradebook_id = str(selection.get("id") or "").strip()
@@ -212,6 +238,7 @@ def export_gradebook_setups(db: Session, selections: list[dict]) -> dict:
             db.query(Semester)
             .options(
                 joinedload(Semester.courses).joinedload(Course.categories),
+                joinedload(Semester.courses).joinedload(Course.categories).joinedload(Category.assignments),
                 joinedload(Semester.courses).joinedload(Course.scale_rows),
             )
             .filter(Semester.gradebook_id == gradebook_id)
@@ -241,7 +268,7 @@ def export_gradebook_setups(db: Session, selections: list[dict]) -> dict:
                 "season": semester.season,
                 "included": semester.included is True,
                 "classes": [
-                    _course_payload(course)
+                    _course_payload(course, include_entered_assignments)
                     for course in sorted(courses, key=lambda course: (str(course.code or "").strip().casefold(), course.id))
                 ],
             })
@@ -584,6 +611,8 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                     minimum_passing_letter=str(course_data.get("minimum_passing_letter") or "C-")[:8],
                     dynamic_weighting_enabled=course_data.get("dynamic_weighting_enabled") is True,
                     scale_profile_id=profile_map.get(str(course_data.get("scale_profile_key") or "")),
+                    gp_override=float(course_data["gp_override"]) if course_data.get("gp_override") is not None else None,
+                    final_gp_override=float(course_data["final_gp_override"]) if course_data.get("final_gp_override") is not None else None,
                 )
                 db.add(course)
                 db.flush()
@@ -611,6 +640,23 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                     replacement = str(category_data.get("replace_with_key") or "") if isinstance(category_data, dict) else ""
                     if key in category_map and replacement in category_map:
                         db.get(Category, category_map[key]).replace_with_category_id = category_map[replacement]
+                    if key in category_map and isinstance(category_data, dict):
+                        for assignment_data in category_data.get("assignments", []):
+                            if not isinstance(assignment_data, dict):
+                                continue
+                            db.add(Assignment(
+                                category_id=category_map[key],
+                                name=str(assignment_data.get("name") or "")[:64],
+                                earned=float(assignment_data["earned"]) if assignment_data.get("earned") is not None else None,
+                                possible=float(assignment_data["possible"]) if assignment_data.get("possible") is not None else None,
+                                score_text=str(assignment_data.get("score_text"))[:128] if assignment_data.get("score_text") is not None else None,
+                                composite_json=assignment_data.get("composite_json") if isinstance(assignment_data.get("composite_json"), str) else None,
+                                is_bonus=assignment_data.get("is_bonus") is True,
+                                bonus_type=str(assignment_data.get("bonus_type"))[:16] if assignment_data.get("bonus_type") else None,
+                                comment=str(assignment_data.get("comment"))[:500] if assignment_data.get("comment") else None,
+                                flag_ids_json=json.dumps(assignment_data.get("flag_ids") if isinstance(assignment_data.get("flag_ids"), list) else []),
+                                sort_order=int(assignment_data.get("sort_order") or 0),
+                            ))
                 dynamic = course_data.get("dynamic_weighting") if isinstance(course_data.get("dynamic_weighting"), dict) else {}
                 options = dynamic.get("options") if isinstance(dynamic, dict) else None
                 if isinstance(options, list):

@@ -18,6 +18,7 @@ from backend.paths import current_platform, frozen, github_repo, program_dir, us
 from backend.version import MACOS_ASSET, WINDOWS_ASSET, __version__
 
 USER_AGENT = f"GradeCalculator/{__version__}"
+RUNTIME_DATA_DIRS = {"webview", "updates"}
 
 
 def parse_version(tag: str) -> tuple[int, ...]:
@@ -142,14 +143,84 @@ def create_update_backup(version: str) -> Path:
     while target.exists():
         target = folder / f"updatebackup-{stamp}-Version{normalize_version(version) or __version__}-{index}.zip"
         index += 1
-    # Keep prior data backups out of the archive if a legacy data directory
-    # already contains one, and never include the program-level destination.
+    # Keep runtime state out of the archive. WebView owns a live lockfile while
+    # the app is running, and the updates folder contains staged installers;
+    # neither is user data that should be restored.
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in data_root.rglob("*"):
             relative = path.relative_to(data_root)
-            if path.is_file() and "Backups" not in relative.parts:
+            if (
+                path.is_file()
+                and relative.parts
+                and relative.parts[0] not in RUNTIME_DATA_DIRS
+                and "Backups" not in relative.parts
+            ):
                 archive.write(path, relative)
     return target
+
+
+def _windows_uninstall_script(*, executable: Path, data_dir: Path, script: Path, pid: int) -> str:
+    def powershell_literal(path: Path) -> str:
+        return str(path).replace("'", "''")
+
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$executable = '{powershell_literal(executable)}'",
+            f"$dataDir = '{powershell_literal(data_dir)}'",
+            f"$scriptPath = '{powershell_literal(script)}'",
+            f"$log = '{powershell_literal(script.with_name('uninstall.log'))}'",
+            f"$appPid = {int(pid)}",
+            "function Test-LockedFile([string]$Path) {",
+            "  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }",
+            "  $handle = $null",
+            "  try {",
+            "    $handle = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)",
+            "    return $false",
+            "  } catch {",
+            "    return $true",
+            "  } finally {",
+            "    if ($null -ne $handle) { $handle.Dispose() }",
+            "  }",
+            "}",
+            "function Stop-GradeCalculatorWebView([string]$Root) {",
+            "  if (-not (Test-Path -LiteralPath $Root)) { return }",
+            "  Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" -ErrorAction SilentlyContinue |",
+            "    Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($Root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 } |",
+            "    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }",
+            "}",
+            "try {",
+            "  Start-Sleep -Seconds 2",
+            "  $deadline = (Get-Date).AddMinutes(2)",
+            "  while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Seconds 1 }",
+            "  $webviewDir = Join-Path $dataDir 'webview'",
+            "  Stop-GradeCalculatorWebView $webviewDir",
+            "  $webviewLock = Join-Path $webviewDir 'EBWebView\\lockfile'",
+            "  $webviewDeadline = (Get-Date).AddSeconds(30)",
+            "  while (Test-LockedFile $webviewLock -and ((Get-Date) -lt $webviewDeadline)) { Start-Sleep -Seconds 1 }",
+            "  $installDir = Split-Path -Parent $executable",
+            "  $uninstaller = Join-Path $installDir 'unins000.exe'",
+            "  if (Test-Path -LiteralPath $uninstaller) {",
+            "    $process = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru",
+            "    if ($process.ExitCode -ne 0) { throw \"The Windows uninstaller exited with code $($process.ExitCode).\" }",
+            "  }",
+            "  $cleanupDeadline = (Get-Date).AddSeconds(30)",
+            "  do {",
+            "    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue",
+            "    Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue",
+            "    if (-not (Test-Path -LiteralPath $installDir) -and -not (Test-Path -LiteralPath $dataDir)) { break }",
+            "    Stop-GradeCalculatorWebView $webviewDir",
+            "    Start-Sleep -Seconds 1",
+            "  } while ((Get-Date) -lt $cleanupDeadline)",
+            "  if (Test-Path -LiteralPath $installDir -or Test-Path -LiteralPath $dataDir) { throw 'Some Grade Calculator files are still in use. Restart Windows and remove the remaining folders.' }",
+            "  Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue",
+            "  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue",
+            "} catch {",
+            "  $_.Exception.Message | Set-Content -LiteralPath $log -Encoding UTF8",
+            "}",
+            "",
+        ]
+    )
 
 
 def schedule_uninstall() -> dict:
@@ -160,31 +231,16 @@ def schedule_uninstall() -> dict:
     script_root = Path(tempfile.gettempdir()) / "GradeCalculator-uninstall"
     script_root.mkdir(parents=True, exist_ok=True)
 
-    def powershell_literal(path: Path) -> str:
-        return str(path).replace("'", "''")
-
     def shell_literal(path: Path) -> str:
         return "'" + str(path).replace("'", "'\\\"'\\\"'") + "'"
 
     if current_platform() == "windows":
         script = script_root / "uninstall-grade-calculator.ps1"
         script.write_text(
-            "$ErrorActionPreference = 'Stop'\n"
-            "Start-Sleep -Seconds 2\n"
-            f"$executable = '{powershell_literal(executable)}'\n"
-            "$installDir = Split-Path -Parent $executable\n"
-            "$uninstaller = Join-Path (Split-Path -Parent $executable) 'unins000.exe'\n"
-            "if (Test-Path -LiteralPath $uninstaller) {\n"
-            "  Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait\n"
-            "  Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue\n"
-            "} else {\n"
-            "  Remove-Item -LiteralPath $executable -Force -ErrorAction SilentlyContinue\n"
-            "}\n"
-            f"Remove-Item -LiteralPath '{powershell_literal(data_dir)}' -Recurse -Force\n"
-            "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\n",
+            _windows_uninstall_script(executable=executable, data_dir=data_dir, script=script, pid=os.getpid()),
             encoding="utf-8",
         )
-        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        _spawn_detached(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)])
     else:
         app_bundle = executable.parents[2] if executable.parent.name == "MacOS" and executable.parent.parent.name == "Contents" else executable
         app_folder = app_bundle.parent if app_bundle.parent.name == "Grade Calculator" else None
@@ -199,7 +255,7 @@ def schedule_uninstall() -> dict:
             encoding="utf-8",
         )
         script.chmod(0o755)
-        subprocess.Popen(["/bin/bash", str(script)])
+        _spawn_detached(["/bin/bash", str(script)])
     schedule_app_exit()
     return {"ok": True, "restarting": True}
 

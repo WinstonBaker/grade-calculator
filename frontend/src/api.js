@@ -93,8 +93,12 @@ export const api = {
   meta: () => req("/api/meta"),
   gradebookSetupInventory: (gradebooks) =>
     req("/api/gradebook-setups/inventory", { method: "POST", headers, body: JSON.stringify({ gradebooks }) }, false),
-  exportGradebookSetups: (gradebooks) =>
-    req("/api/gradebook-setups/export", { method: "POST", headers, body: JSON.stringify({ gradebooks }) }, false),
+  exportGradebookSetups: (gradebooks, includeEnteredAssignments = false) =>
+    req("/api/gradebook-setups/export", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ gradebooks, include_entered_assignments: includeEnteredAssignments }),
+    }, false),
   importGradebookSetups: (payload, plan) =>
     req("/api/gradebook-setups/import", { method: "POST", headers, body: JSON.stringify({ payload, plan }) }, false),
   semesters: () => req("/api/semesters"),

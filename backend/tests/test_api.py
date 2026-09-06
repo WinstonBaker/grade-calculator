@@ -267,6 +267,24 @@ def test_gradebook_setup_export_import_excludes_entered_grades(tmp_path):
         assert "gp_override" not in exported_course
         assert exported_course["categories"][0]["name"] == "Labs"
 
+        exported_with_grades = client.post(
+            "/api/gradebook-setups/export",
+            json={
+                "include_entered_assignments": True,
+                "gradebooks": [{
+                    "id": "gradebook-1",
+                    "name": "Source",
+                    "term_ids": [term["id"]],
+                    "course_ids": [course["id"]],
+                }],
+            },
+        )
+        assert exported_with_grades.status_code == 200
+        payload_with_grades = exported_with_grades.json()
+        exported_assignment = payload_with_grades["gradebooks"][0]["periods"][0]["terms"][0]["classes"][0]["categories"][0]["assignments"][0]
+        assert exported_assignment["name"] == "Lab 1"
+        assert exported_assignment["earned"] == 95
+
         imported = client.post(
             "/api/gradebook-setups/import",
             json={"payload": payload, "plan": [{
@@ -286,6 +304,26 @@ def test_gradebook_setup_export_import_excludes_entered_grades(tmp_path):
         copied_course = next(row for item in copied for row in item["courses"] if row["code"] == "BIO 101")
         assert copied_course["categories"][0]["name"] == "Labs"
         assert copied_course["categories"][0]["assignments"] == []
+
+        imported_with_grades = client.post(
+            "/api/gradebook-setups/import",
+            json={"payload": payload_with_grades, "plan": [{
+                "source_id": "gradebook-1",
+                "destination_mode": "new",
+                "destination_id": "gradebook-3",
+                "destination_name": "Imported with grades",
+                "apply_settings": True,
+                "conflict_strategy": "copy",
+                "term_destinations": {term["key"]: "new"},
+                "period_destinations": {},
+            }]},
+        )
+        assert imported_with_grades.status_code == 200
+        copied_with_grades = client.get("/api/semesters?gradebook_id=gradebook-3").json()
+        copied_course_with_grades = next(row for item in copied_with_grades for row in item["courses"] if row["code"] == "BIO 101")
+        copied_assignment = copied_course_with_grades["categories"][0]["assignments"][0]
+        assert copied_assignment["name"] == "Lab 1"
+        assert copied_assignment["earned"] == 95
     finally:
         teardown()
 

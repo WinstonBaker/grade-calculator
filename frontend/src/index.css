@@ -8408,13 +8408,38 @@ tbody tr {
 
 .gradebook-export-tree {
   box-sizing: border-box;
-  width: calc((100% - 14px) / 2);
+  width: 100%;
   max-height: 430px;
   overflow: auto;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--bg-raised);
+}
+
+.gradebook-export-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.gradebook-export-option-panel {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+
+.gradebook-export-option-panel .checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.gradebook-export-option-panel p {
+  margin: 8px 0 0;
+  font-size: 12px;
 }
 
 .gradebook-export-tree details + details {
@@ -8937,5 +8962,9 @@ tbody tr {
 
   .gradebook-export-tree {
     width: 100%;
+  }
+
+  .gradebook-export-options {
+    grid-template-columns: 1fr;
   }
 }

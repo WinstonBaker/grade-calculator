@@ -443,7 +443,8 @@ def export_setups(body: dict, db: Session = Depends(get_db)):
     selections = body.get("gradebooks") if isinstance(body, dict) else None
     if not isinstance(selections, list):
         raise HTTPException(400, "Choose one or more gradebooks to export")
-    return export_gradebook_setups(db, selections)
+    include_entered_assignments = body.get("include_entered_assignments") is True if isinstance(body, dict) else False
+    return export_gradebook_setups(db, selections, include_entered_assignments)
 
 
 @app.post("/api/gradebook-setups/import")

@@ -208,6 +208,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
   const [inventoryError, setInventoryError] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [filename, setFilename] = useState("gradebook-setups");
+  const [includeEnteredAssignments, setIncludeEnteredAssignments] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [importPayload, setImportPayload] = useState(null);
   const [importPlan, setImportPlan] = useState([]);
@@ -266,7 +267,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
     }
     setExportBusy(true);
     try {
-      const payload = await api.exportGradebookSetups(selections);
+      const payload = await api.exportGradebookSetups(selections, includeEnteredAssignments);
       const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
       const download = document.createElement("a");
       download.href = url;
@@ -579,7 +580,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
   return (
     <section className="panel gradebook-transfer-panel" style={{ marginTop: 16 }}>
       <h2>Import & Export Gradebook Setups</h2>
-      <p className="muted settings-note">Exports include gradebook setup, periods, terms, classes, category rules, and grade scales. Entered grades, assignments, snapshots, and global settings stay out of the file.</p>
+      <p className="muted settings-note">Exports include gradebook setup, periods, terms, classes, category rules, and grade scales. Entered assignments and grades are optional; snapshots and global settings stay out of the file.</p>
       <div className="gradebook-transfer-columns">
         <div className="gradebook-transfer-export">
           <div className="transfer-heading-row">
@@ -587,8 +588,9 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
             <span className="muted">Choose what to include</span>
           </div>
           {inventoryError ? <p className="error">{inventoryError}</p> : null}
-          <div className="gradebook-export-tree" aria-label="Gradebooks to export">
-            {inventory.map((gradebook) => {
+          <div className="gradebook-export-options">
+            <div className="gradebook-export-tree" aria-label="Gradebooks to export">
+              {inventory.map((gradebook) => {
               const bookLeaves = setupBookLeaves(gradebook);
               const renderTerm = (term) => {
                 const termLeaves = setupTermLeaves(term);
@@ -622,7 +624,19 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                   </details>;
                 }) : (gradebook.periods || []).flatMap((period) => period.terms || []).map(renderTerm)}
               </details>;
-            })}
+              })}
+            </div>
+            <div className="gradebook-export-option-panel">
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={includeEnteredAssignments}
+                  onChange={(event) => setIncludeEnteredAssignments(event.target.checked)}
+                />
+                <span>Include entered assignments and their grades</span>
+              </label>
+              <p className="muted">When enabled, selected classes include their assignment names, scores, comments, and grade overrides.</p>
+            </div>
           </div>
           <div className="transfer-export-actions">
             <label className="muted">
