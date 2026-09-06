@@ -185,6 +185,13 @@ class Settings(Base):
     gpa_basis: Mapped[str] = mapped_column(String(16), default="credits")
     # JSON map of gradebook id -> settings values scoped to that gradebook.
     gradebook_settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    # User-owned application metadata lives in the same database as grades.
+    gradebooks_json: Mapped[str] = mapped_column(
+        Text, default='[{"id":"gradebook-1","name":"Gradebook 1"}]'
+    )
+    gradebook_members_json: Mapped[str] = mapped_column(Text, default="{}")
+    gradebook_appearance_json: Mapped[str] = mapped_column(Text, default="{}")
+    min_credits: Mapped[str] = mapped_column(String(16), default="1")
 
 
 class AcademicYear(Base):

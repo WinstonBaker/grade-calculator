@@ -188,28 +188,18 @@ function importPlanFor(payload, gradebooks) {
     nextNumber += 1;
     return id;
   };
-  return (payload?.gradebooks || []).filter((gradebook) => gradebook && typeof gradebook === "object").map((gradebook, index) => {
-    const termDestinations = {};
-    const periodDestinations = {};
-    (gradebook.periods || []).forEach((period) => {
-      if (period?.key) periodDestinations[period.key] = "new";
-      (period?.terms || []).forEach((term) => {
-        if (term?.key) termDestinations[term.key] = "new";
-      });
-    });
-    return {
+  return (payload?.gradebooks || []).filter((gradebook) => gradebook && typeof gradebook === "object").map((gradebook, index) => ({
       source_id: String(gradebook.source_id || gradebook.name || index),
-      destination_mode: "new",
+      destination_mode: "unplaced",
       destination_id: nextId(),
       destination_name: String(gradebook.name || `Imported gradebook ${index + 1}`),
-      apply_settings: true,
+      apply_settings: false,
       conflict_strategy: "copy",
-      term_destinations: termDestinations,
-      period_destinations: periodDestinations,
+      term_destinations: {},
+      period_destinations: {},
       class_destinations: {},
       explicit_term_destinations: {},
-    };
-  });
+    }));
 }
 
 function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComplete }) {
@@ -322,6 +312,21 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
     return String(term?.name || term?.season || "Term");
   }
 
+  function fullGradebookPlacement(sourceId) {
+    const sourceBook = (importPayload?.gradebooks || []).find((gradebook, index) => (
+      String(gradebook.source_id || gradebook.name || index) === String(sourceId)
+    ));
+    const term_destinations = {};
+    const period_destinations = {};
+    (sourceBook?.periods || []).forEach((period) => {
+      if (period?.key) period_destinations[period.key] = "new";
+      (period?.terms || []).forEach((term) => {
+        if (term?.key) term_destinations[term.key] = "new";
+      });
+    });
+    return { term_destinations, period_destinations };
+  }
+
   function startPlacementDrag(event, payload) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/x-gradebook-placement", JSON.stringify(payload));
@@ -341,19 +346,33 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
     } catch {
       return;
     }
-    if (!dragged?.sourceId || (dragged.type !== "class" && dragged.type !== "term")) return;
+    if (!dragged?.sourceId || !["class", "term", "period"].includes(dragged.type)) return;
     updatePlan(dragged.sourceId, (current) => {
       if (dragged.type === "term") {
         const term_destinations = { ...current.term_destinations };
         const explicit_term_destinations = { ...current.explicit_term_destinations };
         delete term_destinations[dragged.termKey];
         delete explicit_term_destinations[dragged.termKey];
-        return { ...current, term_destinations, explicit_term_destinations };
+        const next = { ...current, term_destinations, explicit_term_destinations };
+        return Object.keys(term_destinations).length || Object.keys(current.period_destinations).length || Object.keys(current.class_destinations).length
+          ? next
+          : { ...next, destination_mode: "unplaced", apply_settings: false };
+      }
+      if (dragged.type === "period") {
+        const period_destinations = { ...current.period_destinations };
+        delete period_destinations[dragged.periodKey];
+        const next = { ...current, period_destinations };
+        return Object.keys(current.term_destinations).length || Object.keys(period_destinations).length || Object.keys(current.class_destinations).length
+          ? next
+          : { ...next, destination_mode: "unplaced", apply_settings: false };
       }
       if (!dragged.classKey) return current;
       const class_destinations = { ...current.class_destinations };
       delete class_destinations[dragged.classKey];
-      return { ...current, class_destinations };
+      const next = { ...current, class_destinations };
+      return Object.keys(current.term_destinations).length || Object.keys(current.period_destinations).length || Object.keys(class_destinations).length
+        ? next
+        : { ...next, destination_mode: "unplaced", apply_settings: false };
     });
   }
 
@@ -410,16 +429,21 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
         warning("Drop a full gradebook here to create a new gradebook.");
         return;
       }
+      const { term_destinations, period_destinations } = fullGradebookPlacement(dragged.sourceId);
       updatePlan(dragged.sourceId, (current) => ({
         ...current,
         destination_mode: "new",
         destination_name: dragged.gradebookName || current.destination_name,
         apply_settings: true,
-        term_destinations: {},
-        period_destinations: {},
+        term_destinations,
+        period_destinations,
         class_destinations: {},
         explicit_term_destinations: {},
       }));
+      return;
+    }
+    if (dragged.type === "gradebook") {
+      warning("Drop a full gradebook onto New gradebook. Drop an individual term, period, or class onto an existing gradebook.");
       return;
     }
     if (dragged.type !== "gradebook" && !target.type) return;
@@ -440,8 +464,19 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
       return;
     }
     updatePlan(dragged.sourceId, (current) => {
+      const destinationChanged = current.destination_mode !== "existing"
+        || String(current.destination_id) !== String(target.gradebookId);
+      const base = destinationChanged
+        ? {
+          ...current,
+          term_destinations: {},
+          period_destinations: {},
+          class_destinations: {},
+          explicit_term_destinations: {},
+        }
+        : current;
       const next = {
-        ...current,
+        ...base,
         destination_mode: "existing",
         destination_id: String(target.gradebookId),
         destination_name: target.gradebookName || current.destination_name,
@@ -511,12 +546,17 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
 
   async function importSetups() {
     if (!importPayload || !importPlan.length) return;
+    const placedPlan = importPlan.filter((entry) => entry.destination_mode === "new" || entry.destination_mode === "existing");
+    if (!placedPlan.length) {
+      warning("Drag at least one imported gradebook, term, period, or class into the destination tree before importing.");
+      return;
+    }
     setImportBusy(true);
     try {
       // Resolve gradebook-name conflicts only when the import is saved so the
       // placement preview continues to show the source gradebook's name.
       const usedNames = new Set(gradebooks.map((gradebook) => normalizedName(gradebook.name)));
-      const planToSave = importPlan.map((entry) => (
+      const planToSave = placedPlan.map((entry) => (
         entry.destination_mode === "new"
           ? { ...entry, destination_name: uniqueImportedGradebookName(entry.destination_name, usedNames) }
           : entry
@@ -660,12 +700,12 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                 })}
                 {inventory.map((gradebook) => <details className="placement-target-book" key={gradebook.id} open>
                   <summary onDragOver={allowPlacementDrop} onDrop={(event) => placeDroppedItem(event, { type: "gradebook", gradebookId: gradebook.id, gradebookName: gradebook.name, gradebookType: gradebook.gradebook_type })}>
-                    <strong>{gradebook.name}</strong><small className="muted">Drop a gradebook here</small>
+                    <strong>{gradebook.name}</strong><small className="muted">Drop a term here</small>
                   </summary>
-                  {gradebook.gradebook_type !== "high_school" ? placedTermsForBook(gradebook.id).map((term) => <div className="placement-target-imported-term" key={`${term.sourceId}-${term.key}`} draggable onDragStart={(event) => startPlacementDrag(event, { type: "term", sourceId: term.sourceId, termKey: term.key, termName: term.name, gradebookType: term.sourceType })}>
+                  {placedTermsForBook(gradebook.id).map((term) => <div className="placement-target-imported-term" key={`${term.sourceId}-${term.key}`} draggable onDragStart={(event) => startPlacementDrag(event, { type: "term", sourceId: term.sourceId, termKey: term.key, termName: term.name, gradebookType: term.sourceType })}>
                     <strong>{term.name}</strong><small>Added from file</small>
                     {sortSetupClasses(term.classes).map((course) => <span key={course.key}>{course.code}</span>)}
-                  </div>) : null}
+                   </div>)}
                   {gradebook.gradebook_type !== "high_school" ? (gradebook.periods || []).flatMap((period) => period.terms || []).map((term) => {
                     const placedClasses = placedClassesForTerm(gradebook.id, term.id);
                     return <div className="placement-target-term-group placement-target-direct-term" key={term.id}>
@@ -682,6 +722,17 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                     if (gradebook.gradebook_type !== "high_school") return null;
                     if (gradebook.gradebook_type === "high_school") {
                       const placedClasses = placedClassesForPeriod(gradebook.id, periodId);
+                      const placedTermGroups = (period.terms || []).map((term) => {
+                        const placedTermClasses = placedClassesForTerm(gradebook.id, term.id);
+                        return <div className="placement-target-term-group" key={term.id}>
+                          <div className="placement-target-term" onDragOver={allowPlacementDrop} onDrop={(event) => placeDroppedItem(event, { type: "term", gradebookId: gradebook.id, gradebookName: gradebook.name, gradebookType: gradebook.gradebook_type, termId: term.id })}>
+                            <span>{term.name}</span><small className="muted">Drop a class here</small>
+                          </div>
+                          {placedTermClasses.map((course) => <div className="placement-target-imported-class" key={`${course.sourceId}-${course.classKey}`} draggable onDragStart={(event) => startPlacementDrag(event, { type: "class", sourceId: course.sourceId, classKey: course.classKey, className: course.className, gradebookType: course.sourceType })}>
+                            <span>{course.className}</span><small>Added from file</small>
+                          </div>)}
+                        </div>;
+                      });
                       return <div className="placement-target-period-group" key={period.key}>
                         <div className="placement-target-period placement-target-period-drop" onDragOver={allowPlacementDrop} onDrop={(event) => placeDroppedItem(event, { type: "period", gradebookId: gradebook.id, gradebookName: gradebook.name, gradebookType: gradebook.gradebook_type, periodId })}>
                           <span>{period.name}</span><small className="muted">Drop a class here</small>
@@ -689,6 +740,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                         {placedClasses.map((course) => <div className="placement-target-imported-class" key={`${course.sourceId}-${course.classKey}`} draggable onDragStart={(event) => startPlacementDrag(event, { type: "class", sourceId: course.sourceId, classKey: course.classKey, className: course.className, gradebookType: course.sourceType })}>
                           <span>{course.className}</span><small>Added from file</small>
                         </div>)}
+                        {placedTermGroups}
                       </div>;
                     }
                     return <details className="placement-target-period" key={period.key} open>

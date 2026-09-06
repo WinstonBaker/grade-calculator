@@ -435,6 +435,7 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
         terms, periods = _term_map(source)
         term_destinations = entry.get("term_destinations") if isinstance(entry.get("term_destinations"), dict) else {}
         period_destinations = entry.get("period_destinations") if isinstance(entry.get("period_destinations"), dict) else {}
+        explicit_term_destinations = entry.get("explicit_term_destinations") if isinstance(entry.get("explicit_term_destinations"), dict) else {}
         imported_term_ids: dict[str, int] = {}
         created_term_ids: set[int] = set()
 
@@ -445,6 +446,19 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                 for item in classes
             )
 
+        def has_some_explicit_class_destinations(term: dict) -> bool:
+            return any(
+                str(item.get("key") or "") in class_destinations
+                for item in term.get("classes", [])
+                if isinstance(item, dict)
+            )
+
+        def is_explicitly_placed_term(term_key: str) -> bool:
+            # A term mapping means the user placed the whole term, even when
+            # its destination happens to be a newly-created term. Class-only
+            # placement intentionally leaves this map empty.
+            return term_key in term_destinations or term_key in explicit_term_destinations
+
         if not cross_type:
             for term_key, term in terms.items():
                 # A term whose exported classes have all been placed explicitly
@@ -452,6 +466,12 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                 # default term here would leave an empty duplicate behind when
                 # importing a class into an existing academic period.
                 if has_explicit_class_destinations(term):
+                    continue
+                # When only some classes from a source term were placed, do
+                # not create a default destination term for the unplaced
+                # classes. The selected classes will create or use their
+                # explicit destination in the course loop below.
+                if has_some_explicit_class_destinations(term) and not is_explicitly_placed_term(term_key):
                     continue
                 chosen = str(term_destinations.get(term_key) or "new")
                 if chosen != "new" and chosen.isdigit():
@@ -498,11 +518,15 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
         period_term_cache: dict[tuple[str, str], int] = {}
         for term_key, term in terms.items():
             default_semester_id = imported_term_ids.get(term_key)
+            class_only_placement = has_some_explicit_class_destinations(term) and not is_explicitly_placed_term(term_key)
             for course_data in term.get("classes", []):
                 if not isinstance(course_data, dict):
                     continue
+                course_key = str(course_data.get("key") or "")
+                chosen_destination = str(class_destinations.get(course_key) or "")
+                if class_only_placement and not chosen_destination:
+                    continue
                 semester_id = default_semester_id
-                chosen_destination = str(class_destinations.get(str(course_data.get("key") or "")) or "")
                 if chosen_destination.startswith("period:"):
                     period_id = chosen_destination.removeprefix("period:")
                     target_period = db.query(AcademicYear).filter(
@@ -534,6 +558,8 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                     if destination_term is not None:
                         semester_id = destination_term.id
                 if semester_id is None:
+                    if class_only_placement:
+                        continue
                     raise ValueError("Each class converted between gradebook types needs a destination term")
                 raw_code = str(course_data.get("code") or "Class").strip() or "Class"
                 existing = db.query(Course).filter(Course.semester_id == semester_id, Course.code.ilike(raw_code)).first()

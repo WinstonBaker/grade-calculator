@@ -32,15 +32,8 @@ function gpaKey(snapshotId) {
   return `g:${snapshotId}`;
 }
 
-const SNAPSHOT_UPDATE_KEY = "grade-calculator-snapshots-updated-v1";
-
 function notifySnapshotUpdate() {
   window.dispatchEvent(new CustomEvent("grade-snapshots-updated"));
-  try {
-    window.localStorage.setItem(SNAPSHOT_UPDATE_KEY, String(Date.now()));
-  } catch {
-    // Storage can be unavailable in private or embedded browser contexts.
-  }
 }
 
 function parseSelectedKeys(keys) {
@@ -81,15 +74,9 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     function onUpdated() {
       load().catch(() => {});
     }
-    function onStorage(event) {
-      if (event.key !== SNAPSHOT_UPDATE_KEY) return;
-      load().catch(() => {});
-    }
     window.addEventListener("grade-snapshots-updated", onUpdated);
-    window.addEventListener("storage", onStorage);
     return () => {
       window.removeEventListener("grade-snapshots-updated", onUpdated);
-      window.removeEventListener("storage", onStorage);
     };
   }, [semesterId]);
 

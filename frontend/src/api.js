@@ -146,8 +146,8 @@ export const api = {
     });
     return req(`/api/gpa${q.toString() ? `?${q}` : ""}`);
   },
-  appearance: () => req("/api/appearance"),
-  putAppearance: (body) => req("/api/appearance", { method: "PUT", headers, body: JSON.stringify(body) }),
+  appearance: () => req("/api/appearance", {}, false),
+  putAppearance: (body) => req("/api/appearance", { method: "PUT", headers, body: JSON.stringify(body) }, false),
   semesterSnapshots: (id) => req(`/api/semesters/${id}/snapshots`),
   recordSemesterSnapshot: (id, gradebookId = null) => {
     const suffix = gradebookId ? `?gradebook_id=${encodeURIComponent(gradebookId)}` : "";
@@ -162,6 +162,8 @@ export const api = {
   deleteSemesterSnapshots: (id, body) =>
     req(`/api/semesters/${id}/snapshots`, { method: "DELETE", headers, body: JSON.stringify(body) }),
   recordAllSnapshots: () => req("/api/snapshots/record-all", { method: "POST" }),
+  appState: () => req("/api/app-state", {}, false),
+  putAppState: (body) => req("/api/app-state", { method: "PUT", headers, body: JSON.stringify(body) }, false),
   gradePrompt: () => req("/api/grade-prompt", {}, false),
   snoozeGradePrompt: () => req("/api/grade-prompt/snooze", { method: "POST" }, false),
   updates: () => req("/api/updates"),

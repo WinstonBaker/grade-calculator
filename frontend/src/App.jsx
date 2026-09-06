@@ -19,11 +19,6 @@ const GRADE_PROMPT_TOAST_ID = "grade-record-prompt";
 const UPDATE_TOAST_ID = "app-update";
 const UPDATE_STATUS_TOAST_ID = "app-update-status";
 const UPDATE_CHECK_MS = 7 * 24 * 60 * 60 * 1000;
-// v1 is the clean-install local-storage baseline. Keep these keys stable for
-// future releases, but do not read the pre-v1 keys.
-const GRADEBOOKS_KEY = "grade-calculator-gradebooks-v1";
-const GRADEBOOK_MEMBERS_KEY = "grade-calculator-gradebook-members-v1";
-const GRADEBOOK_APPEARANCE_KEY = "grade-calculator-gradebook-appearance-v1";
 const SPECULATION_TOOLTIP = 'Speculation Mode: Edit only the grade values of multiple items at once, allowing you to see how your grade would change when speculating a bulk number of grades. "Changes" are not saved when exited.';
 const SPECULATION_MODE_TOAST_ID = "speculation-mode-status";
 const GLOBAL_APPEARANCE_KEYS = new Set([
@@ -473,56 +468,6 @@ function GradePromptSelect({
   );
 }
 
-function loadGradebooks() {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(GRADEBOOKS_KEY) || "[]");
-    if (Array.isArray(parsed) && parsed.length) {
-      const seen = new Set();
-      return parsed
-        .filter((item) => item?.id)
-        .map((item, index) => {
-          const id = String(item.id).trim();
-          if (seen.has(id)) return null;
-          seen.add(id);
-          return {
-            id,
-            name: String(item.name || `Gradebook ${index + 1}`).trim() || `Gradebook ${index + 1}`,
-          };
-        })
-        .filter(Boolean);
-    }
-  } catch {
-    /* use the default */
-  }
-  return [{ id: "gradebook-1", name: "Gradebook 1" }];
-}
-
-function loadGradebookMembers(gradebooks = []) {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(GRADEBOOK_MEMBERS_KEY) || "{}");
-    if (!parsed || typeof parsed !== "object") return {};
-    return Object.fromEntries(gradebooks.map((gradebook) => {
-      return [gradebook.id, parsed[gradebook.id]];
-    }).filter(([, members]) => Array.isArray(members)));
-  } catch {
-    return {};
-  }
-}
-
-function loadGradebookAppearance(gradebooks = []) {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(GRADEBOOK_APPEARANCE_KEY) || "{}");
-    if (!parsed || typeof parsed !== "object") return {};
-    return Object.fromEntries(gradebooks.map((gradebook) => {
-      const stored = parsed[gradebook.id];
-      if (!stored || typeof stored !== "object") return [gradebook.id, stored];
-      return [gradebook.id, stripGlobalAppearance(stored)];
-    }).filter(([, value]) => value && typeof value === "object"));
-  } catch {
-    return {};
-  }
-}
-
 function stripGlobalAppearance(value) {
   if (!value || typeof value !== "object") return {};
   const scoped = { ...value };
@@ -536,6 +481,7 @@ function globalAppearanceValues(value) {
 
 export default function App() {
   const { warning, push, dismiss } = useToasts();
+  const defaultGradebooks = [{ id: "gradebook-1", name: "Gradebook 1" }];
   const [semesters, setSemesters] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [academicYears, setAcademicYears] = useState([]);
@@ -548,9 +494,10 @@ export default function App() {
   const [academicPeriodDraft, setAcademicPeriodDraft] = useState("");
   const [season, setSeason] = useState("fall");
   const [appearance, setAppearance] = useState(() => loadAppearance());
-  const [gradebooks, setGradebooks] = useState(() => loadGradebooks());
-  const [gradebookMembers, setGradebookMembers] = useState(() => loadGradebookMembers(gradebooks));
-  const [gradebookAppearance, setGradebookAppearance] = useState(() => loadGradebookAppearance(gradebooks));
+  const [gradebooks, setGradebooks] = useState(defaultGradebooks);
+  const [gradebookMembers, setGradebookMembers] = useState({});
+  const [gradebookAppearance, setGradebookAppearance] = useState({});
+  const [minCredits, setMinCredits] = useState("1");
   const [gradebookMenuOpen, setGradebookMenuOpen] = useState(false);
   const [gradebookCreateOpen, setGradebookCreateOpen] = useState(false);
   const [gradebookNameDraft, setGradebookNameDraft] = useState("");
@@ -558,8 +505,9 @@ export default function App() {
   const [speculationMode, setSpeculationMode] = useState(false);
   const [speculationSummary, setSpeculationSummary] = useState(null);
   const appearanceSaveTimer = useRef(null);
+  const appStateSaveTimer = useRef(null);
   const refreshSequence = useRef(0);
-  const appearanceReady = useRef(false);
+  const appStateReady = useRef(false);
   const gradePromptSemesterRef = useRef(null);
   const gradePromptViewRef = useRef({ gradebookId: "gradebook-1", semesterId: null });
   const [githubRepo, setGithubRepo] = useState("");
@@ -700,10 +648,44 @@ export default function App() {
   }
 
   useEffect(() => {
-    window.localStorage.setItem(GRADEBOOKS_KEY, JSON.stringify(gradebooks));
-    window.localStorage.setItem(GRADEBOOK_MEMBERS_KEY, JSON.stringify(gradebookMembers));
-    window.localStorage.setItem(GRADEBOOK_APPEARANCE_KEY, JSON.stringify(gradebookAppearance));
-  }, [gradebooks, gradebookMembers, gradebookAppearance]);
+    let cancelled = false;
+    async function loadAppState() {
+      try {
+        const [state, serverAppearance] = await Promise.all([
+          api.appState(),
+          api.appearance().catch(() => null),
+        ]);
+        if (cancelled) return;
+        setGradebooks(Array.isArray(state?.gradebooks) && state.gradebooks.length ? state.gradebooks : defaultGradebooks);
+        setGradebookMembers(state?.gradebook_members && typeof state.gradebook_members === "object" ? state.gradebook_members : {});
+        setGradebookAppearance(state?.gradebook_appearance && typeof state.gradebook_appearance === "object" ? state.gradebook_appearance : {});
+        setMinCredits(String(state?.min_credits || "1"));
+        const server = serverAppearance ? parseAppearance(serverAppearance) : null;
+        if (server) setAppearance(server);
+        appStateReady.current = true;
+      } catch (err) {
+        warning(err.message);
+      }
+    }
+    loadAppState();
+    return () => {
+      cancelled = true;
+    };
+  }, [warning]);
+
+  useEffect(() => {
+    if (!appStateReady.current) return undefined;
+    clearTimeout(appStateSaveTimer.current);
+    appStateSaveTimer.current = window.setTimeout(() => {
+      api.putAppState({
+        gradebooks,
+        gradebook_members: gradebookMembers,
+        gradebook_appearance: gradebookAppearance,
+        min_credits: minCredits,
+      }).catch(() => {});
+    }, APPEARANCE_SAVE_MS);
+    return () => clearTimeout(appStateSaveTimer.current);
+  }, [gradebooks, gradebookMembers, gradebookAppearance, minCredits]);
 
   function updateGradebookAppearance(updater) {
     setGradebookAppearance((current) => {
@@ -1025,40 +1007,12 @@ export default function App() {
   }, [selectedGradebookId]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function syncAppearance() {
-      try {
-        const server = await api.appearance();
-        if (cancelled) return;
-        const serverAppearance = server ? parseAppearance(server) : null;
-        if (serverAppearance) {
-          appearanceReady.current = true;
-          setAppearance(serverAppearance);
-          saveAppearance(serverAppearance);
-          return;
-        }
-        await api.putAppearance(saveAppearance(loadAppearance()));
-      } catch {
-        /* API offline */
-      } finally {
-        if (!cancelled) appearanceReady.current = true;
-      }
-    }
-
-    syncAppearance();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     applyThemeColors(appearance);
   }, [appearance]);
 
   useEffect(() => {
     const payload = saveAppearance(appearance);
-    if (!appearanceReady.current) return undefined;
+    if (!appStateReady.current) return undefined;
     clearTimeout(appearanceSaveTimer.current);
     appearanceSaveTimer.current = window.setTimeout(() => {
       api.putAppearance(payload).catch(() => {});
@@ -1638,7 +1592,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} />} />
+            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} />} />
             <Route
               path="/settings"
               element={

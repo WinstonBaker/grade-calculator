@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-While developing, data is stored in `data/grades-v1.db` (gitignored). Packaged apps store it in Application Support (Mac) or AppData (Windows). Future releases must keep this database path stable and add numbered migrations for schema changes.
+All user data, including gradebook names/order, memberships, appearance preferences, grades, and settings, is stored in `grades-v1.db` (gitignored during development). While developing it lives in `data/grades-v1.db`; packaged apps store it in Application Support (Mac) or AppData (Windows). Future releases must keep this database path stable and add numbered migrations for schema changes.
 
 ## Features
 

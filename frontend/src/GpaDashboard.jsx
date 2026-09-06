@@ -1048,8 +1048,6 @@ function subjectPrefix(code) {
   return match ? match[1].toUpperCase() : String(code || "?").toUpperCase();
 }
 
-const MIN_CREDITS_STORAGE_KEY = "grade-calculator-course-code-min-credits";
-
 function distributionFromCourses(courses, letterOrder = FALLBACK_LETTERS, includePassFailLabels = false) {
   const graded = courses.filter((c) => c.letter && (c.quality_points != null || c.credit_mode === "pass_fail"));
   const regular = graded.filter((c) => c.credit_mode !== "pass_fail");
@@ -2209,17 +2207,14 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
   );
 }
 
-export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period" }) {
+export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period", minCreditsValue = "1", onMinCreditsChange }) {
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
   const showScore = useShowScore();
   const [data, setData] = useState(null);
   const [view, setView] = useState("semester");
   const [summaryView, setSummaryView] = useState("grade");
-  const [minCredits, setMinCredits] = useState(() => {
-    const saved = window.localStorage.getItem(MIN_CREDITS_STORAGE_KEY);
-    return saved ?? "1";
-  });
+  const [minCredits, setMinCredits] = useState(String(minCreditsValue || "1"));
   const [sort, setSort] = useState("code");
   const [desc, setDesc] = useState(false);
   const [fumbleCourse, setFumbleCourse] = useState("");
@@ -2461,8 +2456,13 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
     }))
     : (data?.terms || []).map((term) => ({ ...term, name: displayTermName(term) }));
   useEffect(() => {
-    window.localStorage.setItem(MIN_CREDITS_STORAGE_KEY, minCredits);
-  }, [minCredits]);
+    setMinCredits(String(minCreditsValue || "1"));
+  }, [minCreditsValue]);
+
+  function updateMinCredits(value) {
+    setMinCredits(value);
+    onMinCreditsChange?.(value);
+  }
 
   async function load() {
     setData(await api.gpa(semesterIds ? { semester_ids: semesterIds } : {}));
@@ -3044,7 +3044,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
               letterOrder={letters}
               embedded
               minCredits={minCredits}
-              setMinCredits={setMinCredits}
+              setMinCredits={updateMinCredits}
             />
             <label className="muted dashboard-min-credits dashboard-min-credits-bottom">
               Min {creditTerms.plural}
@@ -3054,7 +3054,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                 min="0"
                 step="1"
                 value={minCredits}
-                onChange={(e) => setMinCredits(e.target.value)}
+                onChange={(e) => updateMinCredits(e.target.value)}
               />
               <Tooltip text="Only include in the table course codes that have at least this many credits of." />
             </label>

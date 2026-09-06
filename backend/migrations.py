@@ -16,7 +16,7 @@ from sqlalchemy.engine import Connection
 
 # Keep this number stable for the v1.4 data format. Future releases increment
 # it and register the migration that moves the previous format forward.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 Migration = Callable[[Connection], None]
 
 
@@ -29,7 +29,26 @@ def _migrate_v2(connection: Connection) -> None:
     )
 
 
-MIGRATIONS: dict[int, Migration] = {2: _migrate_v2}
+def _migrate_v3(connection: Connection) -> None:
+    connection.execute(
+        text(
+            "ALTER TABLE settings "
+            "ADD COLUMN gradebooks_json TEXT NOT NULL DEFAULT "
+            "'[{\"id\":\"gradebook-1\",\"name\":\"Gradebook 1\"}]'"
+        )
+    )
+    connection.execute(
+        text("ALTER TABLE settings ADD COLUMN gradebook_members_json TEXT NOT NULL DEFAULT '{}'" )
+    )
+    connection.execute(
+        text("ALTER TABLE settings ADD COLUMN gradebook_appearance_json TEXT NOT NULL DEFAULT '{}'" )
+    )
+    connection.execute(
+        text("ALTER TABLE settings ADD COLUMN min_credits VARCHAR(16) NOT NULL DEFAULT '1'" )
+    )
+
+
+MIGRATIONS: dict[int, Migration] = {2: _migrate_v2, 3: _migrate_v3}
 
 
 def apply_forward_migrations(

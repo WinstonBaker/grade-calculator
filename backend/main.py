@@ -163,6 +163,109 @@ def _gpa_cap(db: Session) -> float | None:
     return _settings(db).gpa_cap
 
 
+DEFAULT_APP_GRADEBOOKS = [{"id": "gradebook-1", "name": "Gradebook 1"}]
+
+
+def _json_value(raw, fallback):
+    try:
+        value = json.loads(raw or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+    return value
+
+
+def _app_state_payload(settings: Settings) -> dict:
+    gradebooks = _json_value(settings.gradebooks_json, DEFAULT_APP_GRADEBOOKS)
+    if not isinstance(gradebooks, list):
+        gradebooks = DEFAULT_APP_GRADEBOOKS
+    normalized_gradebooks = []
+    seen = set()
+    for item in gradebooks:
+        if not isinstance(item, dict):
+            continue
+        gradebook_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not gradebook_id or not name or gradebook_id in seen:
+            continue
+        seen.add(gradebook_id)
+        normalized_gradebooks.append({"id": gradebook_id, "name": name})
+    if not normalized_gradebooks:
+        normalized_gradebooks = [dict(DEFAULT_APP_GRADEBOOKS[0])]
+
+    members = _json_value(settings.gradebook_members_json, {})
+    if not isinstance(members, dict):
+        members = {}
+    normalized_members = {
+        gradebook_id: [str(value) for value in values if str(value).strip()]
+        for gradebook_id, values in members.items()
+        if gradebook_id in seen and isinstance(values, list)
+    }
+
+    appearances = _json_value(settings.gradebook_appearance_json, {})
+    if not isinstance(appearances, dict):
+        appearances = {}
+    normalized_appearances = {
+        gradebook_id: value
+        for gradebook_id, value in appearances.items()
+        if gradebook_id in seen and isinstance(value, dict)
+    }
+    return {
+        "gradebooks": normalized_gradebooks,
+        "gradebook_members": normalized_members,
+        "gradebook_appearance": normalized_appearances,
+        "min_credits": str(settings.min_credits or "1"),
+    }
+
+
+def _normalize_app_state(body: dict) -> dict:
+    gradebooks = body.get("gradebooks")
+    if not isinstance(gradebooks, list):
+        raise HTTPException(400, "Gradebooks must be a list")
+    normalized_gradebooks = []
+    seen = set()
+    for item in gradebooks:
+        if not isinstance(item, dict):
+            continue
+        gradebook_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not gradebook_id or not name or gradebook_id in seen:
+            continue
+        seen.add(gradebook_id)
+        normalized_gradebooks.append({"id": gradebook_id, "name": name})
+    if not normalized_gradebooks:
+        raise HTTPException(400, "Keep at least one gradebook")
+
+    members = body.get("gradebook_members")
+    if not isinstance(members, dict):
+        members = {}
+    normalized_members = {
+        gradebook_id: [str(value) for value in values if str(value).strip()]
+        for gradebook_id, values in members.items()
+        if gradebook_id in seen and isinstance(values, list)
+    }
+
+    appearances = body.get("gradebook_appearance")
+    if not isinstance(appearances, dict):
+        appearances = {}
+    normalized_appearances = {
+        gradebook_id: value
+        for gradebook_id, value in appearances.items()
+        if gradebook_id in seen and isinstance(value, dict)
+    }
+    min_credits = str(body.get("min_credits") or "1").strip()
+    try:
+        if float(min_credits) < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Minimum credits must be a non-negative number")
+    return {
+        "gradebooks": normalized_gradebooks,
+        "gradebook_members": normalized_members,
+        "gradebook_appearance": normalized_appearances,
+        "min_credits": min_credits,
+    }
+
+
 def _owned_category_id(course: Course, category_id: int | None) -> int | None:
     if category_id == -1:
         return -1
@@ -1355,6 +1458,30 @@ def create_all_snapshots(db: Session = Depends(get_db)):
     return record_all_grade_snapshots(db)
 
 
+@app.get("/api/app-state")
+def get_app_state(db: Session = Depends(get_db)):
+    settings = db.get(Settings, 1)
+    if settings is None:
+        seed_if_needed(db)
+        settings = db.get(Settings, 1)
+    return _app_state_payload(settings)
+
+
+@app.put("/api/app-state")
+def put_app_state(body: dict, db: Session = Depends(get_db)):
+    settings = db.get(Settings, 1)
+    if settings is None:
+        seed_if_needed(db)
+        settings = db.get(Settings, 1)
+    state = _normalize_app_state(body if isinstance(body, dict) else {})
+    settings.gradebooks_json = json.dumps(state["gradebooks"], separators=(",", ":"))
+    settings.gradebook_members_json = json.dumps(state["gradebook_members"], separators=(",", ":"))
+    settings.gradebook_appearance_json = json.dumps(state["gradebook_appearance"], separators=(",", ":"))
+    settings.min_credits = state["min_credits"]
+    db.commit()
+    return state
+
+
 @app.get("/api/grade-prompt")
 def get_grade_prompt(db: Session = Depends(get_db)):
     # This endpoint is intentionally global. Do not resolve active-gradebook
@@ -1371,7 +1498,10 @@ def post_grade_prompt_snooze(db: Session = Depends(get_db)):
 
 @app.get("/api/appearance")
 def get_appearance(db: Session = Depends(get_db)):
-    settings = _settings(db)
+    settings = db.get(Settings, 1)
+    if settings is None:
+        seed_if_needed(db)
+        settings = db.get(Settings, 1)
     raw = (settings.appearance_json or "").strip()
     if not raw or raw == "{}":
         return None
@@ -1383,7 +1513,10 @@ def get_appearance(db: Session = Depends(get_db)):
 
 @app.put("/api/appearance")
 def put_appearance(body: dict, db: Session = Depends(get_db)):
-    settings = _settings(db)
+    settings = db.get(Settings, 1)
+    if settings is None:
+        seed_if_needed(db)
+        settings = db.get(Settings, 1)
     settings.appearance_json = json.dumps(body)
     db.commit()
     return body

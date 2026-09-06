@@ -198,6 +198,31 @@ def test_meta_includes_version_and_downloads(tmp_path):
         teardown()
 
 
+def test_app_state_round_trip_is_database_backed(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        state = {
+            "gradebooks": [
+                {"id": "gradebook-1", "name": "Current"},
+                {"id": "gradebook-2", "name": "Imported"},
+            ],
+            "gradebook_members": {
+                "gradebook-1": ["11", "12"],
+                "gradebook-2": ["14"],
+            },
+            "gradebook_appearance": {
+                "gradebook-2": {"classType": "named"},
+            },
+            "min_credits": "3",
+        }
+        saved = client.put("/api/app-state", json=state)
+        assert saved.status_code == 200
+        assert saved.json() == state
+        assert client.get("/api/app-state").json() == state
+    finally:
+        teardown()
+
+
 def test_gradebook_setup_export_import_excludes_entered_grades(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -273,10 +298,15 @@ def test_gradebook_setup_import_places_class_in_selected_target_term(tmp_path):
             "/api/courses?gradebook_id=gradebook-1",
             json={"semester_id": source_term["id"], "code": "Mapped Class", "credits": 3},
         ).json()
+        unplaced_course = client.post(
+            "/api/courses?gradebook_id=gradebook-1",
+            json={"semester_id": source_term["id"], "code": "Unplaced Class", "credits": 3},
+        ).json()
         target_term = client.post(
             "/api/semesters?gradebook_id=gradebook-2",
             json={"year": 2038, "season": "spring", "included": True},
         ).json()
+        terms_before = client.get("/api/semesters?gradebook_id=gradebook-2").json()
 
         inventory = client.post(
             "/api/gradebook-setups/inventory",
@@ -294,10 +324,11 @@ def test_gradebook_setup_import_places_class_in_selected_target_term(tmp_path):
                 "id": "gradebook-1",
                 "name": "Source",
                 "term_ids": [source_export_term["id"]],
-                "course_ids": [source_course["id"]],
+                "course_ids": [source_course["id"], unplaced_course["id"]],
             }]},
         ).json()
-        exported_course = payload["gradebooks"][0]["periods"][0]["terms"][0]["classes"][0]
+        exported_courses = payload["gradebooks"][0]["periods"][0]["terms"][0]["classes"]
+        exported_course = next(item for item in exported_courses if item["code"] == "Mapped Class")
 
         imported = client.post(
             "/api/gradebook-setups/import",
@@ -308,15 +339,17 @@ def test_gradebook_setup_import_places_class_in_selected_target_term(tmp_path):
                 "destination_name": "Target",
                 "apply_settings": False,
                 "conflict_strategy": "copy",
-                "term_destinations": {source_export_term["key"]: "new"},
+                "term_destinations": {},
                 "period_destinations": {},
                 "class_destinations": {exported_course["key"]: str(target_term["id"])},
             }]},
         )
         assert imported.status_code == 200
         imported_terms = client.get("/api/semesters?gradebook_id=gradebook-2").json()
+        assert len(imported_terms) == len(terms_before)
         mapped_term = next(item for item in imported_terms if item["id"] == target_term["id"])
         assert any(item["code"] == "Mapped Class" for item in mapped_term["courses"])
+        assert all(item["code"] != "Unplaced Class" for term in imported_terms for item in term["courses"])
     finally:
         teardown()
 

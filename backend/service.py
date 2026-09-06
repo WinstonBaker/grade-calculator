@@ -411,6 +411,10 @@ def seed_if_needed(db: Session) -> None:
                 recording_interval_days=7,
                 grade_prompt_snooze_until=None,
                 default_recording_semester_id=None,
+                gradebooks_json='[{"id":"gradebook-1","name":"Gradebook 1"}]',
+                gradebook_members_json="{}",
+                gradebook_appearance_json="{}",
+                min_credits="1",
             )
         )
         try:

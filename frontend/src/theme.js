@@ -1,9 +1,5 @@
 import { DEFAULT_FLAGS, normalizeFlags } from "./flags.jsx";
 
-// v1 is the clean-install local-storage baseline. Future releases keep this
-// key stable; pre-v1 appearance data is intentionally not imported.
-const STORAGE_KEY = "grade-calculator-appearance-v1";
-
 export const DEFAULT_COLORS = {
   primary: "#e4b86d",
   secondary: "#12131a",
@@ -386,26 +382,11 @@ export function appearancePayload(appearance) {
 }
 
 export function loadAppearance() {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = parseAppearance(JSON.parse(raw));
-      if (parsed) return parsed;
-    }
-  } catch {
-    /* ignore */
-  }
   return defaultAppearance();
 }
 
 export function saveAppearance(appearance) {
-  const payload = appearancePayload(appearance);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  } catch (err) {
-    console.warn("Failed to save appearance to localStorage", err);
-  }
-  return payload;
+  return appearancePayload(appearance);
 }
 
 export function getGradeScale(id, userPresets = []) {
