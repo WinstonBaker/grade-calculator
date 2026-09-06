@@ -721,6 +721,7 @@ def test_grade_prompt_is_unchanged_for_another_or_new_gradebook(tmp_path):
     client = make_client(tmp_path)
     try:
         first = client.get("/api/grade-prompt?gradebook_id=gradebook-1").json()
+        assert first["due"] is False
         other = client.get("/api/grade-prompt?gradebook_id=gradebook-2").json()
         new_book = client.get("/api/grade-prompt?gradebook_id=gradebook-99").json()
 
@@ -1664,8 +1665,10 @@ def test_progression_lock_and_default_semester(tmp_path):
         assert after[created.json()["id"]]["progression_locked"] is False
         listed = client.get("/api/grade-prompt").json()
         assert {s["id"] for s in listed["semesters"]} == set(after)
-        assert listed["due"] is True
-        assert listed["default_semester_id"] == first_id
+        # The only graded semester is locked and the newly unlocked semester
+        # is empty, so there is nothing actionable to record yet.
+        assert listed["due"] is False
+        assert listed["default_semester_id"] == created.json()["id"]
     finally:
         teardown()
 

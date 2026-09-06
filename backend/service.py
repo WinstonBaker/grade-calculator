@@ -2565,6 +2565,14 @@ def _course_has_percent(course: dict) -> bool:
         return False
 
 
+def _semester_has_recordable_grades(semester: Semester) -> bool:
+    """Return whether a semester contains a grade that a snapshot can record."""
+    return any(
+        _course_has_percent(serialize_course(course, target_gp=0.0))
+        for course in semester.courses
+    )
+
+
 def _snapshot_is_empty(snapshot: GradeSnapshot) -> bool:
     courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
     return not courses and snapshot.term_gpa is None and snapshot.term_wgpa is None
@@ -3086,7 +3094,10 @@ def grade_prompt_status(db: Session) -> dict:
     last_recorded = latest_grade_snapshot_at(db)
     ranked = sort_semesters(db.query(Semester).all())
     unlocked = [sem for sem in ranked if not sem.progression_locked]
-    due = bool(unlocked)
+    # A seeded fresh install has an empty semester so the user can start
+    # entering classes. It should not trigger a recording reminder until at
+    # least one unlocked class has an actual grade to record.
+    due = any(_semester_has_recordable_grades(sem) for sem in unlocked)
     if due and snooze_until is not None and snooze_until > now:
         due = False
     elif due and last_recorded is not None:

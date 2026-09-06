@@ -88,7 +88,7 @@ def main() -> None:
     storage.mkdir(parents=True, exist_ok=True)
     webview.create_window(
         f"Grade Calculator {__version__}",
-        f"http://127.0.0.1:{port}",
+        f"http://127.0.0.1:{port}/gpa",
         width=1280,
         height=840,
         min_size=(960, 640),
