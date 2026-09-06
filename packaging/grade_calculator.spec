@@ -67,7 +67,7 @@ if sys.platform == "win32":
         a.zipfiles,
         a.datas,
         [],
-        name="GradeCalculator",
+        name="Grade Calculator",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,

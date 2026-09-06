@@ -1167,7 +1167,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
   }, [data, profileDrafts]);
 
   useEffect(() => {
-    if (!gradeScaleCreateOpen && !themePresetCreateOpen) return undefined;
+    if (!gradeScaleCreateOpen && !themePresetCreateOpen && !uninstallOpen) return undefined;
     const previousOverflow = document.body.style.overflow;
     const previousRootOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = "hidden";
@@ -1176,7 +1176,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
       document.body.style.overflow = previousOverflow;
       document.documentElement.style.overflow = previousRootOverflow;
     };
-  }, [gradeScaleCreateOpen, themePresetCreateOpen]);
+  }, [gradeScaleCreateOpen, themePresetCreateOpen, uninstallOpen]);
 
   async function refreshAll() {
     const gpaParams = mode === "gradebook" && gradebookId ? { gradebook_id: gradebookId } : {};
@@ -1205,7 +1205,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
       const result = await api.applyUpdate();
       if (result.restarting) {
         restarting = true;
-        setUpdateMessage("Installing over this app and restarting…");
+        setUpdateMessage("Launching the installer and restarting…");
         return;
       }
       const fallback = result.download_url || result.release_url || info.download_url || meta?.release_url;
@@ -1458,15 +1458,17 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
         ) : null}
       </section>
 
-      {uninstallOpen ? <div className="uninstall-modal" role="dialog" aria-modal="true" aria-label="Uninstall Grade Calculator">
-        <div className="uninstall-modal-card">
-          <h1>Uninstall Grade Calculator?</h1>
-          <p>This permanently removes the app and all Grade Calculator data from this computer.</p>
-          <label className="checkbox"><input type="checkbox" checked={uninstallChecks[0]} onChange={(e) => setUninstallChecks(([_, second]) => [e.target.checked, second])} />Are you sure you want to uninstall?</label>
-          <label className="checkbox"><input type="checkbox" checked={uninstallChecks[1]} onChange={(e) => setUninstallChecks(([first]) => [first, e.target.checked])} />Are you totally sure?</label>
-          <div className="update-actions"><button className="btn" type="button" onClick={() => setUninstallOpen(false)}>Cancel</button><button className="btn danger" type="button" disabled={!uninstallChecks.every(Boolean)} onClick={async () => { try { const result = await api.uninstall(); if (!result.ok) warning("Uninstall is available only from the packaged Windows or macOS app."); } catch (err) { warning(err.message); } }}>Final uninstall</button></div>
+      {uninstallOpen ? createPortal((
+        <div className="uninstall-modal" role="dialog" aria-modal="true" aria-label="Uninstall Grade Calculator" onWheel={(e) => e.preventDefault()} onTouchMove={(e) => e.preventDefault()}>
+          <div className="uninstall-modal-card">
+            <h1>Uninstall Grade Calculator?</h1>
+            <p>This permanently removes the app and all Grade Calculator data from this computer.</p>
+            <label className="checkbox"><input type="checkbox" checked={uninstallChecks[0]} onChange={(e) => setUninstallChecks(([_, second]) => [e.target.checked, second])} />Are you sure you want to uninstall?</label>
+            <label className="checkbox"><input type="checkbox" checked={uninstallChecks[1]} onChange={(e) => setUninstallChecks(([first]) => [first, e.target.checked])} />Are you totally sure?</label>
+            <div className="update-actions"><button className="btn" type="button" onClick={() => setUninstallOpen(false)}>Cancel</button><button className="btn danger" type="button" disabled={!uninstallChecks.every(Boolean)} onClick={async () => { try { const result = await api.uninstall(); if (!result.ok) warning("Uninstall is available only from the packaged Windows or macOS app."); } catch (err) { warning(err.message); } }}>Final uninstall</button></div>
+          </div>
         </div>
-      </div> : null}
+      ), document.body) : null}
 
       {mode === "global" ? <section className="panel appearance-panel">
         <h2>Appearance</h2>

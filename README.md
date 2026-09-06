@@ -1,13 +1,13 @@
 # Grade Calculator
 
-A **desktop application** for Windows and macOS. Download it, double-click, and it opens in its own window with a blank gradebook.
+A **desktop application** for Windows and macOS. Download the installer, install it, and open Grade Calculator in its own window with a blank gradebook.
 
 ## Download
 
 Use the [Releases](https://github.com/WinstonBaker/grade-calculator/releases/latest) page:
 
-- **Windows:** [GradeCalculator-Windows.exe](https://github.com/WinstonBaker/grade-calculator/releases/latest/download/GradeCalculator-Windows.exe) — download and open. If Windows shows SmartScreen, choose **More info → Run anyway**.
-- **macOS:** [GradeCalculator-macOS.dmg](https://github.com/WinstonBaker/grade-calculator/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image, drag **Grade Calculator** to Applications, then right-click the app and choose **Open**.
+- **Windows:** [GradeCaculatorWindowsInstaller.exe](https://github.com/WinstonBaker/grade-calculator/releases/latest/download/GradeCaculatorWindowsInstaller.exe) — download and run the installer. It installs **Grade Calculator.exe** inside a **Grade Calculator** folder and creates a desktop shortcut. If Windows shows SmartScreen, choose **More info → Run anyway**.
+- **macOS:** [GradeCalculator-macOS.dmg](https://github.com/WinstonBaker/grade-calculator/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image and run **Grade Calculator.pkg**. It installs **Grade Calculator.app** inside an **Applications/Grade Calculator** folder and creates a desktop shortcut.
 
 A new install has no classes and no grades. Everything you enter stays on that computer. Later versions are installed from **Settings → Update**.
 

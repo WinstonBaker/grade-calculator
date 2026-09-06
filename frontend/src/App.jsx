@@ -1238,7 +1238,7 @@ export default function App() {
         type: "persistent",
         tone: "info",
         title: "Installing update",
-        message: "Downloading and replacing the app…",
+        message: "Downloading the installer and restarting…",
       });
       try {
         const result = await api.applyUpdate();

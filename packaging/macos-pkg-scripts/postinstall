@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+app_path="/Applications/Grade Calculator/Grade Calculator.app"
+console_user="$(stat -f '%Su' /dev/console)"
+
+if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" = "loginwindow" ]; then
+    exit 0
+fi
+
+user_home="$(dscl . -read "/Users/$console_user" NFSHomeDirectory | awk '{print $2}')"
+desktop="$user_home/Desktop"
+shortcut="$desktop/Grade Calculator.app"
+
+if [ ! -d "$desktop" ]; then
+    mkdir -p "$desktop"
+    chown "$console_user:$(id -g "$console_user")" "$desktop"
+fi
+
+if [ -L "$shortcut" ] || [ ! -e "$shortcut" ]; then
+    rm -f "$shortcut"
+    ln -s "$app_path" "$shortcut"
+    chown -h "$console_user:$(id -g "$console_user")" "$shortcut"
+fi
+
+exit 0

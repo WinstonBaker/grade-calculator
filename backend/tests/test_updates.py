@@ -6,6 +6,7 @@ from pathlib import Path
 from backend.main import app
 from backend.updates import (
     _validate_release_url,
+    _windows_installer_script,
     _windows_apply_script,
     acknowledge_update_status,
     apply_update,
@@ -121,11 +122,11 @@ def test_check_for_updates_records_state_and_toast_flag(tmp_path, monkeypatch):
 
 def test_validate_release_url():
     url = _validate_release_url(
-        "https://github.com/WinstonBaker/grade-calculator/releases/download/v1.3.0/GradeCalculator-Windows.exe"
+        "https://github.com/WinstonBaker/grade-calculator/releases/download/v1.3.0/GradeCaculatorWindowsInstaller.exe"
     )
-    assert url.endswith("GradeCalculator-Windows.exe")
+    assert url.endswith("GradeCaculatorWindowsInstaller.exe")
     with pytest.raises(ValueError, match="Unexpected"):
-        _validate_release_url("https://evil.example/GradeCalculator-Windows.exe")
+        _validate_release_url("https://evil.example/GradeCaculatorWindowsInstaller.exe")
 
 
 def _latest_info(**overrides):
@@ -174,6 +175,36 @@ def test_apply_update_rejects_unexpected_url(monkeypatch):
         apply_update()
 
 
+def test_windows_apply_update_stages_the_installer(monkeypatch, tmp_path):
+    monkeypatch.setattr("backend.updates.frozen", lambda: True)
+    monkeypatch.setattr("backend.updates.current_platform", lambda: "windows")
+    monkeypatch.setattr(
+        "backend.updates.check_for_updates",
+        lambda: _latest_info(
+            download_url=(
+                "https://github.com/WinstonBaker/grade-calculator/releases/download/"
+                "v9.0.0/GradeCaculatorWindowsInstaller.exe"
+            ),
+            asset_name="GradeCaculatorWindowsInstaller.exe",
+        ),
+    )
+    monkeypatch.setattr("backend.updates.create_update_backup", lambda _version: tmp_path / "backup.zip")
+    staged = []
+    monkeypatch.setattr(
+        "backend.updates._download_file",
+        lambda _url, destination: destination.write_bytes(b"installer"),
+    )
+    monkeypatch.setattr(
+        "backend.updates._stage_windows_installer",
+        lambda installer, version: staged.append((installer, version)),
+    )
+
+    result = apply_update()
+
+    assert result["restarting"] is True
+    assert staged == [(tmp_path / "updates" / "GradeCaculatorWindowsInstaller.exe", "9.0.0")]
+
+
 def test_dismiss_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.updates.user_data_dir", lambda: tmp_path)
     client = TestClient(app)
@@ -186,8 +217,8 @@ def test_dismiss_endpoint(tmp_path, monkeypatch):
 
 def test_windows_apply_script_retries_and_falls_back():
     script = _windows_apply_script(
-        src=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\GradeCalculator-Windows.exe"),
-        dst=Path(r"C:\Program Files\Grade Calculator\GradeCalculator-Windows.exe"),
+        src=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\GradeCaculatorWindowsInstaller.exe"),
+        dst=Path(r"C:\Program Files\Grade Calculator\Grade Calculator.exe"),
         log=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\apply.log"),
         marker=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\update-status.json"),
         pid=4242,
@@ -200,6 +231,21 @@ def test_windows_apply_script_retries_and_falls_back():
     assert "failed_launched_staged" in script
     assert "Start-Process -FilePath $src" in script
     assert "Write-Status 'applied'" in script
+
+
+def test_windows_installer_script_waits_for_app_and_records_result():
+    script = _windows_installer_script(
+        installer=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\GradeCaculatorWindowsInstaller.exe"),
+        marker=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\update-status.json"),
+        log=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\apply.log"),
+        pid=4242,
+        version="2.0.0",
+    )
+    assert "$appPid = 4242" in script
+    assert "Start-Process -FilePath $installer" in script
+    assert "'/SILENT', '/NORESTART'" in script
+    assert "Write-Status 'applied'" in script
+    assert "Write-Status 'failed'" in script
 
 
 def test_apply_status_survives_and_can_be_acked(tmp_path, monkeypatch):

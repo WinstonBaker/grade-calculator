@@ -1,4 +1,4 @@
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 GITHUB_REPO = "WinstonBaker/grade-calculator"
-WINDOWS_ASSET = "GradeCalculator-Windows.exe"
+WINDOWS_ASSET = "GradeCaculatorWindowsInstaller.exe"
 MACOS_ASSET = "GradeCalculator-macOS.dmg"

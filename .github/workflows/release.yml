@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: GradeCalculator-Windows.exe
+            artifact: GradeCaculatorWindowsInstaller.exe
           - os: macos-latest
             artifact: GradeCalculator-macOS.dmg
     runs-on: ${{ matrix.os }}
@@ -48,16 +48,49 @@ jobs:
       - name: Build desktop app
         run: python -m PyInstaller packaging/grade_calculator.spec --noconfirm --clean
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Copy-Item dist\GradeCalculator.exe GradeCalculator-Windows.exe
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw 'Inno Setup compiler was not found.'
+          }
+          $version = [regex]::Match((Get-Content 'backend\version.py' -Raw), '__version__\s*=\s*"([^"]+)"').Groups[1].Value
+          if (-not $version) {
+            throw 'The application version could not be read.'
+          }
+          & $iscc /Q "/DMyAppVersion=$version" 'packaging\GradeCalculator.iss'
+          Copy-Item 'build\installer\GradeCaculatorWindowsInstaller.exe' 'GradeCaculatorWindowsInstaller.exe'
 
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
+          app_version="$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' backend/version.py)"
+          test -n "$app_version"
+          mkdir -p "build/pkgroot/Applications/Grade Calculator"
+          cp -R "dist/Grade Calculator.app" "build/pkgroot/Applications/Grade Calculator/"
+          chmod +x packaging/macos-pkg-scripts/postinstall
+          pkgbuild \
+            --root build/pkgroot \
+            --identifier com.winstonbaker.gradecalculator \
+            --version "$app_version" \
+            --install-location / \
+            --scripts packaging/macos-pkg-scripts \
+            "build/Grade Calculator.pkg"
           mkdir -p dmg
-          cp -R "dist/Grade Calculator.app" dmg/
+          cp "build/Grade Calculator.pkg" dmg/
+          mkdir -p dmg/.payload
+          cp -R "dist/Grade Calculator.app" dmg/.payload/
           ln -s /Applications dmg/Applications
           hdiutil create -volname "Grade Calculator" -srcfolder dmg -ov -format UDZO GradeCalculator-macOS.dmg
 
@@ -80,17 +113,17 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/GradeCalculator-Windows.exe
+            dist/GradeCaculatorWindowsInstaller.exe
             dist/GradeCalculator-macOS.dmg
           generate_release_notes: true
           make_latest: true
           body: |
-            ## v2.0.0
+            ## ${{ github.ref_name }}
 
             This release packages the current Grade Calculator experience with the latest gradebook, GPA dashboard, import/export, and update improvements.
 
             ## Download
-            - **Windows:** [GradeCalculator-Windows.exe](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-Windows.exe) — download and open
-            - **macOS:** [GradeCalculator-macOS.dmg](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image and drag Grade Calculator to Applications
+            - **Windows:** [GradeCaculatorWindowsInstaller.exe](https://github.com/${{ github.repository }}/releases/latest/download/GradeCaculatorWindowsInstaller.exe) — download and run the installer; it installs `Grade Calculator.exe` inside a `Grade Calculator` folder and creates a desktop shortcut
+            - **macOS:** [GradeCalculator-macOS.dmg](https://github.com/${{ github.repository }}/releases/latest/download/GradeCalculator-macOS.dmg) — open the disk image and run `Grade Calculator.pkg`; it installs `Grade Calculator.app` inside `Applications/Grade Calculator` and creates a desktop shortcut
 
             Grades stay on this computer in a local database. Use **Settings → Check for updates** to fetch later versions.

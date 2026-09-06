@@ -8868,8 +8868,8 @@ tbody tr {
   gap: 10px;
 }
 
-.uninstall-modal { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.72); }
-.uninstall-modal-card { width: min(560px, 100%); padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-raised); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+.uninstall-modal { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; width: 100vw; height: 100dvh; min-height: 100vh; padding: 24px; overflow: auto; overscroll-behavior: none; background: rgba(0,0,0,.72); }
+.uninstall-modal-card { width: min(560px, 100%); max-height: calc(100dvh - 48px); overflow: auto; padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-raised); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
 .uninstall-modal-card h1 { margin-top: 0; }
 .uninstall-modal-card .checkbox { display: flex; gap: 8px; margin: 14px 0; }
 

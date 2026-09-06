@@ -169,19 +169,30 @@ def schedule_uninstall() -> dict:
     if current_platform() == "windows":
         script = script_root / "uninstall-grade-calculator.ps1"
         script.write_text(
+            "$ErrorActionPreference = 'Stop'\n"
             "Start-Sleep -Seconds 2\n"
-            f"Remove-Item -LiteralPath '{powershell_literal(executable)}' -Force\n"
+            f"$executable = '{powershell_literal(executable)}'\n"
+            "$uninstaller = Join-Path (Split-Path -Parent $executable) 'unins000.exe'\n"
+            "if (Test-Path -LiteralPath $uninstaller) {\n"
+            "  Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait\n"
+            "} else {\n"
+            "  Remove-Item -LiteralPath $executable -Force -ErrorAction SilentlyContinue\n"
+            "}\n"
             f"Remove-Item -LiteralPath '{powershell_literal(data_dir)}' -Recurse -Force\n",
             encoding="utf-8",
         )
         subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     else:
         app_bundle = executable.parents[2] if executable.parent.name == "MacOS" and executable.parent.parent.name == "Contents" else executable
+        app_folder = app_bundle.parent if app_bundle.parent.name == "Grade Calculator" else None
+        desktop_shortcut = Path.home() / "Desktop" / "Grade Calculator.app"
         script = script_root / "uninstall-grade-calculator.sh"
         script.write_text(
             "#!/bin/bash\n"
             "sleep 2\n"
-            f"rm -rf {shell_literal(app_bundle)} {shell_literal(data_dir)}\n",
+            f"rm -rf {shell_literal(app_bundle)} {shell_literal(data_dir)}\n"
+            + (f"rmdir {shell_literal(app_folder)} 2>/dev/null || true\n" if app_folder else "")
+            + f"if [ -L {shell_literal(desktop_shortcut)} ]; then rm -f {shell_literal(desktop_shortcut)}; fi\n",
             encoding="utf-8",
         )
         script.chmod(0o755)
@@ -501,6 +512,90 @@ def _stage_windows_replace(staged_exe: Path, version: str) -> None:
     )
 
 
+def _windows_installer_script(
+    *, installer: Path, marker: Path, log: Path, pid: int, version: str
+) -> str:
+    """PowerShell that waits for the app to exit, runs the Windows installer, and records its result."""
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$installer = {_ps_single_quote(str(installer))}",
+            f"$marker = {_ps_single_quote(str(marker))}",
+            f"$log = {_ps_single_quote(str(log))}",
+            f"$appPid = {int(pid)}",
+            f"$version = {_ps_single_quote(version)}",
+            "function Write-Status([string]$Status, [string]$Message) {",
+            "  $payload = [ordered]@{",
+            "    status = $Status",
+            "    message = $Message",
+            "    staged = $installer",
+            "    version = $version",
+            "    at = (Get-Date).ToUniversalTime().ToString('o')",
+            "  }",
+            "  ($payload | ConvertTo-Json) | Set-Content -LiteralPath $marker -Encoding UTF8",
+            "}",
+            "try {",
+            "  $deadline = (Get-Date).AddMinutes(2)",
+            "  while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {",
+            "    Start-Sleep -Seconds 1",
+            "  }",
+            "  $process = Start-Process -FilePath $installer -ArgumentList @('/SILENT', '/NORESTART') -Wait -PassThru",
+            "  if ($process.ExitCode -eq 0) {",
+            "    Write-Status 'applied' 'Update installed'",
+            "    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue",
+            "    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue",
+            "  } else {",
+            "    $message = \"The Grade Calculator installer exited with code $($process.ExitCode).\"",
+            "    Set-Content -LiteralPath $log -Value $message",
+            "    Write-Status 'failed' $message",
+            "  }",
+            "} catch {",
+            "  $message = $_.Exception.Message",
+            "  Set-Content -LiteralPath $log -Value $message",
+            "  Write-Status 'failed' $message",
+            "}",
+            "",
+        ]
+    )
+
+
+def _stage_windows_installer(installer: Path, version: str) -> None:
+    staging = installer.parent
+    log_path = staging / "apply.log"
+    marker = staging / "update-status.json"
+    script = staging / "run-installer.ps1"
+    pid = os.getpid()
+    write_update_status(
+        "pending",
+        version=version,
+        staged=str(installer),
+        destination=str(program_dir()),
+        message="Waiting to launch the installer…",
+    )
+    if log_path.is_file():
+        log_path.unlink(missing_ok=True)
+    script.write_text(
+        _windows_installer_script(
+            installer=installer,
+            marker=marker,
+            log=log_path,
+            pid=pid,
+            version=version,
+        ),
+        encoding="utf-8-sig",
+    )
+    _spawn_detached(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+        ]
+    )
+
+
 def _extract_macos_app(dmg: Path, staging_dir: Path) -> Path:
     mount = staging_dir / "dmg-mount"
     subprocess.run(["hdiutil", "detach", str(mount), "-quiet", "-force"], check=False)
@@ -517,7 +612,7 @@ def _extract_macos_app(dmg: Path, staging_dir: Path) -> Path:
         detail = (attach.stderr or attach.stdout or "").strip()
         raise RuntimeError(detail or "Could not mount the update disk image")
     try:
-        apps = [path for path in mount.iterdir() if path.suffix == ".app" and path.is_dir()]
+        apps = [path for path in mount.rglob("*.app") if path.is_dir()]
         if not apps:
             raise RuntimeError("The update disk image does not contain an app")
         staged = staging_dir / apps[0].name
@@ -632,7 +727,7 @@ def apply_update() -> dict:
 
     platform = current_platform()
     if platform == "windows":
-        _stage_windows_replace(staged, version)
+        _stage_windows_installer(staged, version)
     elif platform == "macos":
         _stage_macos_replace(staged, version)
     else:
