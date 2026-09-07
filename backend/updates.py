@@ -410,26 +410,51 @@ def _staging_dir() -> Path:
 
 
 def _spawn_detached(command: list[str]) -> None:
-    kwargs: dict = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
     if sys.platform == "win32":
-        flags = 0
-        flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        # The desktop app can be launched inside a Windows job object. Allow
-        # the update/uninstall helper to outlive the process that spawned it.
-        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
-        kwargs["creationflags"] = flags
-        # Avoid inheriting file handles that can keep the .exe locked on Windows.
-        kwargs["close_fds"] = True
-    else:
-        kwargs["start_new_session"] = True
-        kwargs["close_fds"] = True
-    subprocess.Popen(command, **kwargs)
+        # A directly spawned child can remain inside the desktop host's Windows
+        # job object and be terminated when the app exits. Ask WMI to create the
+        # helper outside that process tree and wait for WMI to acknowledge it
+        # before the API schedules the app shutdown.
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        powershell = str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        child_command = list(command)
+        if child_command and Path(child_command[0]).name.lower() == "powershell.exe":
+            child_command[0] = powershell
+        command_line = subprocess.list2cmdline(child_command)
+        broker = "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                "$processClass = [wmiclass]'Win32_Process'",
+                "$startupClass = [wmiclass]'Win32_ProcessStartup'",
+                "$startup = $startupClass.CreateInstance()",
+                "$startup.CreateFlags = 16777216",
+                "$startup.ShowWindow = 0",
+                f"$result = $processClass.Create({_ps_single_quote(command_line)}, $null, $startup)",
+                "if ($result.ReturnValue -ne 0) { throw \"Windows could not launch the update helper (code $($result.ReturnValue)).\" }",
+                "Write-Output $result.ProcessId",
+            ]
+        )
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", broker],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Unknown Windows process-launch error").strip()
+            raise RuntimeError(f"Could not start the update helper: {detail}")
+        return
+
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
 
 
 def _ps_single_quote(value: str) -> str:
@@ -709,6 +734,11 @@ def _stage_windows_installer(installer: Path, version: str) -> None:
             str(script),
         ]
     )
+    ready_deadline = time.monotonic() + 15
+    while not log_path.is_file() and time.monotonic() < ready_deadline:
+        time.sleep(0.1)
+    if not log_path.is_file():
+        raise RuntimeError("The Windows update helper did not start, so the app will remain open.")
 
 
 def _extract_macos_app(dmg: Path, staging_dir: Path) -> Path:

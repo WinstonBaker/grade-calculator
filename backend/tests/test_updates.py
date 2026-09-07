@@ -5,6 +5,7 @@ from pathlib import Path
 
 from backend.main import app
 from backend.updates import (
+    _spawn_detached,
     _validate_release_url,
     _windows_installer_script,
     _windows_apply_script,
@@ -20,6 +21,48 @@ from backend.updates import (
     should_show_update_toast,
     write_update_status,
 )
+
+
+def test_windows_detached_helper_uses_wmi_broker(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "4242\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr("backend.updates.sys.platform", "win32")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr("backend.updates.subprocess.run", fake_run)
+
+    _spawn_detached(["powershell.exe", "-NoProfile", "-File", r"C:\Updates\run-installer.ps1"])
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[0].lower().endswith("powershell.exe")
+    broker = command[-1]
+    assert "[wmiclass]'Win32_Process'" in broker
+    assert "$startup.CreateFlags = 16777216" in broker
+    assert "run-installer.ps1" in broker
+    assert kwargs["timeout"] == 20
+    assert kwargs["capture_output"] is True
+
+
+def test_windows_detached_helper_reports_broker_failure(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "WMI launch failed"
+
+    monkeypatch.setattr("backend.updates.sys.platform", "win32")
+    monkeypatch.setattr("backend.updates.subprocess.run", lambda *_args, **_kwargs: Result())
+
+    with pytest.raises(RuntimeError, match="WMI launch failed"):
+        _spawn_detached(["powershell.exe", "-File", r"C:\Updates\run-installer.ps1"])
 
 
 def test_parse_version():
