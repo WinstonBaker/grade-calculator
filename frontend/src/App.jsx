@@ -504,6 +504,7 @@ export default function App() {
   const [season, setSeason] = useState("fall");
   const [appearance, setAppearance] = useState(() => loadAppearance());
   const [gradebooks, setGradebooks] = useState(defaultGradebooks);
+  const gradebooksRef = useRef(gradebooks);
   const [gradebookMembers, setGradebookMembers] = useState({});
   const [gradebookAppearance, setGradebookAppearance] = useState({});
   const [minCredits, setMinCredits] = useState("1");
@@ -529,6 +530,10 @@ export default function App() {
     || gradebooks.find((item) => item.id === lastGradebookId)
     || gradebooks[0];
   const selectedGradebookId = selectedGradebook?.id || "gradebook-1";
+
+  useEffect(() => {
+    gradebooksRef.current = gradebooks;
+  }, [gradebooks]);
   const selectedSemester = query.get("term") || query.get("semester");
   gradePromptViewRef.current = {
     gradebookId: selectedGradebookId,
@@ -1080,13 +1085,13 @@ export default function App() {
           type: "persistent",
           tone: "info",
           title: "Grade progression",
-          message: "Record current grades for progression chart",
+          message: "Record current grades for the progression chart",
           dismissIcon: "zzz",
           dismissLabel: "Snooze",
           body: (
             <GradePromptSelect
-              gradebooks={gradebooks}
-              currentGradebookId={selectedGradebookId}
+            gradebooks={gradebooksRef.current}
+            currentGradebookId={currentView.gradebookId || selectedGradebookId}
               promptSemesters={status.semesters || []}
               promptAcademicPeriods={status.academic_periods || []}
               defaultId={status.default_semester_id}

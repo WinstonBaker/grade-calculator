@@ -442,8 +442,20 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
   const hideCreditColumns = periodMode || showUnits || classBasis || uniformCredits;
   const [expanded, setExpanded] = useState({});
   const passFailCourses = courses.filter((course) => course.credit_mode === "pass_fail");
-  const passFailCredits = passFailCourses.reduce((sum, course) => sum + (Number(course.credits) || 0), 0);
   const hasPassFail = passFailCourses.length > 0;
+  const passFailGroups = new Map();
+  passFailCourses.forEach((course) => {
+    const label = course.pass_fail_override || course.letter || "—";
+    const group = passFailGroups.get(label) || { label, courses: [], credit_hours: 0 };
+    group.courses.push(course);
+    group.credit_hours += Number(course.credits) || 0;
+    passFailGroups.set(label, group);
+  });
+  const passFailRows = [...passFailGroups.values()].map((group) => ({
+    ...group,
+    className: dashboardCourseGradeClass(group.courses[0]),
+  }));
+  const passFailCredits = passFailRows.reduce((sum, row) => sum + row.credit_hours, 0);
   const passFailLabels = new Set(
     passFailCourses
       .map((course) => course.pass_fail_override || course.letter)
@@ -452,20 +464,23 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
   // Pass/fail courses are rendered below with their configured labels (S/U,
   // or a custom pair). Do not also render the generic fallback row from an
   // older distribution payload, or the same courses are counted twice.
-  const rows = truncateDistribution(distribution).filter(
+  const rowsThroughPassFail = truncateDistribution(distribution).filter(
     (row) => !(hasPassFail && (row.letter === "Pass/Fail" || passFailLabels.has(row.letter)))
   );
+  // The distribution payload may include a populated pass/fail row after a
+  // run of empty standard-letter rows. Trim those empty rows after removing
+  // pass/fail so the pass/fail row can follow the lowest actual letter.
+  let lastStandardRow = -1;
+  rowsThroughPassFail.forEach((row, index) => {
+    if ((Number(row.credit_hours) || 0) > 0 || (Number(row.courses) || 0) > 0) lastStandardRow = index;
+  });
+  const rows = rowsThroughPassFail.slice(0, lastStandardRow + 1);
   if (!rows.length && !hasPassFail) return null;
-  const passFailPills = [...new Map(
-    passFailCourses
-      .map((course) => [course.pass_fail_override || course.letter || "—", course])
-      .map(([label, course]) => [label, { label, className: dashboardCourseGradeClass(course) }])
-  ).values()];
   const expandableRows = rows.filter((row) => courses.some((course) => course.letter === row.letter));
-  const passFailExpanded = !!expanded["Pass/Fail"];
+  const passFailKeys = passFailRows.map((row) => `Pass/Fail:${row.label}`);
   const expandableKeys = [
     ...expandableRows.map((row) => row.letter),
-    ...(hasPassFail ? ["Pass/Fail"] : []),
+    ...passFailKeys,
   ];
   const allExpanded = expandableKeys.length > 0 && expandableKeys.every((key) => expanded[key]);
   const tableCreditTotal = rows.reduce((sum, row) => sum + (Number(row.credit_hours) || 0), 0) + passFailCredits;
@@ -555,61 +570,61 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
             </Fragment>
           );
         })}
-        {hasPassFail ? (
-          <Fragment>
-            <tr>
-              <td>
-                {!simplified ? (
-                  <button
-                    className="table-row-chevron"
-                    type="button"
-                    onClick={() => setExpanded((current) => ({ ...current, "Pass/Fail": !current["Pass/Fail"] }))}
-                    aria-label={`${passFailExpanded ? "Collapse" : "Expand"} Pass/Fail classes`}
-                    aria-expanded={passFailExpanded}
-                  >
-                    ▸
-                  </button>
-                ) : null}
-                <span className="distribution-pass-fail-pills" aria-label="Attained Pass/Fail grades">
-                  {passFailPills.map((pill) => (
-                    <span className={`letter ${pill.className}`} key={pill.label}>{pill.label}</span>
-                  ))}
-                </span>
-              </td>
-              {showUnits ? <td className="mono">{fmtUnitValue(passFailCredits)}</td> : null}
-              {!hideCreditColumns ? <td className="mono">{fmtUnitValue(passFailCredits)}</td> : null}
-              {!hideCreditColumns ? <td className="mono">{fmtPct(tableCreditTotal ? (passFailCredits / tableCreditTotal) * 100 : 0, 1)}%</td> : null}
-              <td className="mono">{passFailCourses.length}</td>
-              <td className="mono">{fmtPct(tableCourseTotal ? (passFailCourses.length / tableCourseTotal) * 100 : 0, 1)}%</td>
-            </tr>
-            {!simplified && passFailExpanded ? (
-              <tr className="distribution-detail-row">
-                <td colSpan={showUnits ? 4 : (hideCreditColumns ? 3 : 5)}>
-                  <div className="distribution-course distribution-course-head">
-                    <span>Class</span>
-                    <span>Grade</span>
-                    <span>{periodMode ? "Period" : "Semester"}</span>
-                    {!periodMode ? <span>{creditTerms.label}</span> : null}
-                  </div>
-                  {passFailCourses.map((course) => (
-                    <div className="distribution-course" key={course.id}>
-                      <span>
-                        <Link to={courseHref?.(course) || `/courses/${course.id}`}>
-                          {displayCodes.get(course.id) || course.display_code || course.code || course.course_code || course.name || "Class"}
-                        </Link>
-                      </span>
-                      <span className="course-letter-display">
-                        <span className={`letter ${dashboardCourseGradeClass(course)}`}>{course.pass_fail_override || course.letter || "—"}</span>
-                      </span>
-                      <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
-                      {!periodMode ? <span className="mono">{fmtUnitValue(course.credits)}</span> : null}
-                    </div>
-                  ))}
+        {passFailRows.map((row) => {
+          const rowKey = `Pass/Fail:${row.label}`;
+          const isExpanded = !!expanded[rowKey];
+          return (
+            <Fragment key={rowKey}>
+              <tr>
+                <td>
+                  {!simplified ? (
+                    <button
+                      className="table-row-chevron"
+                      type="button"
+                      onClick={() => setExpanded((current) => ({ ...current, [rowKey]: !current[rowKey] }))}
+                      aria-label={`${isExpanded ? "Collapse" : "Expand"} ${row.label} classes`}
+                      aria-expanded={isExpanded}
+                    >
+                      ▸
+                    </button>
+                  ) : null}
+                  <span className={`letter ${row.className}`}>{row.label}</span>
                 </td>
+                {showUnits ? <td className="mono">{fmtUnitValue(row.credit_hours)}</td> : null}
+                {!hideCreditColumns ? <td className="mono">{fmtUnitValue(row.credit_hours)}</td> : null}
+                {!hideCreditColumns ? <td className="mono">{fmtPct(tableCreditTotal ? (row.credit_hours / tableCreditTotal) * 100 : 0, 1)}%</td> : null}
+                <td className="mono">{row.courses.length}</td>
+                <td className="mono">{fmtPct(tableCourseTotal ? (row.courses.length / tableCourseTotal) * 100 : 0, 1)}%</td>
               </tr>
-            ) : null}
-          </Fragment>
-        ) : null}
+              {!simplified && isExpanded ? (
+                <tr className="distribution-detail-row">
+                  <td colSpan={showUnits ? 4 : (hideCreditColumns ? 3 : 5)}>
+                    <div className="distribution-course distribution-course-head">
+                      <span>Class</span>
+                      <span>Grade</span>
+                      <span>{periodMode ? "Period" : "Semester"}</span>
+                      {!periodMode ? <span>{creditTerms.label}</span> : null}
+                    </div>
+                    {row.courses.map((course) => (
+                      <div className="distribution-course" key={course.id}>
+                        <span>
+                          <Link to={courseHref?.(course) || `/courses/${course.id}`}>
+                            {displayCodes.get(course.id) || course.display_code || course.code || course.course_code || course.name || "Class"}
+                          </Link>
+                        </span>
+                        <span className="course-letter-display">
+                          <span className={`letter ${dashboardCourseGradeClass(course)}`}>{course.pass_fail_override || course.letter || "—"}</span>
+                        </span>
+                        <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
+                        {!periodMode ? <span className="mono">{fmtUnitValue(course.credits)}</span> : null}
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          );
+        })}
       </tbody>
     </table>
   );

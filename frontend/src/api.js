@@ -450,14 +450,36 @@ function passFailCourseGradeClass(course, dashboard = false) {
       ? null
       : (rows.find((row) => Number(course.percent) >= Number(row.min_percent)) || rows.at(-1))?.label;
     const resolvedLabel = course.pass_fail_override ?? automaticLabel ?? course.letter;
+    const resolvedRow = rows.find((row) => row.label === resolvedLabel);
+    if (dashboard && resolvedRow) {
+      // Pass/fail settings mark the minimum passing row; every configured row
+      // at or above that threshold is also passing. Map those passing rows
+      // onto the course's actual letter scale so schools without A+ start at A.
+      const passingFloor = Number(config.min_percent ?? rows.find((row) => row.is_passing)?.min_percent ?? rows[0]?.min_percent ?? 70);
+      if (Number(resolvedRow.min_percent) >= passingFloor) {
+        const passingRows = rows.filter((row) => Number(row.min_percent) >= passingFloor);
+        const passingIndex = passingRows.findIndex((row) => row.label === resolvedLabel);
+        const scaleRows = (course.scale || [])
+          .filter((row) => row?.letter)
+          .slice()
+          .sort((a, b) => Number(b.quality_points) - Number(a.quality_points));
+        const fallbackLetters = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-"];
+        return letterClass(scaleRows[passingIndex]?.letter || fallbackLetters[passingIndex] || "F");
+      }
+      return "grade-f";
+    }
     const passingLabel = rows[0]?.label || "S";
     const failingLabel = rows.at(-1)?.label || "U";
+    if (course.pass_fail_override != null && resolvedRow) {
+      // An explicit pass/fail override represents the minimum percentage
+      // needed for that label, so color it using the corresponding letter
+      // grade instead of treating every passing override as A+.
+      return passFailToneClass(Number(resolvedRow.min_percent), config, course.scale) || "grade-f";
+    }
     if (resolvedLabel === passingLabel || resolvedLabel === "S") {
-      if (dashboard || course.pass_fail_override != null) return "grade-ap";
       return passFailToneClass(course.percent, config, course.scale) || "grade-ap";
     }
     if (resolvedLabel === failingLabel || resolvedLabel === "U") return "grade-f";
-    const resolvedRow = rows.find((row) => row.label === resolvedLabel);
     if (resolvedRow) return passFailToneClass(Number(resolvedRow.min_percent), config, course.scale);
     return passFailToneClass(course.percent, config, course.scale);
   }
@@ -469,7 +491,7 @@ export function courseGradeClass(course) {
   return passFailCourseGradeClass(course, false);
 }
 
-/** GPA dashboard grade color: pass/fail passes always use the A+ color. */
+/** GPA dashboard grade color: rank passing pass/fail rows on the active letter scale. */
 export function dashboardCourseGradeClass(course) {
   return passFailCourseGradeClass(course, true);
 }

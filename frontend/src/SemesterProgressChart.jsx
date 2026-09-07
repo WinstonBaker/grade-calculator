@@ -17,10 +17,11 @@ const COURSE_COLORS = [
 
 function mmdd(iso) {
   if (!iso) return "";
-  const date = new Date(iso);
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(String(iso)) ? String(iso) : `${iso}Z`;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return "";
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   return `${month}/${day}`;
 }
 
@@ -69,7 +70,7 @@ function parseSelectedKeys(keys) {
   return { course_points, gpa_snapshot_ids };
 }
 
-export default function SemesterProgressChart({ semesterId, locked = false, onLock, onToast, weightedGpa = false, currentGpa, currentWgpa }) {
+export default function SemesterProgressChart({ semesterId, locked = false, onLock, onToast, weightedGpa = false, currentGpa, currentWgpa, hasGpaOverrides = false }) {
   const [snapshots, setSnapshots] = useState([]);
   const [busy, setBusy] = useState(false);
   const [hover, setHover] = useState(null);
@@ -77,6 +78,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const [selected, setSelected] = useState(() => new Set());
   const [view, setView] = useState("classes");
   const [focused, setFocused] = useState(null);
+  const [finalPointRecordedAt, setFinalPointRecordedAt] = useState(null);
   const chartRef = useRef(null);
 
   useEffect(() => {
@@ -116,19 +118,17 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     }
   }, [weightedGpa, view]);
 
-  const displayedSnapshots = useMemo(() => {
-    if (!snapshots.length) return snapshots;
-    const latestIndex = snapshots.length - 1;
-    return snapshots.map((snapshot, index) => {
-      if (index !== latestIndex) return snapshot;
-      const latest = { ...snapshot };
-      // A checkpoint keeps its historical course points, while its latest
-      // summary follows the current term so weight-tag edits are visible.
-      if (currentGpa != null) latest.term_gpa = currentGpa;
-      if (currentWgpa != null) latest.term_wgpa = currentWgpa;
-      return latest;
-    });
-  }, [snapshots, currentGpa, currentWgpa]);
+  const hasFinalGpaValue = locked
+    && hasGpaOverrides
+    && [currentGpa, currentWgpa].some((value) => value != null && Number.isFinite(Number(value)));
+
+  useEffect(() => {
+    if (hasFinalGpaValue) {
+      setFinalPointRecordedAt((value) => value || new Date().toISOString());
+    } else {
+      setFinalPointRecordedAt(null);
+    }
+  }, [hasFinalGpaValue]);
 
   async function recordGrades() {
     if (!semesterId || busy || locked || deleting) return;
@@ -156,7 +156,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   function onPointClick(event, key, point) {
     event.stopPropagation();
     if (deleting) {
-      togglePoint(key);
+      if (key) togglePoint(key);
       return;
     }
     setFocused(point);
@@ -190,6 +190,32 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     }
   }
 
+  const width = 860;
+  const baseHeight = 300;
+  const maxHeight = 500;
+  const margin = { top: 20, right: 24, bottom: 54, left: 48 };
+  const plotWidth = width - margin.left - margin.right;
+  const showClasses = view === "classes";
+  const showWeighted = view === "wgpa";
+  const gpaLabel = showWeighted ? "WGPA" : "GPA";
+  const snapshotGpa = (snap) => (showWeighted ? snap.term_wgpa : snap.term_gpa);
+
+  // Progression points use the raw GPA/WGPA stored with each checkpoint.
+  // A locked semester with overrides also gets a temporary final point using
+  // the effective GPA, without creating a persisted/deletable snapshot.
+  const finalGpaSnapshot = !showClasses && hasFinalGpaValue && finalPointRecordedAt
+    ? {
+        id: "final-gpa",
+        // Keep the final point on the same calendar day as the latest
+        // recorded checkpoint rather than creating a new day on the axis.
+        recorded_at: snapshots.at(-1)?.recorded_at || finalPointRecordedAt,
+        term_gpa: currentGpa,
+        term_wgpa: currentWgpa,
+        isFinalGpa: true,
+      }
+    : null;
+  const displayedSnapshots = finalGpaSnapshot ? [...snapshots, finalGpaSnapshot] : snapshots;
+
   const series = useMemo(() => {
     const codes = new Map();
     for (const snap of displayedSnapshots) {
@@ -206,20 +232,11 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     return [...codes.values()];
   }, [displayedSnapshots]);
 
-  const width = 860;
-  const baseHeight = 300;
-  const maxHeight = 500;
-  const margin = { top: 20, right: 24, bottom: 54, left: 48 };
-  const plotWidth = width - margin.left - margin.right;
-  const showClasses = view === "classes";
-  const showWeighted = view === "wgpa";
-  const gpaLabel = showWeighted ? "WGPA" : "GPA";
-  const snapshotGpa = (snap) => (showWeighted ? snap.term_wgpa : snap.term_gpa);
-
   const percents = displayedSnapshots.flatMap((snap) =>
     (snap.courses || []).map((c) => c.percent).filter((n) => n != null && Number.isFinite(Number(n)))
   );
   const gpas = displayedSnapshots.map(snapshotGpa).filter((n) => n != null && Number.isFinite(Number(n)));
+  const hasRecordedValues = showClasses ? percents.length > 0 : gpas.length > 0;
   // Keep a small buffer around the actual plotted range, but do not clamp it
   // to 0–110: bonuses and other adjustments can legitimately put a grade
   // outside the usual percentage range.
@@ -251,7 +268,12 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const gpaMax = gpas.length ? Math.min(5, Math.ceil((Math.max(...gpas) + 0.1) * 4) / 4) : 4;
 
   const x = (index) =>
-    margin.left + (displayedSnapshots.length === 1 ? plotWidth / 2 : (index / (displayedSnapshots.length - 1)) * plotWidth);
+    margin.left + ((snapshots.length || displayedSnapshots.length) === 1
+      ? plotWidth / 2
+      : (index / ((snapshots.length || displayedSnapshots.length) - 1)) * plotWidth);
+  const pointX = (snap, index) => snap.isFinalGpa
+    ? x(Math.max(0, snapshots.length - 1))
+    : x(index);
   const yPct = (value) => margin.top + ((pctMax - value) / (pctMax - pctMin || 1)) * plotHeight;
   const yGpa = (value) => margin.top + ((gpaMax - value) / (gpaMax - gpaMin || 1)) * plotHeight;
 
@@ -294,7 +316,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
         segment = [];
         return;
       }
-      segment.push(`${x(index)},${yGpa(Number(gpa))}`);
+      segment.push(`${pointX(snap, index)},${yGpa(Number(gpa))}`);
     });
     if (segment.length) segments.push(segment.join(" "));
     return segments;
@@ -394,8 +416,8 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
         </div>
       </div>
 
-      {!snapshots.length ? (
-        <div className="grade-progress-empty">No recorded grades</div>
+      {!hasRecordedValues ? (
+        <div className="grade-progress-empty">No recorded values</div>
       ) : (
         <>
           <div className="gpa-trends-legend grade-progress-legend" aria-label="Chart legend">
@@ -407,10 +429,18 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                   </span>
                 ))
               : (
-                <span>
-                  <i className="gpa" />
-                  {gpaLabel}
-                </span>
+                <>
+                  <span>
+                    <i className="gpa" />
+                    {gpaLabel}
+                  </span>
+                  {finalGpaSnapshot ? (
+                    <span>
+                      <i className="final-gpa" />
+                      Final GPA
+                    </span>
+                  ) : null}
+                </>
               )}
           </div>
           <div className="gpa-trends-chart">
@@ -510,8 +540,8 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                 <g key={snap.id} className="grade-progress-point">
                   <line
                     className="gpa-trend-hit"
-                    x1={x(index)}
-                    x2={x(index)}
+                    x1={pointX(snap, index)}
+                    x2={pointX(snap, index)}
                     y1={margin.top}
                     y2={margin.top + plotHeight}
                     onMouseEnter={() => setHover(index)}
@@ -587,39 +617,45 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                       })
                     : snapshotGpa(snap) != null && Number.isFinite(Number(snapshotGpa(snap))) ? (
                       <circle
-                        className={`grade-progress-dot gpa ${gpaMarked || gpaFocused ? "is-selected" : ""}`}
-                        cx={x(index)}
+                        className={`grade-progress-dot gpa ${snap.isFinalGpa ? "final-gpa" : ""} ${gpaMarked || gpaFocused ? "is-selected" : ""}`}
+                        cx={pointX(snap, index)}
                         cy={yGpa(Number(snapshotGpa(snap)))}
                         r={gpaRadius}
                         tabIndex={0}
                         role="button"
-                        aria-label={`${gpaLabel} ${fmtGpa(snapshotGpa(snap))}`}
+                        aria-label={`${snap.isFinalGpa ? "Final GPA" : gpaLabel} ${fmtGpa(snapshotGpa(snap))}`}
                         onMouseEnter={() => setHover(index)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
-                            onPointClick(event, gpaKey(snap.id), {
+                            onPointClick(event, snap.isFinalGpa ? null : gpaKey(snap.id), {
                               kind: "gpa",
                               metric: showWeighted ? "wgpa" : "gpa",
                               snapshotId: snap.id,
                               recordedAt: snap.recorded_at,
                               value: Number(snapshotGpa(snap)),
+                              isFinalGpa: snap.isFinalGpa,
                             });
                           }
                         }}
                         onClick={(event) =>
-                          onPointClick(event, gpaKey(snap.id), {
+                          onPointClick(event, snap.isFinalGpa ? null : gpaKey(snap.id), {
                             kind: "gpa",
                             metric: showWeighted ? "wgpa" : "gpa",
                             snapshotId: snap.id,
                             recordedAt: snap.recorded_at,
                             value: Number(snapshotGpa(snap)),
+                            isFinalGpa: snap.isFinalGpa,
                           })
                         }
                       />
                     ) : null}
-                  <text className="gpa-trend-axis term" x={x(index)} y={height - 20} textAnchor="middle">
-                    {mmdd(snap.recorded_at)}
+                  <text className="gpa-trend-axis term" x={pointX(snap, index)} y={height - 20} textAnchor="middle">
+                    {snap.isFinalGpa
+                      ? mmdd(snap.recorded_at)
+                      : displayedSnapshots[index + 1]?.isFinalGpa
+                        ? ""
+                        : mmdd(snap.recorded_at)}
                   </text>
                 </g>
                 );
@@ -629,7 +665,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
           <div className="gpa-trends-detail" aria-live="polite">
             {focused ? (
               <>
-                <strong>{mmdd(focused.recordedAt)}</strong>
+                <strong>{focused.isFinalGpa ? "Final GPA" : mmdd(focused.recordedAt)}</strong>
                 <span>
                   {focused.kind === "gpa" ? (focused.metric === "wgpa" ? "WGPA" : "GPA") : focused.code}{" "}
                   <b className="mono">
@@ -639,7 +675,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
               </>
             ) : active ? (
               <>
-                <strong>{mmdd(active.recorded_at)}</strong>
+                <strong>{active.isFinalGpa ? "Final GPA" : mmdd(active.recorded_at)}</strong>
                 {showClasses ? (
                   (active.courses || [])
                     .filter((c) => c.percent != null)

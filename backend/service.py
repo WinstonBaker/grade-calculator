@@ -2542,10 +2542,13 @@ class NoGradesToRecordError(ValueError):
 
 def serialize_grade_snapshot(snapshot: GradeSnapshot) -> dict:
     courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
+    recorded_at = snapshot.recorded_at
+    if recorded_at is not None and recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
     return {
         "id": snapshot.id,
         "semester_id": snapshot.semester_id,
-        "recorded_at": snapshot.recorded_at.isoformat() if snapshot.recorded_at else None,
+        "recorded_at": recorded_at.isoformat() if recorded_at else None,
         "term_gpa": snapshot.term_gpa,
         "term_wgpa": snapshot.term_wgpa,
         "courses": courses,
@@ -2574,10 +2577,11 @@ def _snapshot_day(value) -> date | None:
             parsed = datetime.fromisoformat(str(value))
         except ValueError:
             return None
-    # The chart labels dates in UTC. Normalize aware legacy timestamps the
-    # same way before comparing points from different terms.
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc)
+    # Snapshot timestamps are stored in UTC, but recording and chart labels
+    # follow the user's local calendar date.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone()
     return parsed.date()
 
 
@@ -2700,7 +2704,7 @@ def record_grade_snapshot(
     if not courses:
         raise NoGradesToRecordError("No class grades to record")
     now = _utcnow()
-    today = now.date()
+    today = datetime.now().astimezone().date()
     snapshot = next(
         (
             row

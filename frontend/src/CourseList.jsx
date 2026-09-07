@@ -946,8 +946,9 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         }}
         onToast={(message) => warning(message)}
         weightedGpa={weightedGpa}
-        currentGpa={current.term_gpa}
-        currentWgpa={current.term_wgpa}
+        currentGpa={termGpa}
+        currentWgpa={termWgpa}
+        hasGpaOverrides={courses.some((course) => course.gp_override != null || course.pass_fail_override != null)}
       />
 
       <section id="exam-impact" className="panel" style={{ marginTop: 16 }}>
