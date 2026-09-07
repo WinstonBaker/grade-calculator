@@ -7250,6 +7250,10 @@ tbody tr {
   color: var(--muted);
 }
 
+.course-overridden-value {
+  font-style: italic;
+}
+
 .exam-impact-stats .label {
   white-space: nowrap;
   overflow: hidden;

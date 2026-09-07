@@ -835,10 +835,10 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                       {c.gp_override != null || c.pass_fail_override != null ? <span className="grade-override-marker" aria-label="Grade overridden">*</span> : null}
                     </span>
                   </td>
-                  <td className="mono">{fmtGpa(c.base_quality_points ?? c.natural_quality_points ?? c.quality_points)}</td>
+                  <td className={`mono ${c.gp_override != null || c.pass_fail_override != null ? "course-overridden-value" : ""}`.trim()}>{fmtGpa(c.gp_override === -1 ? null : c.gp_override ?? c.base_quality_points ?? c.natural_quality_points ?? c.quality_points)}</td>
                   {weightedGpa ? <td className={`mono ${isNeutralWeightedGp(c, c.base_quality_points ?? c.natural_quality_points ?? c.quality_points, weightedQualityPoints(c, isHighSchool)) ? "weighted-gp-neutral" : ""}`}>{fmtGpa(c.gp_override === -1 ? null : weightedQualityPoints(c, isHighSchool))}</td> : null}
                   {showScore ? (
-                    <td className={`mono ${scoreClass(c.score)}`}>{fmtScore(c.score)}</td>
+                    <td className={`mono ${scoreClass(c.score)} ${c.gp_override != null || c.pass_fail_override != null ? "course-overridden-value" : ""}`.trim()}>{fmtScore(c.score)}</td>
                   ) : null}
                   {!isHighSchool ? <td>
                     {(() => {
