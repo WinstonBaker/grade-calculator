@@ -255,7 +255,8 @@ def test_windows_installer_script_waits_for_app_and_records_result():
     assert "Test-LockedFile" in script
     assert "Stop-GradeCalculatorWebView" in script
     assert "Start-Process -FilePath $installer" in script
-    assert "'/SILENT', '/NORESTART'" in script
+    assert "'/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'" in script
+    assert "$process.WaitForExit()" in script
     assert "$executable = 'C:\\Users\\me\\AppData\\Local\\Programs\\Grade Calculator\\Grade Calculator.exe'" in script
     assert "Test-RunningExecutable" in script
     assert "Start-Process -FilePath $executable" in script

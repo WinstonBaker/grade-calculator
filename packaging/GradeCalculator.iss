@@ -1,6 +1,6 @@
 #define MyAppName "Grade Calculator"
 #ifndef MyAppVersion
-#define MyAppVersion "2.0.9"
+#define MyAppVersion "2.0.10"
 #endif
 #define MyAppPublisher "Winston Baker"
 #define MyAppURL "https://github.com/WinstonBaker/grade-calculator"
@@ -17,6 +17,7 @@ AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+DisableStartupPrompt=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
