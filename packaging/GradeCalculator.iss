@@ -1,6 +1,6 @@
 #define MyAppName "Grade Calculator"
 #ifndef MyAppVersion
-#define MyAppVersion "2.0.8"
+#define MyAppVersion "2.0.9"
 #endif
 #define MyAppPublisher "Winston Baker"
 #define MyAppURL "https://github.com/WinstonBaker/grade-calculator"
@@ -42,4 +42,4 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait

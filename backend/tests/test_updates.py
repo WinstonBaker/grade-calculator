@@ -257,6 +257,7 @@ def test_windows_installer_script_waits_for_app_and_records_result():
     assert "Start-Process -FilePath $installer" in script
     assert "'/SILENT', '/NORESTART'" in script
     assert "$executable = 'C:\\Users\\me\\AppData\\Local\\Programs\\Grade Calculator\\Grade Calculator.exe'" in script
+    assert "Test-RunningExecutable" in script
     assert "Start-Process -FilePath $executable" in script
     assert "Write-Status 'applied'" in script
     assert "Write-Status 'failed'" in script
