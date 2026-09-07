@@ -24,6 +24,7 @@ import {
 import { PassFailScaleEditor, ScaleRowsEditor } from "./ScaleEditor.jsx";
 import { Tooltip, useShowScore } from "./creditLabel.jsx";
 import { buildCourseDisplayCodes } from "./courseNames.js";
+import { sortSemesters } from "./seasons.js";
 
 function highSchoolAcademicYearKey(semester) {
   if (!semester) return "";
@@ -129,7 +130,7 @@ function categoryDraftFromCat(cat) {
         : "20",
     aggregation: cat?.aggregation || "average",
     dropCount: String(cat?.drop_count ?? 0),
-    replaceCount: String(cat?.replace_count ?? 1),
+    replaceCount: String(cat?.replace_with_category_id != null ? (cat.replace_count ?? 1) : 0),
     replaceWithCategoryId: cat?.replace_with_category_id ? String(cat.replace_with_category_id) : "",
   };
 }
@@ -378,7 +379,7 @@ function speculativeCategoryPercent(category, categories, seen = new Set()) {
       ? speculativeCategoryPercent(replacementCategory, categories, nextSeen)
       : null;
     const replacements = Math.min(
-      Math.max(Number(category.replace_count ?? 1) || 0, 0),
+      Math.max(Number(category.replace_count ?? 0) || 0, 0),
       scores.length,
     );
     if (replacement != null) {
@@ -502,6 +503,7 @@ function draftToPayload(draft) {
   const weightValue = Number.isFinite(pct) ? pct / 100 : 0;
   const drop = Number(draft.dropCount);
   const replace = Number(draft.replaceCount);
+  const replaceCount = Number.isFinite(replace) && replace >= 0 ? Math.floor(replace) : 0;
   const perItem = draft.weightMode === "per_item";
   return {
     name: draft.name.trim(),
@@ -509,8 +511,8 @@ function draftToPayload(draft) {
     weight_per_item: perItem ? weightValue : null,
     aggregation: draft.aggregation,
     drop_count: Number.isFinite(drop) && drop >= 0 ? Math.floor(drop) : 0,
-    replace_count: Number.isFinite(replace) && replace >= 0 ? Math.floor(replace) : 1,
-    replace_with_category_id: draft.replaceWithCategoryId ? Number(draft.replaceWithCategoryId) : null,
+    replace_count: replaceCount,
+    replace_with_category_id: replaceCount > 0 && draft.replaceWithCategoryId ? Number(draft.replaceWithCategoryId) : null,
   };
 }
 
@@ -626,7 +628,7 @@ function ClassLabelsPicker({ course, classLabels, selectedLabels, onLabelsChange
   );
 }
 
-export default function Gradebook({ onChange, colorAssignmentGrades = true, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, colorFlaggedAssignments = false, readableTextBackground = true, gradebookId = "default", speculationMode = false, onSpeculationSummaryChange, highSchoolMode = false, academicPeriodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false }) {
+export default function Gradebook({ onChange, colorAssignmentGrades = true, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, colorFlaggedAssignments = false, readableTextBackground = true, gradebookId = "default", semesterTitles = [], speculationMode = false, onSpeculationSummaryChange, highSchoolMode = false, academicPeriodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false }) {
   const showScore = useShowScore();
   const { warning, push } = useToasts();
   const { id } = useParams();
@@ -700,11 +702,12 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
 
   async function load() {
     const [c, s, m, allCourses] = await Promise.all([api.course(id), api.semesters(), api.meta(), api.courses()]);
-    const displayCodes = buildCourseDisplayCodes(s, allCourses);
+    const orderedSemesters = highSchoolMode ? s : sortSemesters(s, semesterTitles);
+    const displayCodes = buildCourseDisplayCodes(orderedSemesters, allCourses, semesterTitles);
     setCourse({ ...c, display_code: displayCodes.get(c.id) || c.display_code });
     setAllCourses(allCourses);
     setCreditsDraft(String(c.credits ?? ""));
-    setSemesters(s);
+    setSemesters(orderedSemesters);
     setProfiles(m.scale_profiles || []);
     setPresets(m.scale_presets || []);
     const ids = Array.isArray(m.aggregations) && m.aggregations.length ? m.aggregations : ["average", "points_ratio"];
@@ -714,7 +717,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
 
   useEffect(() => {
     load().catch((err) => setError(err.message));
-  }, [id]);
+  }, [highSchoolMode, id, semesterTitles]);
 
   function relatedHighSchoolCourses() {
     if (!highSchoolMode || !course) return [course].filter(Boolean);
@@ -1487,7 +1490,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
             </div>
             {flaggedItems.length ? (
               <div className="gradebook-flag-summary">
-                <FlagSummaryButton items={flaggedItems} flags={flags} />
+                <FlagSummaryButton items={flaggedItems} flags={flags} gradebookId={gradebookId} />
               </div>
             ) : null}
           </div>

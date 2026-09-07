@@ -1017,7 +1017,7 @@ def course_to_input(course: Course) -> CourseInput:
                 weight_per_item=cat.weight_per_item,
                 aggregation=cat.aggregation,
                 drop_count=cat.drop_count or 0,
-                replace_count=cat.replace_count or 1,
+                replace_count=cat.replace_count or 0,
                 include_bonus=bool(cat.include_bonus),
                 is_bonus_category=bool(cat.is_bonus_category),
                 replace_with_category_id=cat.replace_with_category_id,
@@ -1598,7 +1598,7 @@ def serialize_course(
                     else cat.aggregation
                 ),
                 "drop_count": cat.drop_count or 0,
-                "replace_count": cat.replace_count or 1,
+                "replace_count": cat.replace_count or 0,
                 "include_bonus": bool(cat.include_bonus),
                 "is_bonus_category": bool(cat.is_bonus_category),
                 "replace_with_category_id": cat.replace_with_category_id,
@@ -2074,12 +2074,20 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         weighted_entries = ((item["final"], item["units"]) for item in weighted_courses if item["final"] is not None)
         for item in weighted_courses:
             final = item.get("final")
-            if final is not None:
-                weighted_course_info[final["id"]] = {
-                    "course": final,
+            representative = ((item.get("entries") or [{}])[0].get("course") or {})
+            actual_course = final or representative
+            if actual_course:
+                info = {
+                    "course": actual_course,
                     "units": float(item.get("units") or 0),
                     "boost": float(item.get("weight_boost") or 0),
                 }
+                for entry in item.get("entries") or []:
+                    entry_course_id = entry.get("course", {}).get("id")
+                    if entry_course_id is not None:
+                        weighted_course_info[entry_course_id] = info
+                if final is not None:
+                    weighted_course_info[final["id"]] = info
     else:
         weighted_entries = (
             (course, 1.0 if gpa_basis == "classes" else float(course.get("credits") or 0))
@@ -2145,7 +2153,6 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
 
     fumble_rows = []
     fumble_total = 0
-    fumble_excluded_credits = 0
     fumble_credits_delta = 0
     weighted_fumble_units_delta = 0.0
     weighted_fumble_points_delta = 0.0
@@ -2178,24 +2185,27 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         if not course:
             continue
         weighted_info = weighted_course_info.get(fumble.course_id)
-        # A high-school class can have no grade on its term row while its
-        # final/overall grade is supplied by final_gp_override.  Fumbles are
-        # calculated against that overall class result, so keep it eligible
-        # when the weighted rollup has a final entry.
-        if course["quality_points"] is None and weighted_info is None:
-            continue
-        overall_course = weighted_info["course"] if weighted_info else course
+        overall_course = (weighted_info or {}).get("course") or course
         score_quality_points = (
-            overall_course.get("base_quality_points", overall_course["quality_points"])
+            overall_course.get("base_quality_points", overall_course.get("quality_points"))
             if gradebook_type == "high_school"
-            else overall_course["quality_points"]
+            else overall_course.get("quality_points")
         )
         fumble_units = (
             weighted_info["units"]
             if gradebook_type == "high_school" and weighted_info is not None
             else (1.0 if gpa_basis == "classes" else course["credits"])
         )
-        weighted_quality_points = float(score_quality_points) + float(weighted_info["boost"] if weighted_info else 0)
+        weighted_boost = float(
+            weighted_info["boost"]
+            if weighted_info is not None
+            else course.get("gpa_weight_boost") or 0
+        )
+        weighted_quality_points = (
+            float(score_quality_points) + weighted_boost
+            if score_quality_points is not None
+            else None
+        )
         term = course_term.get(fumble.course_id) or {}
         explicit_excluded = fumble.should_have_been_gp is None
         original_key = term_keys.get(term.get("id"))
@@ -2218,11 +2228,14 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             # Not taking the class removes its original contribution, so its
             # score delta is the score recovered by removing it.
             if fumble.course_id in included_course_ids:
-                delta = (
-                    -round(3 * (float(score_quality_points) - target_gp)) * float(fumble_units)
-                    if gradebook_type == "high_school"
-                    else -(course.get("score") or 0)
-                )
+                if score_quality_points is None:
+                    delta = 0
+                else:
+                    delta = (
+                        -round(3 * (float(score_quality_points) - target_gp)) * float(fumble_units)
+                        if gradebook_type == "high_school"
+                        else -(course.get("score") or 0)
+                    )
             else:
                 delta = None
         else:
@@ -2234,19 +2247,33 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
                 target_gp,
             )
         if excluded and fumble.course_id in included_course_ids:
-            basis_units = fumble_units
-            fumble_excluded_credits += basis_units
-            fumble_credits_delta -= basis_units
-            weighted_fumble_units_delta -= float(weighted_info["units"] if weighted_info else basis_units)
-            weighted_fumble_points_delta -= float(weighted_info["units"] if weighted_info else basis_units) * weighted_quality_points
-        elif not excluded and fumble.should_have_been_gp is not None and weighted_info:
-            weighted_fumble_points_delta += float(weighted_info["units"]) * (
-                float(fumble.should_have_been_gp) + float(weighted_info["boost"]) - weighted_quality_points
-            )
+            if score_quality_points is not None:
+                basis_units = fumble_units
+                fumble_credits_delta -= basis_units
+                weighted_fumble_units_delta -= float(weighted_info["units"] if weighted_info else basis_units)
+                if weighted_quality_points is not None:
+                    weighted_fumble_points_delta -= float(weighted_info["units"] if weighted_info else basis_units) * weighted_quality_points
+        elif not excluded and fumble.should_have_been_gp is not None and (
+            fumble.course_id in included_course_ids
+            # An ungraded class has no current GPA contribution. Selecting a
+            # hypothetical grade makes its units part of the adjusted GPA,
+            # even when the class's term is not currently included.
+            or score_quality_points is None
+        ):
+            if score_quality_points is None:
+                fumble_credits_delta += fumble_units
+                weighted_fumble_units_delta += float(fumble_units)
+                weighted_fumble_points_delta += float(fumble_units) * (
+                    float(fumble.should_have_been_gp) + weighted_boost
+                )
+            elif weighted_info:
+                weighted_fumble_points_delta += float(weighted_info["units"]) * (
+                    float(fumble.should_have_been_gp) + weighted_boost - weighted_quality_points
+                )
         if delta is not None:
             fumble_total += delta
         gpa_delta = None
-        if not excluded and fumble.should_have_been_gp is not None:
+        if not excluded and fumble.should_have_been_gp is not None and score_quality_points is not None:
             gpa_delta = float(fumble.should_have_been_gp) - float(score_quality_points)
         fumble_rows.append(
             {
@@ -2265,7 +2292,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             }
         )
 
-    adjusted_fumble_credits = max(0, gpa_credits - fumble_excluded_credits)
+    adjusted_fumble_credits = max(0, gpa_credits + fumble_credits_delta)
     score_with = overall_score + fumble_total
     gpa_with = (
         cap_gpa(overall_gpa_from_score(score_with, adjusted_fumble_credits, target_gp), settings.gpa_cap)
@@ -2361,8 +2388,11 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         "high_school_period_scores": overall_period_scores,
         "overall_classes": [
             {
-                "id": item["final"].get("id") if item["final"] is not None else None,
-                "code": item["final"].get("code") if item["final"] is not None else None,
+                # Keep an identifiable representative course even before a
+                # multi-term class has a final grade, so it can be used by
+                # the fumble planner.
+                "id": item["final"].get("id") if item["final"] is not None else ((item.get("entries") or [{}])[0].get("course") or {}).get("id"),
+                "code": item["final"].get("code") if item["final"] is not None else ((item.get("entries") or [{}])[0].get("course") or {}).get("code"),
                 "occurrence": item.get("occurrence"),
                 "period": item.get("period"),
                 "units": item.get("units"),

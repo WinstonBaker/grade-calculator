@@ -1130,6 +1130,8 @@ def create_category(body: CategoryCreate, db: Session = Depends(get_db)):
         include_bonus=body.include_bonus,
         replace_with_category_id=body.replace_with_category_id,
     )
+    replace_count = max(int(body.replace_count or 0), 0)
+    replace_with_category_id = policy.replace_with_category_id if replace_count > 0 else None
     order = len(course.categories)
     cat = Category(
         course_id=body.course_id,
@@ -1138,10 +1140,10 @@ def create_category(body: CategoryCreate, db: Session = Depends(get_db)):
         weight_per_item=body.weight_per_item,
         aggregation=policy.aggregation,
         drop_count=policy.drop_count,
-        replace_count=body.replace_count,
+        replace_count=replace_count,
         include_bonus=policy.include_bonus,
         is_bonus_category=body.is_bonus_category,
-        replace_with_category_id=policy.replace_with_category_id,
+        replace_with_category_id=replace_with_category_id,
         sort_order=order,
     )
     db.add(cat)
@@ -1172,7 +1174,7 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
     if course.grading_mode == "points" and not cat.is_bonus_category:
         aggregation = "points_ratio"
     drop_count = body.drop_count if body.drop_count is not None else cat.drop_count
-    replace_count = body.replace_count if body.replace_count is not None else (cat.replace_count or 1)
+    replace_count = body.replace_count if body.replace_count is not None else (cat.replace_count or 0)
     include_bonus = body.include_bonus if "include_bonus" in body.model_fields_set else bool(cat.include_bonus)
     is_bonus_category = (
         body.is_bonus_category
@@ -1213,7 +1215,7 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
     cat.replace_count = max(int(replace_count or 0), 0)
     cat.include_bonus = policy.include_bonus
     cat.is_bonus_category = is_bonus_category
-    cat.replace_with_category_id = policy.replace_with_category_id
+    cat.replace_with_category_id = policy.replace_with_category_id if cat.replace_count > 0 else None
     db.commit()
     return _course_payload(db, cat.course_id)
 

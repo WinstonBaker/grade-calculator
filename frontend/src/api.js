@@ -540,7 +540,7 @@ export function replaceMinWithPercent(cat, replacement) {
   const scores = [...regular].sort((a, b) => b - a).slice(0, keep);
   const exam = Number(replacement);
   const replacements = Math.min(
-    Math.max(Number(cat.replace_count ?? 1) || 0, 0),
+    Math.max(Number(cat.replace_count ?? 0) || 0, 0),
     scores.length,
   );
   for (let index = 0; index < replacements; index += 1) {

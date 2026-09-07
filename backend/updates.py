@@ -420,6 +420,9 @@ def _spawn_detached(command: list[str]) -> None:
         flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        # The desktop app can be launched inside a Windows job object. Allow
+        # the update/uninstall helper to outlive the process that spawned it.
+        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
         kwargs["creationflags"] = flags
         # Avoid inheriting file handles that can keep the .exe locked on Windows.
         kwargs["close_fds"] = True
@@ -578,6 +581,7 @@ def _windows_installer_script(
     log: Path,
     pid: int,
     version: str,
+    executable: Path,
     webview_dir: Path | None = None,
 ) -> str:
     """PowerShell that waits for the app to exit, runs the Windows installer, and records its result."""
@@ -589,6 +593,7 @@ def _windows_installer_script(
             f"$log = {_ps_single_quote(str(log))}",
             f"$appPid = {int(pid)}",
             f"$version = {_ps_single_quote(version)}",
+            f"$executable = {_ps_single_quote(str(executable))}",
             f"$webviewDir = {_ps_single_quote(str(webview_dir))}" if webview_dir else "$webviewDir = $null",
             "function Write-Status([string]$Status, [string]$Message) {",
             "  $payload = [ordered]@{",
@@ -619,6 +624,7 @@ def _windows_installer_script(
             "    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }",
             "}",
             "try {",
+            "  Set-Content -LiteralPath $log -Value 'Update helper started' -Encoding UTF8",
             "  $deadline = (Get-Date).AddMinutes(2)",
             "  while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {",
             "    Start-Sleep -Seconds 1",
@@ -641,6 +647,7 @@ def _windows_installer_script(
             "  $process = Start-Process -FilePath $installer -ArgumentList @('/SILENT', '/NORESTART') -Wait -PassThru",
             "  if ($process.ExitCode -eq 0) {",
             "    Write-Status 'applied' 'Update installed'",
+            "    Start-Process -FilePath $executable -WorkingDirectory (Split-Path -Parent $executable) -ErrorAction Stop",
             "    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue",
             "    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue",
             "  } else {",
@@ -680,6 +687,7 @@ def _stage_windows_installer(installer: Path, version: str) -> None:
             log=log_path,
             pid=pid,
             version=version,
+            executable=Path(sys.executable).resolve(),
             webview_dir=user_data_dir() / "webview",
         ),
         encoding="utf-8-sig",

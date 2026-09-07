@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtGpa, fmtPct } from "./api";
 import { Tooltip } from "./creditLabel.jsx";
 
@@ -32,6 +32,25 @@ function gpaKey(snapshotId) {
   return `g:${snapshotId}`;
 }
 
+function overlapSegmentPath(cx, cy, outerRadius, innerRadius, startAngle, endAngle) {
+  const point = (radius, angle) => ({
+    x: cx + radius * Math.cos(angle),
+    y: cy + radius * Math.sin(angle),
+  });
+  const outerStart = point(outerRadius, startAngle);
+  const outerEnd = point(outerRadius, endAngle);
+  const innerEnd = point(innerRadius, endAngle);
+  const innerStart = point(innerRadius, startAngle);
+  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+  return [
+    `M ${outerStart.x} ${outerStart.y}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+    `L ${innerEnd.x} ${innerEnd.y}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+    "Z",
+  ].join(" ");
+}
+
 function notifySnapshotUpdate() {
   window.dispatchEvent(new CustomEvent("grade-snapshots-updated"));
 }
@@ -58,6 +77,16 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const [selected, setSelected] = useState(() => new Set());
   const [view, setView] = useState("classes");
   const [focused, setFocused] = useState(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!focused) return undefined;
+    function clearOutsideChart(event) {
+      if (!chartRef.current?.contains(event.target)) setFocused(null);
+    }
+    document.addEventListener("click", clearOutsideChart);
+    return () => document.removeEventListener("click", clearOutsideChart);
+  }, [focused]);
 
   async function load() {
     if (!semesterId) return;
@@ -178,10 +207,10 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   }, [displayedSnapshots]);
 
   const width = 860;
-  const height = 300;
+  const baseHeight = 300;
+  const maxHeight = 500;
   const margin = { top: 20, right: 24, bottom: 54, left: 48 };
   const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
   const showClasses = view === "classes";
   const showWeighted = view === "wgpa";
   const gpaLabel = showWeighted ? "WGPA" : "GPA";
@@ -191,8 +220,33 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     (snap.courses || []).map((c) => c.percent).filter((n) => n != null && Number.isFinite(Number(n)))
   );
   const gpas = displayedSnapshots.map(snapshotGpa).filter((n) => n != null && Number.isFinite(Number(n)));
+  // Keep a small buffer around the actual plotted range, but do not clamp it
+  // to 0–110: bonuses and other adjustments can legitimately put a grade
+  // outside the usual percentage range.
   const pctMin = percents.length ? Math.max(0, Math.floor(Math.min(...percents) / 5) * 5 - 5) : 0;
-  const pctMax = percents.length ? Math.min(110, Math.ceil(Math.max(...percents) / 5) * 5 + 5) : 100;
+  const pctDataMax = percents.length ? Math.max(0, Math.max(...percents)) : 100;
+  const allowedMajorSteps = [1, 2, 4, 5, 10, 20, 25];
+  const pctCharHeight = 11;
+  const minimumLabelPitch = pctCharHeight * 2;
+  const maximumPlotHeight = maxHeight - margin.top - margin.bottom;
+  const pctMajorStep = allowedMajorSteps.find((step) => {
+    // Keep the tick sequence anchored to global zero-based multiples so 100
+    // stays aligned whenever it falls inside the visible range. Add one
+    // complete major interval above the next major point after the highest
+    // grade (e.g. 97 -> 105 with a 5 step).
+    const candidateMax = Math.ceil(pctDataMax / step) * step + step;
+    const candidateRange = Math.max(1, candidateMax - pctMin);
+    const requiredPlotHeight = (candidateRange / step) * minimumLabelPitch;
+    return requiredPlotHeight <= maximumPlotHeight;
+  }) || allowedMajorSteps[allowedMajorSteps.length - 1];
+  const pctMax = Math.ceil(pctDataMax / pctMajorStep) * pctMajorStep + pctMajorStep;
+  const pctRange = Math.max(1, pctMax - pctMin);
+  const pctMinorStep = pctMajorStep / 2;
+  const requiredPlotHeight = (pctRange / pctMajorStep) * minimumLabelPitch;
+  const height = showClasses
+    ? Math.min(maxHeight, Math.max(baseHeight, Math.ceil(margin.top + margin.bottom + requiredPlotHeight)))
+    : baseHeight;
+  const plotHeight = height - margin.top - margin.bottom;
   const gpaMin = gpas.length ? Math.max(0, Math.floor((Math.min(...gpas) - 0.1) * 4) / 4) : 0;
   const gpaMax = gpas.length ? Math.min(5, Math.ceil((Math.max(...gpas) + 0.1) * 4) / 4) : 4;
 
@@ -202,8 +256,11 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const yGpa = (value) => margin.top + ((gpaMax - value) / (gpaMax - gpaMin || 1)) * plotHeight;
 
   const pctTicks = [];
-  for (let value = pctMin; value <= pctMax + 1e-8; value += Math.max(5, Math.round((pctMax - pctMin) / 5) || 5)) {
-    pctTicks.push(value);
+  const firstPctTick = Math.ceil((pctMin - 1e-8) / pctMinorStep) * pctMinorStep;
+  for (let value = firstPctTick; value <= pctMax + 1e-8; value += pctMinorStep) {
+    const tick = Number(value.toFixed(6));
+    const major = Math.abs(tick / pctMajorStep - Math.round(tick / pctMajorStep)) < 1e-8;
+    pctTicks.push({ value: tick, major });
   }
   const gpaTicks = [];
   const gpaStep = 0.125;
@@ -254,7 +311,16 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
         : `${gpaLabel} over recorded checkpoints. Click a point to see its score.`;
 
   return (
-    <section className={`panel grade-progress ${deleting ? "is-deleting" : ""}`} aria-label="Grade progression">
+    <section
+      ref={chartRef}
+      className={`panel grade-progress ${deleting ? "is-deleting" : ""}`}
+      aria-label="Grade progression"
+      onClick={(event) => {
+        if (!event.target.closest?.(".grade-progress-dot, .grade-progress-overlap-segment")) {
+          setFocused(null);
+        }
+      }}
+    >
       <div className="gpa-trends-head">
         <div>
           <div className="tooltip-heading">
@@ -356,17 +422,19 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
             >
               {showClasses
                 ? pctTicks.map((tick) => (
-                    <g key={`pct-${tick}`}>
+                    <g key={`pct-${tick.value}`}>
                       <line
-                        className="gpa-trend-grid"
+                        className={`gpa-trend-grid ${tick.major ? "grade-progress-major-grid" : "grade-progress-minor-grid"}`}
                         x1={margin.left}
                         x2={width - margin.right}
-                        y1={yPct(tick)}
-                        y2={yPct(tick)}
+                        y1={yPct(tick.value)}
+                        y2={yPct(tick.value)}
                       />
-                      <text className="gpa-trend-axis" x={margin.left - 10} y={yPct(tick) + 4} textAnchor="end">
-                        {tick}
-                      </text>
+                      {tick.major ? (
+                        <text className="gpa-trend-axis" x={margin.left - 10} y={yPct(tick.value) + 4} textAnchor="end">
+                          {tick.value}
+                        </text>
+                      ) : null}
                     </g>
                   ))
                 : gpaTicks.map((tick) => (
@@ -400,6 +468,44 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                 const gpaMarked = selected.has(gpaKey(snap.id));
                 const gpaFocused = focused?.kind === "gpa" && focused.snapshotId === snap.id;
                 const gpaRadius = gpaMarked || gpaFocused || hover === index ? 8 : 6.5;
+                const coursePoints = showClasses
+                  ? series.map((item) => {
+                      const course = (snap.courses || []).find((row) => row.course_id === item.courseId);
+                      if (course?.percent == null || !Number.isFinite(Number(course.percent))) return null;
+                      const value = Number(course.percent);
+                      const key = courseKey(snap.id, item.courseId);
+                      const focusPoint = {
+                        kind: "course",
+                        snapshotId: snap.id,
+                        courseId: item.courseId,
+                        code: item.code,
+                        recordedAt: snap.recorded_at,
+                        value,
+                      };
+                      return {
+                        item,
+                        value,
+                        key,
+                        focusPoint,
+                        marked: selected.has(key),
+                        focused: focused?.kind === "course"
+                          && focused.snapshotId === snap.id
+                          && focused.courseId === item.courseId,
+                      };
+                    }).filter(Boolean)
+                  : [];
+                const courseGroups = [];
+                const groupsByValue = new Map();
+                coursePoints.forEach((point) => {
+                  const groupKey = point.value.toFixed(6);
+                  let group = groupsByValue.get(groupKey);
+                  if (!group) {
+                    group = { value: point.value, points: [] };
+                    groupsByValue.set(groupKey, group);
+                    courseGroups.push(group);
+                  }
+                  group.points.push(point);
+                });
                 return (
                 <g key={snap.id} className="grade-progress-point">
                   <line
@@ -411,36 +517,72 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                     onMouseEnter={() => setHover(index)}
                   />
                   {showClasses
-                    ? series.map((item) => {
-                        const course = (snap.courses || []).find((row) => row.course_id === item.courseId);
-                        if (course?.percent == null || !Number.isFinite(Number(course.percent))) return null;
-                        const key = courseKey(snap.id, item.courseId);
-                        const marked = selected.has(key);
-                        const isFocused =
-                          focused?.kind === "course"
-                          && focused.snapshotId === snap.id
-                          && focused.courseId === item.courseId;
-                        const radius = marked || isFocused || hover === index ? 8 : 6.5;
+                    ? courseGroups.map((group) => {
+                        const cx = x(index);
+                        const cy = yPct(group.value);
+                        if (group.points.length === 1) {
+                          const point = group.points[0];
+                          const radius = point.marked || point.focused || hover === index ? 8 : 6.5;
+                          return (
+                            <circle
+                              key={point.item.courseId}
+                              className={`grade-progress-dot ${point.marked || point.focused ? "is-selected" : ""}`}
+                              cx={cx}
+                              cy={cy}
+                              r={radius}
+                              fill={point.item.color}
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`${point.item.code} ${fmtPct(point.value)}`}
+                              onMouseEnter={() => setHover(index)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  onPointClick(event, point.key, point.focusPoint);
+                                }
+                              }}
+                              onClick={(event) => onPointClick(event, point.key, point.focusPoint)}
+                            />
+                          );
+                        }
+                        const outerRadius = group.points.some((point) => point.marked || point.focused) || hover === index ? 10 : 8.5;
+                        const innerRadius = 3.5;
                         return (
-                          <circle
-                            key={item.courseId}
-                            className={`grade-progress-dot ${marked || isFocused ? "is-selected" : ""}`}
-                            cx={x(index)}
-                            cy={yPct(Number(course.percent))}
-                            r={radius}
-                            fill={item.color}
-                            onMouseEnter={() => setHover(index)}
-                            onClick={(event) =>
-                              onPointClick(event, key, {
-                                kind: "course",
-                                snapshotId: snap.id,
-                                courseId: item.courseId,
-                                code: item.code,
-                                recordedAt: snap.recorded_at,
-                                value: Number(course.percent),
-                              })
-                            }
-                          />
+                          <g
+                            key={`overlap-${group.value}`}
+                            className="grade-progress-overlap"
+                            aria-label={`${mmdd(snap.recorded_at)}: ${group.points.map((point) => `${point.item.code} ${fmtPct(point.value)}`).join(", ")}`}
+                          >
+                            <title>
+                              {group.points.map((point) => `${point.item.code}: ${fmtPct(point.value)}`).join("; ")}
+                            </title>
+                            <circle className="grade-progress-overlap-center" cx={cx} cy={cy} r={innerRadius} />
+                            {group.points.map((point, pointIndex) => {
+                              const slice = (Math.PI * 2) / group.points.length;
+                              const gap = Math.min(0.035, slice / 8);
+                              const startAngle = -Math.PI / 2 + pointIndex * slice + gap;
+                              const endAngle = -Math.PI / 2 + (pointIndex + 1) * slice - gap;
+                              return (
+                                <path
+                                  key={point.item.courseId}
+                                  className={`grade-progress-overlap-segment ${point.marked || point.focused ? "is-selected" : ""}`}
+                                  d={overlapSegmentPath(cx, cy, outerRadius, innerRadius, startAngle, endAngle)}
+                                  fill={point.item.color}
+                                  tabIndex={0}
+                                  role="button"
+                                  aria-label={`${point.item.code} ${fmtPct(point.value)}`}
+                                  onMouseEnter={() => setHover(index)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      onPointClick(event, point.key, point.focusPoint);
+                                    }
+                                  }}
+                                  onClick={(event) => onPointClick(event, point.key, point.focusPoint)}
+                                />
+                              );
+                            })}
+                          </g>
                         );
                       })
                     : snapshotGpa(snap) != null && Number.isFinite(Number(snapshotGpa(snap))) ? (
@@ -449,7 +591,22 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                         cx={x(index)}
                         cy={yGpa(Number(snapshotGpa(snap)))}
                         r={gpaRadius}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`${gpaLabel} ${fmtGpa(snapshotGpa(snap))}`}
                         onMouseEnter={() => setHover(index)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onPointClick(event, gpaKey(snap.id), {
+                              kind: "gpa",
+                              metric: showWeighted ? "wgpa" : "gpa",
+                              snapshotId: snap.id,
+                              recordedAt: snap.recorded_at,
+                              value: Number(snapshotGpa(snap)),
+                            });
+                          }
+                        }}
                         onClick={(event) =>
                           onPointClick(event, gpaKey(snap.id), {
                             kind: "gpa",

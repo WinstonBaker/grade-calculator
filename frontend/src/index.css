@@ -4827,7 +4827,7 @@ th button.active {
   width: 100%;
   margin-top: 10px;
   border: 0;
-  table-layout: auto;
+  table-layout: fixed;
   border-collapse: collapse;
 }
 
@@ -4839,7 +4839,7 @@ th button.active {
 
 .semester-titles-table th:first-child,
 .semester-titles-table td:first-child {
-  width: 1%;
+  width: auto;
   white-space: nowrap;
 }
 
@@ -4851,18 +4851,22 @@ th button.active {
 
 .semester-titles-table th:nth-child(2),
 .semester-titles-table td:nth-child(2) {
-  width: 108px;
+  width: 132px;
+  min-width: 132px;
+  text-align: center;
 }
 
 .semester-titles-table th:last-child,
 .semester-titles-table td:last-child {
-  width: 56px;
+  width: 72px;
+  min-width: 72px;
+  padding-left: 16px;
   text-align: center;
 }
 
 .semester-titles-table .period-order-actions {
-  width: 108px;
-  min-width: 108px;
+  width: 132px;
+  min-width: 132px;
   white-space: nowrap;
   text-align: center;
   vertical-align: middle;
@@ -4889,9 +4893,10 @@ th button.active {
 
 .semester-titles-table .input {
   display: block;
-  width: auto;
-  max-width: 25ch;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   padding: 7px 2px 6px;
   border: 0;
   border-radius: 0;
@@ -5661,6 +5666,14 @@ th button.active {
   stroke-linejoin: round;
 }
 
+.grade-progress-minor-grid {
+  opacity: 0.45;
+}
+
+.grade-progress-major-grid {
+  opacity: 0.9;
+}
+
 .grade-progress-gpa {
   stroke-width: 2.75;
   stroke-dasharray: 5 4;
@@ -5671,6 +5684,30 @@ th button.active {
   stroke-width: 2.5;
   vector-effect: non-scaling-stroke;
   cursor: pointer;
+}
+
+.grade-progress-overlap-center {
+  fill: var(--bg-raised);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.grade-progress-overlap-segment {
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  cursor: pointer;
+  vector-effect: non-scaling-stroke;
+  transition: opacity 100ms ease, stroke-width 100ms ease;
+}
+
+.grade-progress-overlap-segment:hover,
+.grade-progress-overlap-segment:focus,
+.grade-progress-overlap-segment.is-selected {
+  stroke: var(--gold);
+  stroke-width: 2.5;
+  outline: none;
 }
 
 .grade-progress-dot.gpa {
@@ -7297,7 +7334,38 @@ tbody tr {
 }
 
 .fumble-course-select .exam-multi-trigger {
-  flex: 0 1 220px;
+  flex: 1 1 auto;
+  max-width: none;
+  min-width: 0;
+}
+
+.fumble-entry-row {
+  flex-wrap: nowrap;
+}
+
+.fumble-entry-row .fumble-course-select {
+  min-width: 0;
+  flex: 0 1 var(--fumble-course-menu-width, 220px);
+  width: min(var(--fumble-course-menu-width, 220px), calc(100vw - 2rem));
+}
+
+.fumble-target-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.fumble-transition-arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.fumble-entry-row .fumble-grade-select,
+.fumble-target-controls > .btn {
+  flex: 0 0 auto;
 }
 
 .fumble-course-selected-label {
@@ -7313,9 +7381,15 @@ tbody tr {
   white-space: nowrap !important;
 }
 
+.fumble-course-selected-grade.fumble-grade-empty,
+.fumble-course-option-grade.fumble-grade-empty,
+.fumble-table .fumble-grade-empty {
+  color: var(--text);
+}
+
 .fumble-course-menu {
   width: var(--fumble-course-menu-width, fit-content);
-  min-width: 220px;
+  min-width: 0;
   max-width: min(50ch, calc(100vw - 2rem));
   max-height: 280px;
   z-index: 100;

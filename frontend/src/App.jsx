@@ -1,10 +1,10 @@
-import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtGpa, fmtScore, gradeFromPercent, roundPercentForCalculation, scoreClass } from "./api";
 import { CreditLabelProvider, Tooltip } from "./creditLabel.jsx";
 import FeedbackBubble from "./FeedbackBubble.jsx";
 import { useToasts } from "./notifications.jsx";
-import { SEASONS, TERM_SEQUENCE } from "./seasons.js";
+import { SEASONS, TERM_SEQUENCE, semesterSortValue, sortSemesters } from "./seasons.js";
 
 import { applyThemeColors, loadAppearance, parseAppearance, resolveTermLabel, saveAppearance } from "./theme";
 import CrystalBall from "./CrystalBall.svg";
@@ -19,6 +19,7 @@ const GRADE_PROMPT_TOAST_ID = "grade-record-prompt";
 const UPDATE_TOAST_ID = "app-update";
 const UPDATE_STATUS_TOAST_ID = "app-update-status";
 const UPDATE_CHECK_MS = 7 * 24 * 60 * 60 * 1000;
+const LAST_GRADEBOOK_STORAGE_KEY = "grade-calculator-last-gradebook";
 const SPECULATION_TOOLTIP = 'Speculation Mode: Edit only the grade values of multiple items at once, allowing you to see how your grade would change when speculating a bulk number of grades. "Changes" are not saved when exited.';
 const SPECULATION_MODE_TOAST_ID = "speculation-mode-status";
 const GLOBAL_APPEARANCE_KEYS = new Set([
@@ -97,8 +98,8 @@ function applyStatusToast(info) {
   return null;
 }
 
-function semesterKey(year, season) {
-  return [Number(year) || 0, TERM_SEQUENCE[season] || 0];
+function semesterKey(year, season, semesterTitles) {
+  return semesterSortValue({ year, season }, semesterTitles);
 }
 
 function pluralizeTermLabel(label) {
@@ -126,12 +127,11 @@ function isPlaceholderAcademicPeriodLabel(value) {
   return !name || name === "academic period";
 }
 
-function hasOlderUnlocked(semesters, year, season) {
-  const nextKey = semesterKey(year, season);
+function hasOlderUnlocked(semesters, year, season, semesterTitles) {
+  const nextKey = semesterKey(year, season, semesterTitles);
   return semesters.some((sem) => {
     if (sem.progression_locked) return false;
-    const key = semesterKey(sem.year, sem.season);
-    return key[0] < nextKey[0] || (key[0] === nextKey[0] && key[1] < nextKey[1]);
+    return semesterKey(sem.year, sem.season, semesterTitles) < nextKey;
   });
 }
 
@@ -479,11 +479,20 @@ function globalAppearanceValues(value) {
   return Object.fromEntries([...GLOBAL_APPEARANCE_KEYS].map((key) => [key, value?.[key]]));
 }
 
+function loadLastGradebookId() {
+  try {
+    return window.localStorage.getItem(LAST_GRADEBOOK_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
 export default function App() {
   const { warning, push, dismiss } = useToasts();
   const defaultGradebooks = [{ id: "gradebook-1", name: "Gradebook 1" }];
   const [semesters, setSemesters] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [appStateLoaded, setAppStateLoaded] = useState(false);
   const [academicYears, setAcademicYears] = useState([]);
   const [gradebookType, setGradebookType] = useState("college");
   const [gpaBasis, setGpaBasis] = useState("credits");
@@ -515,7 +524,10 @@ export default function App() {
   const location = useLocation();
   const query = new URLSearchParams(location.search);
   const requestedGradebookId = query.get("gradebook");
-  const selectedGradebook = gradebooks.find((item) => item.id === requestedGradebookId) || gradebooks[0];
+  const lastGradebookId = loadLastGradebookId();
+  const selectedGradebook = gradebooks.find((item) => item.id === requestedGradebookId)
+    || gradebooks.find((item) => item.id === lastGradebookId)
+    || gradebooks[0];
   const selectedGradebookId = selectedGradebook?.id || "gradebook-1";
   const selectedSemester = query.get("term") || query.get("semester");
   gradePromptViewRef.current = {
@@ -537,6 +549,10 @@ export default function App() {
   );
   const termLabel = resolveTermLabel(activeAppearance);
   const isHighSchool = gradebookType === "high_school";
+  const orderedSemesters = useMemo(
+    () => isHighSchool ? [...semesters] : sortSemesters(semesters, activeAppearance.semesterTitles),
+    [activeAppearance.semesterTitles, isHighSchool, semesters]
+  );
   const academicPeriodNames = useMemo(
     () => activeAppearance.highSchoolAcademicPeriods || {},
     [activeAppearance.highSchoolAcademicPeriods]
@@ -558,12 +574,12 @@ export default function App() {
   // so data is never hidden by the cleanup guard.
   const visibleSemesters = useMemo(
     () => isHighSchool
-      ? semesters.filter((semester) => (
+      ? orderedSemesters.filter((semester) => (
         namedAcademicPeriodKeys.has(String(highSchoolAcademicYearKey(semester)))
         || (Array.isArray(semester.courses) && semester.courses.length > 0)
       ))
-      : semesters,
-    [isHighSchool, namedAcademicPeriodKeys, semesters]
+      : orderedSemesters,
+    [isHighSchool, namedAcademicPeriodKeys, orderedSemesters]
   );
   const semesterSectionLabel = pluralizeTermLabel(termLabel);
   const selectedSemesterRecord = visibleSemesters.find((semester) => String(semester.id) === String(selectedSemester));
@@ -663,8 +679,10 @@ export default function App() {
         const server = serverAppearance ? parseAppearance(serverAppearance) : null;
         if (server) setAppearance(server);
         appStateReady.current = true;
+        setAppStateLoaded(true);
       } catch (err) {
         warning(err.message);
+        setAppStateLoaded(true);
       }
     }
     loadAppState();
@@ -672,6 +690,15 @@ export default function App() {
       cancelled = true;
     };
   }, [warning]);
+
+  useEffect(() => {
+    if (!appStateLoaded || !selectedGradebookId) return;
+    try {
+      window.localStorage.setItem(LAST_GRADEBOOK_STORAGE_KEY, selectedGradebookId);
+    } catch {
+      // A restricted browser storage area should not prevent the app from loading.
+    }
+  }, [appStateLoaded, selectedGradebookId]);
 
   useEffect(() => {
     if (!appStateReady.current) return undefined;
@@ -750,11 +777,19 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!appStateLoaded) return;
     if (requestedGradebookId === selectedGradebookId) return;
     const params = new URLSearchParams(location.search);
     params.set("gradebook", selectedGradebookId);
     navigate(`${location.pathname}?${params.toString()}${location.hash}`, { replace: true });
-  }, [location.pathname, location.search, location.hash, navigate, requestedGradebookId, selectedGradebookId]);
+  }, [appStateLoaded, location.pathname, location.search, location.hash, navigate, requestedGradebookId, selectedGradebookId]);
+
+  useEffect(() => {
+    if (!appStateLoaded || location.pathname !== "/") return;
+    const params = new URLSearchParams(location.search);
+    params.set("gradebook", selectedGradebookId);
+    navigate(`/gpa?${params.toString()}${location.hash}`, { replace: true });
+  }, [appStateLoaded, location.pathname, location.search, location.hash, navigate, selectedGradebookId]);
 
   useEffect(() => {
     if (location.pathname !== "/courses") return;
@@ -1298,7 +1333,7 @@ export default function App() {
       }
     }
 
-    if (visibleSemesters.length && hasOlderUnlocked(visibleSemesters, nextYear, nextSeason)) {
+    if (visibleSemesters.length && hasOlderUnlocked(visibleSemesters, nextYear, nextSeason, activeAppearance.semesterTitles)) {
       push({
         id: "lock-previous-semester-graphs",
         type: "persistent",
@@ -1534,7 +1569,7 @@ export default function App() {
         <main className="main" key={location.pathname}>
           <Suspense fallback={<p className="muted">Loading…</p>}>
             <Routes>
-            <Route path="/" element={<Navigate to="/gpa" replace />} />
+            <Route path="/" element={null} />
             <Route
               path="/courses"
               element={
@@ -1547,6 +1582,7 @@ export default function App() {
                   onAcademicPeriodChange={saveAcademicPeriodName}
                   onAcademicPeriodDelete={deleteAcademicPeriod}
                   classType={activeAppearance.classType}
+                  semesterTitles={activeAppearance.semesterTitles}
                   highSchoolTerms={highSchoolTermsForPeriod}
                   termNames={configuredTermNames}
                   termLabel={termLabel}
@@ -1580,6 +1616,7 @@ export default function App() {
                   colorFlaggedAssignments={activeAppearance.colorFlaggedAssignments}
                   readableTextBackground={activeAppearance.readableTextBackground}
                   gradebookId={selectedGradebookId}
+                  semesterTitles={activeAppearance.semesterTitles}
                   highSchoolMode={isHighSchool}
                   classType={activeAppearance.classType}
                   academicPeriodNames={resolvedAcademicPeriodNames}
@@ -1592,7 +1629,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} />} />
+            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} />} />
             <Route
               path="/settings"
               element={
@@ -1601,7 +1638,7 @@ export default function App() {
             />
             <Route
               path="/gradebook-settings"
-              element={<Settings key={selectedGradebookId} mode="gradebook" gradebookId={selectedGradebookId} gradebooks={gradebooks} gradebookAppearances={gradebookAppearance} appearance={activeAppearance} gradebookName={selectedGradebook?.name || ""} onGradebookNameChange={renameGradebook} onDeleteGradebook={requestDeleteGradebook} onImportedGradebookSetups={registerImportedGradebookSetups} academicPeriods={visibleAcademicYears} semesters={semesters} onAddAcademicPeriod={addAcademicPeriod} onDeleteAcademicPeriod={deleteAcademicPeriod} onAcademicPeriodChange={saveAcademicPeriodName} onAppearanceChange={updateGradebookAppearance} onChange={refresh} />}
+              element={<Settings key={selectedGradebookId} mode="gradebook" gradebookId={selectedGradebookId} gradebooks={gradebooks} gradebookAppearances={gradebookAppearance} appearance={activeAppearance} gradebookName={selectedGradebook?.name || ""} onGradebookNameChange={renameGradebook} onDeleteGradebook={requestDeleteGradebook} onImportedGradebookSetups={registerImportedGradebookSetups} academicPeriods={visibleAcademicYears} semesters={orderedSemesters} onAddAcademicPeriod={addAcademicPeriod} onDeleteAcademicPeriod={deleteAcademicPeriod} onAcademicPeriodChange={saveAcademicPeriodName} onAppearanceChange={updateGradebookAppearance} onChange={refresh} />}
             />
             </Routes>
           </Suspense>

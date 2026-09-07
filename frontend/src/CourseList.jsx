@@ -102,7 +102,7 @@ function HighSchoolEditModeToggle({ value, onChange, weightedGpa, ariaLabel = "E
   );
 }
 
-export default function CourseList({ semesters, academicPeriods = [], onChange, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, onAcademicPeriodDelete, classType = "alphanumeric", gradebookType = "college", highSchoolTerms: configuredHighSchoolTerms, highSchoolTermWeights = {}, highSchoolOverallRoundingByPeriod = {}, weightedGpa = false, termLabel = "Semester", termNames = {}, academicYearKey, academicPeriodName, onAcademicPeriodChange, onSemesterCreated, dataLoaded = true, gradebookId = null }) {
+export default function CourseList({ semesters, academicPeriods = [], onChange, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, onAcademicPeriodDelete, classType = "alphanumeric", gradebookType = "college", semesterTitles = [], highSchoolTerms: configuredHighSchoolTerms, highSchoolTermWeights = {}, highSchoolOverallRoundingByPeriod = {}, weightedGpa = false, termLabel = "Semester", termNames = {}, academicYearKey, academicPeriodName, onAcademicPeriodChange, onSemesterCreated, dataLoaded = true, gradebookId = null }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
   const periodLabel = String(termLabel || "Term").trim() || "Term";
@@ -255,7 +255,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     }), api.courses(), api.gpa()]);
     if (sequence !== loadSequence.current) return;
     setGpaSettings(gpa);
-    const displayCodes = buildCourseDisplayCodes(semesters, allCourses);
+    const displayCodes = buildCourseDisplayCodes(semesters, allCourses, semesterTitles);
     setAllCourses(allCourses);
     setCourses(data.map((course) => ({ ...course, display_code: displayCodes.get(course.id) || course.display_code })));
   }
@@ -265,7 +265,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     setCourses([]);
     setAllCourses([]);
     load().catch(console.error);
-  }, [semesterId, sort, desc, overallView, gradebookQuery]);
+  }, [semesterId, sort, desc, overallView, gradebookQuery, semesterTitles, semesters]);
 
   useEffect(() => {
     if (!showScore && sort === "score") {
@@ -489,7 +489,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
             return next;
           });
           onChange?.();
-          navigate("/gpa");
+          navigate(`/gpa?gradebook=${encodeURIComponent(gradebookQuery)}`);
         } catch (err) {
           warning(err.message);
         }
@@ -516,7 +516,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     }
   }
 
-  if (!semesterId) return <Navigate to="/gpa" replace />;
+  if (!semesterId) return <Navigate to={`/gpa?gradebook=${encodeURIComponent(gradebookQuery)}`} replace />;
   if (!dataLoaded) return <p className="muted">Loading…</p>;
   if (!current && !overallView) return <Navigate to={`/gpa?gradebook=${encodeURIComponent(gradebookQuery)}`} replace />;
   if (overallView) {
@@ -650,7 +650,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                   try {
                     await api.deleteSemester(semester.id);
                     onChange?.();
-                    navigate("/gpa");
+                    navigate(`/gpa?gradebook=${encodeURIComponent(gradebookQuery)}`);
                   } catch (err) {
                     warning(err.message);
                   }
@@ -708,7 +708,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         )}
         {flaggedSemesterItems.length ? (
           <div className="semester-flag-summary">
-            <FlagSummaryButton items={flaggedSemesterItems} flags={flags} semester />
+            <FlagSummaryButton items={flaggedSemesterItems} flags={flags} semester gradebookId={gradebookQuery} />
           </div>
         ) : null}
         {false && isHighSchool ? (

@@ -1,9 +1,9 @@
-import { TERM_SEQUENCE } from "./seasons.js";
+import { semesterSortValue } from "./seasons.js";
 
-export function buildCourseDisplayCodes(semesters = [], courses = null) {
+export function buildCourseDisplayCodes(semesters = [], courses = null, semesterTitles = null) {
   const terms = semesters.map((term, index) => ({
     id: term.id,
-    order: Number(term.year) * 10 + (TERM_SEQUENCE[term.season] || 0) + index / 1000,
+    order: semesterSortValue(term, semesterTitles) + index / 1000,
   }));
   const termOrder = new Map(terms.map((term) => [String(term.id), term.order]));
   const rows = courses

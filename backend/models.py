@@ -98,7 +98,7 @@ class Category(Base):
     weight_per_item: Mapped[float | None] = mapped_column(Float, nullable=True)
     aggregation: Mapped[str] = mapped_column(String(32), default="average")
     drop_count: Mapped[int] = mapped_column(Integer, default=0)
-    replace_count: Mapped[int] = mapped_column(Integer, default=1)
+    replace_count: Mapped[int] = mapped_column(Integer, default=0)
     include_bonus: Mapped[bool] = mapped_column(Boolean, default=False)
     is_bonus_category: Mapped[bool] = mapped_column(Boolean, default=False)
     replace_with_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

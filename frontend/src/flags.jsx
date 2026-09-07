@@ -85,7 +85,7 @@ export function FlagIcon({ color = "currentColor", size = 18, className = "" }) 
   );
 }
 
-export function FlagSummaryButton({ items, flags = [], semester = false }) {
+export function FlagSummaryButton({ items, flags = [], semester = false, gradebookId = "default" }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -138,7 +138,7 @@ export function FlagSummaryButton({ items, flags = [], semester = false }) {
                   {group.items.map((item, index) => (
                     <div className="flag-summary-item" key={`${group.flag.id}-${item.courseId}-${item.sectionName}-${item.assignmentName}-${index}`}>
                       <Link
-                        to={`/courses/${item.courseId}#assignment-${item.assignmentId}`}
+                        to={`/courses/${item.courseId}?gradebook=${encodeURIComponent(gradebookId)}#assignment-${item.assignmentId}`}
                         onClick={() => setOpen(false)}
                       >
                         {semester ? `${item.courseName} / ${item.sectionName} / ${item.assignmentName}` : `${item.sectionName} / ${item.assignmentName}`}

@@ -277,13 +277,45 @@ def course_without_category_scores(course: CourseInput, category_id: int) -> Cou
     return replace(course, categories=cats)
 
 
+def _letter_change(course: CourseInput, before: CourseResult, after: CourseResult) -> str | None:
+    """Compare the effective letter grades, including pass/fail scales."""
+    if not before.letter or not after.letter:
+        return None
+
+    if before.quality_points is not None and after.quality_points is not None:
+        if after.quality_points > before.quality_points:
+            return "up"
+        if after.quality_points < before.quality_points:
+            return "down"
+        return "same"
+
+    if not is_pass_fail(course):
+        return "same" if before.letter == after.letter else None
+
+    rows = sorted(
+        (course.pass_fail or PassFailScale()).rows or [],
+        key=lambda row: float(row.get("min_percent", 0)),
+        reverse=True,
+    )
+    rank = {row.get("label"): index for index, row in enumerate(rows)}
+    before_rank = rank.get(before.letter)
+    after_rank = rank.get(after.letter)
+    if before_rank is None or after_rank is None:
+        return "same" if before.letter == after.letter else None
+    if after_rank < before_rank:
+        return "up"
+    if after_rank > before_rank:
+        return "down"
+    return "same"
+
+
 def exam_impact(
     course: CourseInput,
     test_category_ids: list[int] | None,
     exam_category_id: int | None,
     target_gp: float = 4.0,
 ) -> dict | None:
-    """Post-exam vs tests: score delta and letter movement. Ignores GP override."""
+    """Post-exam vs tests: score delta and effective letter movement."""
     test_ids = [int(item) for item in (test_category_ids or []) if item is not None]
     # Preserve order, drop duplicates.
     seen: set[int] = set()
@@ -310,18 +342,15 @@ def exam_impact(
     letter_after = None
     letter_change = None
     if test_pct is not None and exam_pct is not None:
-        plain = replace(course, gp_override=None)
-        after = evaluate_course(plain, target_gp)
+        # The comparison baseline is always the tests-only grade.  The After
+        # value must be the course's current effective grade, including any
+        # manual GP or pass/fail override.
+        plain = replace(course, gp_override=None, pass_fail_override=None)
+        after = evaluate_course(course, target_gp)
         before = evaluate_course(course_without_category_scores(plain, exam_category_id), target_gp)
         letter_before = before.letter
         letter_after = after.letter
-        if before.letter and after.letter and before.quality_points is not None and after.quality_points is not None:
-            if after.quality_points > before.quality_points:
-                letter_change = "up"
-            elif after.quality_points < before.quality_points:
-                letter_change = "down"
-            else:
-                letter_change = "same"
+        letter_change = _letter_change(course, before, after)
     return {
         "test_category_ids": ordered_ids,
         "exam_category_id": exam_category_id,
@@ -381,7 +410,7 @@ class CategoryInput:
     weight_per_item: float | None = None
     aggregation: str = "average"
     drop_count: int = 0
-    replace_count: int = 1
+    replace_count: int = 0
     include_bonus: bool = False
     is_bonus_category: bool = False
     replace_with_category_id: int | None = None
@@ -1187,7 +1216,9 @@ def unit_weighted_fumble_delta(
     academic-period unit share. This keeps a two-step change across one-third
     of a class at 0.667 instead of rounding it up to 1.
     """
-    if did_gp is None or should_gp is None or units is None:
+    if should_gp is None or units is None:
         return 0.0
+    if did_gp is None:
+        return round((float(should_gp) - float(target_gp)) * 3.0) * float(units)
     grade_step_delta = round((float(should_gp) - float(did_gp)) * 3.0)
     return grade_step_delta * float(units)

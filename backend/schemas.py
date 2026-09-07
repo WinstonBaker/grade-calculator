@@ -58,7 +58,7 @@ class CategoryCreate(BaseModel):
     weight_per_item: float | None = None
     aggregation: str = "average"
     drop_count: int = Field(default=0, ge=0)
-    replace_count: int = Field(default=1, ge=0)
+    replace_count: int = Field(default=0, ge=0)
     include_bonus: bool = False
     is_bonus_category: bool = False
     replace_with_category_id: int | None = None

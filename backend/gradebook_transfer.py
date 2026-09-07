@@ -124,7 +124,7 @@ def _course_payload(course: Course, include_entered_assignments: bool = False) -
                 "weight_per_item": category.weight_per_item,
                 "aggregation": category.aggregation,
                 "drop_count": int(category.drop_count),
-                "replace_count": int(category.replace_count or 1),
+                "replace_count": int(category.replace_count or 0),
                 "include_bonus": category.include_bonus is True,
                 "is_bonus_category": category.is_bonus_category is True,
                 "replace_with_key": category_keys.get(category.replace_with_category_id),
@@ -627,7 +627,7 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                         weight_per_item=category_data.get("weight_per_item"),
                         aggregation=str(category_data.get("aggregation") or "average")[:32],
                         drop_count=max(0, int(category_data.get("drop_count") or 0)),
-                        replace_count=max(0, int(category_data.get("replace_count") or 1)),
+                        replace_count=max(0, int(category_data.get("replace_count") or 0)),
                         include_bonus=category_data.get("include_bonus") is True,
                         is_bonus_category=category_data.get("is_bonus_category") is True,
                         sort_order=int(category_data.get("sort_order") or 0),
@@ -639,7 +639,9 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                     key = str(category_data.get("key") or "") if isinstance(category_data, dict) else ""
                     replacement = str(category_data.get("replace_with_key") or "") if isinstance(category_data, dict) else ""
                     if key in category_map and replacement in category_map:
-                        db.get(Category, category_map[key]).replace_with_category_id = category_map[replacement]
+                        target = db.get(Category, category_map[key])
+                        if target.replace_count > 0:
+                            target.replace_with_category_id = category_map[replacement]
                     if key in category_map and isinstance(category_data, dict):
                         for assignment_data in category_data.get("assignments", []):
                             if not isinstance(assignment_data, dict):

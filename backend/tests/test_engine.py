@@ -1,9 +1,12 @@
+from dataclasses import replace
+
 import pytest
 
 from backend.engine import (
     AssignmentInput,
     CategoryInput,
     CourseInput,
+    PassFailScale,
     ScaleRow,
     avg_drop_x,
     category_percent,
@@ -526,6 +529,29 @@ def test_exam_impact_delta_and_letter_change():
     assert impact["letter_change"] == "up"
     assert impact["letter_after"] is not None
     assert impact["letter_before"] is not None
+
+    overridden = exam_impact(replace(course, gp_override=2.0), [2], 3)
+    assert overridden is not None
+    assert overridden["letter_after"] == "C"
+    assert overridden["letter_change"] == "down"
+
+    pass_fail = CourseInput(
+        code="MAE 310",
+        credits=3,
+        credit_mode="pass_fail",
+        pass_fail=PassFailScale(),
+        pass_fail_override="U",
+        categories=[
+            CategoryInput(id=2, name="Tests", weight=0.6, assignments=[P(80)]),
+            CategoryInput(id=3, name="Final", weight=0.4, assignments=[P(95)]),
+        ],
+        scale=scale_rows_from_tuples(DEFAULT_SCALE),
+    )
+    pass_fail_impact = exam_impact(pass_fail, [2], 3)
+    assert pass_fail_impact is not None
+    assert pass_fail_impact["letter_before"] == "S"
+    assert pass_fail_impact["letter_after"] == "U"
+    assert pass_fail_impact["letter_change"] == "down"
 
     multi = exam_impact(course, [1, 2], 3)
     assert multi is not None
