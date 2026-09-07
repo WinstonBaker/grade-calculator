@@ -104,6 +104,10 @@ function formatGradeNumber(value) {
   return number.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+function formatCompactReplacementNumber(value) {
+  return formatGradeNumber(value).replace(/^(\-?)0\./, "$1.");
+}
+
 function formatBonusNumber(value) {
   return formatGradeNumber(value).replace(/^(-?)0\./, "$1.");
 }
@@ -977,7 +981,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
       id: `delete-category-${category.id}`,
       type: "persistent",
       title: "Delete category?",
-      message: `Delete ${category.name} and its assignments? This cannot be undone.`,
+      message: `Delete ${category.name} and its assignments? This can not be undone.`,
       confirmLabel: "Delete",
       onConfirm: async () => {
         try {
@@ -1085,7 +1089,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           id: `delete-category-${bonusCategory.id}`,
           type: "persistent",
           title: "Delete category?",
-          message: `Delete ${bonusCategory.name} and its assignments? This cannot be undone.`,
+          message: `Delete ${bonusCategory.name} and its assignments? This can not be undone.`,
           confirmLabel: "Delete",
           onConfirm: async () => {
             try {
@@ -1260,7 +1264,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                           id: `delete-course-${course.id}`,
                           type: "persistent",
                           title: "Delete class?",
-                          message: `Delete ${course.code}? This cannot be undone.`,
+                          message: `Delete ${course.code}? This can not be undone.`,
                           confirmLabel: "Delete",
                           onConfirm: async () => {
                             try {
@@ -2068,7 +2072,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
             </p>
           ) : null}
           {!pointsMode && selected && !hasWeight ? (
-            <p className="muted">This category has no weight, so it cannot change the course grade.</p>
+            <p className="muted">This category has no weight, so it can not change the course grade.</p>
           ) : tableRows.length === 0 ? (
             <p className="muted">Add grade cutoffs to see exam targets.</p>
           ) : (
@@ -2430,6 +2434,53 @@ function droppedAssignmentIds(cat, course = null, pointsMode = false) {
     return a.percent - b.percent || a.id - b.id;
   });
   return new Set(sorted.slice(0, toDrop).map((a) => a.id));
+}
+
+function replacementAssignmentScores(cat, course, droppedIds) {
+  if (!cat?.replace_with_category_id || !course?.categories?.length) return new Map();
+  const replacementCategory = course.categories.find(
+    (category) => category.id === cat.replace_with_category_id
+  );
+  if (!replacementCategory) return new Map();
+  const replacement = speculativeCategoryPercent(replacementCategory, course.categories);
+  if (replacement == null) return new Map();
+
+  const replacements = Math.max(Number(cat.replace_count ?? 0) || 0, 0);
+  if (!replacements) return new Map();
+  const eligible = (cat.assignments || [])
+    .filter((assignment) => !assignment.is_bonus && !droppedIds.has(assignment.id))
+    .map((assignment) => ({
+      id: assignment.id,
+      possible: (() => {
+        const explicit = Number(assignment.possible);
+        if (Number.isFinite(explicit) && explicit > 0) return explicit;
+        const parsed = parseScoreExpression(String(assignment.display ?? ""));
+        return parsed && Number.isFinite(parsed.possible) && parsed.possible > 0 ? parsed.possible : 100;
+      })(),
+      percent: assignmentPercent({
+        display: assignment.display,
+        earned: assignment.earned,
+        possible: assignment.possible,
+        isBonus: false,
+      }),
+    }))
+    .filter((assignment) => assignment.percent != null)
+    .sort((a, b) => a.percent - b.percent || a.id - b.id);
+
+  return new Map(
+    eligible
+      .filter((assignment) => replacement > assignment.percent)
+      .slice(0, replacements)
+      .map((assignment) => [
+        assignment.id,
+        {
+          percent: replacement,
+          display: cat.aggregation === "points_ratio"
+            ? `${formatCompactReplacementNumber((replacement / 100) * assignment.possible)}/${formatCompactReplacementNumber(assignment.possible)}`
+            : formatCompactReplacementNumber(replacement),
+        },
+      ])
+  );
 }
 
 function moveCategoryBefore(categories, fromId, beforeId) {
@@ -3122,6 +3173,10 @@ function CategoryCard({
     () => droppedAssignmentIds(cat, course, pointsMode),
     [cat, course, pointsMode]
   );
+  const replacementScores = useMemo(
+    () => replacementAssignmentScores(cat, course, droppedIds),
+    [cat, course, droppedIds]
+  );
   const isBonusCategory = Boolean(cat.is_bonus_category);
   const meaningfulAssignmentCount = (cat.assignments || []).filter((assignment) => (
     String(assignment.name || "").trim()
@@ -3208,34 +3263,7 @@ function CategoryCard({
     setScoreDrafts((d) => ({ ...d, [assignmentId]: raw }));
     if (speculationMode) {
       onSpeculativeScoreChange?.(assignmentId, raw);
-      return;
     }
-    if (!validScoreEntry(raw)) {
-      setScoreErrors((errors) => ({ ...errors, [assignmentId]: "Enter points as numerator/denominator, such as 3/5." }));
-      return;
-    }
-    setScoreErrors((errors) => {
-      const next = { ...errors };
-      delete next[assignmentId];
-      return next;
-    });
-    clearTimeout(saveTimers.current[assignmentId]);
-    saveTimers.current[assignmentId] = setTimeout(async () => {
-      try {
-        const next = await api.patchAssignment(assignmentId, {
-          score: raw,
-          clear_score: raw.trim() === "",
-        });
-        setScoreDrafts((d) => {
-          const copy = { ...d };
-          delete copy[assignmentId];
-          return copy;
-        });
-        onChange(next);
-      } catch (err) {
-        console.error(err);
-      }
-    }, 250);
   }
 
   async function flushScoreSave(assignmentId, raw) {
@@ -3445,6 +3473,8 @@ function CategoryCard({
             const isSpeculativeEdit = speculationMode && Object.prototype.hasOwnProperty.call(speculativeScores, a.id);
             const draft = scoreDrafts[a.id] ?? (focusedScoreId === a.id ? (a.score_input || savedDisplay) : displayValue);
             const isDropped = droppedIds.has(a.id);
+            const replacementScore = replacementScores.get(a.id);
+            const isReplaced = replacementScore != null;
             const isZeroDenominator = a.earned != null && Number(a.possible) === 0;
             const scoreLetter = isBonusCategory || a.is_bonus
               ? "A+"
@@ -3463,7 +3493,10 @@ function CategoryCard({
                       )
                     : null
                 : null;
-            const scoreTone = isDropped ? "" : letterClass(scoreLetter);
+            const scoreTone = isDropped || isReplaced ? "" : letterClass(scoreLetter);
+            const replacementTone = colorAssignmentGrades
+              ? letterClass(letterFromPercent(replacementScore?.percent, scale))
+              : "";
             const isComposite = Boolean(a.composite);
             const compositeOpen = openCompositeIds.has(a.id);
             const bonusPrefix = a.is_bonus && !isBonusCategory
@@ -3544,14 +3577,14 @@ function CategoryCard({
                 </div>
               </td>
               <td className="col-score">
-                <div className={`assignment-score-cell assignment-score-pill ${bonusPrefix ? "has-bonus" : ""}`.trim()}>
+                <div className={`assignment-score-cell assignment-score-pill ${bonusPrefix ? "has-bonus" : ""} ${isReplaced ? "is-replaced" : ""}`.trim()}>
                   {bonusPrefix ? (
                     <span className="assignment-bonus-prefix" aria-label={`${bonusPrefix} bonus`}>
                       {bonusPrefix}
                     </span>
                   ) : null}
                   <input
-                    className={`input ${scoreTone} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}
+                    className={`input ${scoreTone} ${isReplaced ? "assignment-score-original-replaced" : ""} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}
                     placeholder={scorePlaceholder}
                     value={draft}
                     style={assignmentFlags.length && colorFlaggedAssignments
@@ -3569,13 +3602,12 @@ function CategoryCard({
                       setFocusedScoreId(null);
                       const raw = e.target.value;
                       if (speculationMode) return;
-                      setScoreDrafts((drafts) => ({ ...drafts, [a.id]: displayValue }));
                       if (!validScoreEntry(e.target.value)) {
-                        setScoreErrors((errors) => {
-                          const next = { ...errors };
-                          delete next[a.id];
-                          return next;
-                        });
+                        setScoreDrafts((drafts) => ({ ...drafts, [a.id]: displayValue }));
+                        setScoreErrors((errors) => ({
+                          ...errors,
+                          [a.id]: "Enter points as numerator/denominator, such as 3/5.",
+                        }));
                         return;
                       }
                       try {
@@ -3588,6 +3620,15 @@ function CategoryCard({
                       if (e.key === "Enter") e.currentTarget.blur();
                     }}
                   />
+                  {isReplaced ? (
+                    <span
+                      className={`assignment-replacement-score ${replacementTone}`.trim()}
+                      aria-label={`Replacement score ${replacementScore.display}`}
+                      title="Replacement category score"
+                    >
+                      {replacementScore.display}
+                    </span>
+                  ) : null}
                 </div>
               </td>
               <td className="col-actions">

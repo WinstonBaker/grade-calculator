@@ -1002,7 +1002,7 @@ export default function App() {
       id: `delete-gradebook-${targetGradebookId}`,
       type: "persistent",
       title: "Delete gradebook?",
-      message: `Delete ${targetGradebook.name || "this gradebook"} and all of its data? This cannot be undone.`,
+      message: `Delete ${targetGradebook.name || "this gradebook"} and all of its data? This can not be undone.`,
       confirmLabel: "Delete",
       onConfirm: async () => {
         try {

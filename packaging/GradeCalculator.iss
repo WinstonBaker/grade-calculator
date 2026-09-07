@@ -1,6 +1,6 @@
 #define MyAppName "Grade Calculator"
 #ifndef MyAppVersion
-#define MyAppVersion "2.0.11"
+#define MyAppVersion "2.0.12"
 #endif
 #define MyAppPublisher "Winston Baker"
 #define MyAppURL "https://github.com/WinstonBaker/grade-calculator"

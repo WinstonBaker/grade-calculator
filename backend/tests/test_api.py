@@ -808,7 +808,7 @@ def test_grade_prompt_is_unchanged_for_another_or_new_gradebook(tmp_path):
         teardown()
 
 
-def test_fumble_cannot_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_path):
+def test_fumble_can_not_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_path):
     client = make_client(tmp_path)
     try:
         sem_id = client.post(

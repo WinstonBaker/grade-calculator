@@ -797,10 +797,10 @@ def update_primary_scale(db: Session, rows: list[tuple[str, float, float]]) -> S
 
 def delete_scale_profile(db: Session, profile: ScaleProfile) -> None:
     if profile.preset_id:
-        raise ValueError("Built-in school scales cannot be deleted")
+        raise ValueError("Built-in school scales can not be deleted")
     remaining = [item for item in list_scale_profiles(db) if item.id != profile.id]
     if not remaining:
-        raise ValueError("Cannot delete the only default scale")
+        raise ValueError("Can not delete the only default scale")
     was_primary = bool(profile.is_primary)
     (
         db.query(Course)

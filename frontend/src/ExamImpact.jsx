@@ -12,17 +12,15 @@ export function ExamImpactStats({ summary }) {
         <div className="label">Avg exam vs tests</div>
         <div className={`value ${scoreClass(summary.avg_delta)}`}>{fmtDelta(summary.avg_delta)}</div>
       </div>
-      <div className="stat">
-        <div className="label">Letters up</div>
-        <div className="value pos">{summary.letter_up || 0}</div>
-      </div>
-      <div className="stat">
-        <div className="label">Letters down</div>
-        <div className="value neg">{summary.letter_down || 0}</div>
-      </div>
-      <div className="stat">
-        <div className="label">Unchanged</div>
-        <div className="value">{summary.letter_same || 0}</div>
+      <div className="stat exam-impact-letter-change">
+        <div className="label">Letters up / unchanged / down post exam</div>
+        <div className="value">
+          <span className="pos">{summary.letter_up || 0}</span>
+          <span className="exam-impact-neutral-separator">/</span>
+          <span>{summary.letter_same || 0}</span>
+          <span className="exam-impact-neutral-separator">/</span>
+          <span className="neg">{summary.letter_down || 0}</span>
+        </div>
       </div>
     </div>
   );

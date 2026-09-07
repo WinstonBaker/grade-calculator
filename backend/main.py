@@ -604,7 +604,7 @@ def delete_academic_year(academic_year_id: int, db: Session = Depends(get_db)):
 def create_semester(body: SemesterCreate, db: Session = Depends(get_db)):
     season = body.season.strip().lower()
     if season in {"settings", "overall"}:
-        raise HTTPException(409, "Term names cannot be Settings or Overall")
+        raise HTTPException(409, "Term names can not be Settings or Overall")
     dup = db.query(Semester).filter(
         Semester.gradebook_id == active_gradebook_id(),
         Semester.year == body.year,
@@ -642,7 +642,7 @@ def update_semester(semester_id: int, body: SemesterUpdate, db: Session = Depend
     if body.season is not None:
         season = body.season.strip().lower()
         if season in {"settings", "overall"}:
-            raise HTTPException(409, "Term names cannot be Settings or Overall")
+            raise HTTPException(409, "Term names can not be Settings or Overall")
         sem.season = season
     if body.included is not None:
         sem.included = body.included
@@ -845,7 +845,7 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
     if body.semester_id is not None:
         target_semester = _semester_or_404(db, body.semester_id)
         if target_semester.gradebook_id != course.semester.gradebook_id:
-            raise HTTPException(400, "A class cannot be moved between gradebooks")
+            raise HTTPException(400, "A class can not be moved between gradebooks")
         course.semester_id = body.semester_id
     if body.code is not None:
         for renamed_course in renamed_courses:
@@ -1064,7 +1064,7 @@ def patch_scale_profile(profile_id: int, body: ScaleProfileUpdate, db: Session =
     if body.name is not None:
         name = body.name.strip()
         if not name:
-            raise HTTPException(400, "Name cannot be empty")
+            raise HTTPException(400, "Name can not be empty")
         profile.name = name
     if body.sort_order is not None:
         profile.sort_order = body.sort_order

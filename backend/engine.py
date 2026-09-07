@@ -333,7 +333,15 @@ def exam_impact(
     exam = next((c for c in course.categories if c.id == exam_category_id), None)
     if exam is None:
         return None
-    test_percents = [category_percent(test, course.categories) for test in tests]
+    # Exam impact compares against the original test work, before any
+    # drop-lowest or replacement policy changes the category result.
+    test_percents = [
+        category_percent(
+            replace(test, drop_count=0, replace_count=0, replace_with_category_id=None),
+            None,
+        )
+        for test in tests
+    ]
     scored = [pct for pct in test_percents if pct is not None]
     test_pct = (sum(scored) / len(scored)) if scored else None
     exam_pct = category_percent(exam, course.categories)
@@ -735,6 +743,23 @@ def category_percent(
         scored = [a for a in category.assignments if a.has_score() and not a.is_bonus]
         if policy.drop_count:
             scored = _best_points_subset(scored, policy.drop_count, 0)
+        if policy.replace_with_category_id is not None and categories:
+            other = next((c for c in categories if c.id == policy.replace_with_category_id), None)
+            if other is not None:
+                replacement = category_percent(replace(other, replace_with_category_id=None), None)
+                replacements = min(max(int(category.replace_count or 0), 0), len(scored))
+                candidates = [item for item in scored if item.possible not in (None, 0) and item.percent() is not None]
+                for _ in range(replacements):
+                    if not candidates:
+                        break
+                    lowest = min(candidates, key=lambda item: (item.percent(), item.name))
+                    if replacement is None or replacement <= lowest.percent():
+                        break
+                    scored[scored.index(lowest)] = replace(
+                        lowest,
+                        earned=(replacement / 100.0) * float(lowest.possible),
+                    )
+                    candidates.remove(lowest)
         pct = points_ratio(scored)
         return pct
 
@@ -755,6 +780,8 @@ def category_percent(
                 )
                 for _ in range(replacements):
                     lowest = min(scores)
+                    if replacement <= lowest:
+                        break
                     scores.remove(lowest)
                     scores.append(replacement)
 

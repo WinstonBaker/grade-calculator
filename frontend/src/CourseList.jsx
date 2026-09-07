@@ -464,7 +464,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
       id: `delete-period-${currentAcademicYearKey}`,
       type: "persistent",
       title: "Delete period?",
-      message: `Delete ${periodName} and its terms and classes? This cannot be undone.`,
+      message: `Delete ${periodName} and its terms and classes? This can not be undone.`,
       confirmLabel: "Delete",
       onConfirm: async () => {
         try {
@@ -644,7 +644,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                 id: `delete-semester-${semester.id}`,
                 type: "persistent",
                 title: "Delete semester?",
-                message: `Delete ${semester.name} and its classes? This cannot be undone.`,
+                message: `Delete ${semester.name} and its classes? This can not be undone.`,
                 confirmLabel: "Delete",
                 onConfirm: async () => {
                   try {
@@ -1363,7 +1363,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
       id: `delete-term-${academicYearKey}-${term.id}`,
       type: "persistent",
       title: "Delete term?",
-      message: `Delete ${term.name} and its classes? This cannot be undone.`,
+      message: `Delete ${term.name} and its classes? This can not be undone.`,
       confirmLabel: "Delete term",
       onConfirm: async () => {
         setBusy(true);
@@ -1384,7 +1384,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
     const seen = new Set();
     const reserved = next.some((term) => RESERVED_TERM_NAMES.has(normalizedName(term.name)));
     if (reserved) {
-      warning("Term names cannot be Settings or Overall.");
+      warning("Term names can not be Settings or Overall.");
       return;
     }
     const duplicate = next.find((term) => {
@@ -1409,7 +1409,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
     const previous = termNameBeforeEdit.current[term.id] || term.name || "Term";
     const trimmed = name.trim();
     if (!trimmed || RESERVED_TERM_NAMES.has(normalizedName(trimmed)) || terms.some((item) => item.id !== term.id && normalizedName(item.name) === normalizedName(trimmed))) {
-      if (RESERVED_TERM_NAMES.has(normalizedName(trimmed)) || terms.some((item) => item.id !== term.id && normalizedName(item.name) === normalizedName(trimmed))) warning("Term names must be unique and cannot be Settings or Overall.");
+      if (RESERVED_TERM_NAMES.has(normalizedName(trimmed)) || terms.some((item) => item.id !== term.id && normalizedName(item.name) === normalizedName(trimmed))) warning("Term names must be unique and can not be Settings or Overall.");
       setTermNameDrafts((current) => ({ ...current, [term.id]: previous }));
       return;
     }

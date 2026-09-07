@@ -80,7 +80,7 @@ export default function FeedbackBubble({ repo }) {
               onChange={(event) => setMessage(event.target.value)}
               rows={4}
               required
-              placeholder="Bug, idea, or school scale request…"
+              placeholder="Report a bug, idea, or class grading structure that can't be implemented"
             />
           </label>
           <button className="btn small primary" type="submit" disabled={!message.trim()}>

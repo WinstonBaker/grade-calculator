@@ -1153,7 +1153,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
     const name = newSemesterTitleName.trim();
     if (!name) return;
     if (RESERVED_TERM_NAMES.has(normalizedName(name))) {
-      warning("Term names cannot be Settings or Overall.");
+      warning("Term names can not be Settings or Overall.");
       return;
     }
     const titles = Array.isArray(appearance.semesterTitles) ? appearance.semesterTitles : [];
@@ -1184,7 +1184,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
       id: `delete-academic-period-${period.key}`,
       type: "persistent",
       title: "Delete period?",
-      message: `Delete ${period.label || "this academic period"} and all of its terms and classes? This cannot be undone.`,
+      message: `Delete ${period.label || "this academic period"} and all of its terms and classes? This can not be undone.`,
       confirmLabel: "Delete",
       onConfirm: async () => {
         setAcademicPeriodBusy(true);
@@ -1562,7 +1562,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
           Current version <span className="mono">{meta?.version || "…"}</span>
           {meta?.frozen
             ? " — installs over this app and restarts."
-            : " — this development build cannot replace itself; Update opens the GitHub release."}
+            : " — this development build can not replace itself; Update opens the GitHub release."}
         </p>
         <div className="update-actions">
           <button className="btn primary" type="button" disabled={updateBusy} onClick={runUpdate}>
@@ -2482,7 +2482,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
               }) : (appearance.semesterTitles || []).map((item, index) => <tr key={item.id}><td><input className="input" size={Math.min(Math.max(item.name.length, 1), 25)} title={item.name} value={item.name} aria-label={`${item.name} term name`} onChange={(e) => {
                 const nextName = e.target.value;
                 if (RESERVED_TERM_NAMES.has(normalizedName(nextName))) {
-                  warning("Term names cannot be Settings or Overall.");
+                  warning("Term names can not be Settings or Overall.");
                   return;
                 }
                 if (normalizedName(nextName) && (appearance.semesterTitles || []).some((term) => term.id !== item.id && normalizedName(term.name) === normalizedName(nextName))) {

@@ -1743,7 +1743,7 @@ a {
 }
 
 /* The card itself is a stacking context (entry animation + hover transform), so
-   the bubble's z-index cannot escape it. Lift the whole card while it is active. */
+   the bubble's z-index can not escape it. Lift the whole card while it is active. */
 .stat-tip:hover,
 .stat-tip:focus-within,
 .stat-info-hover:hover,
@@ -3305,6 +3305,28 @@ th button.active {
   display: block;
   align-items: center;
   min-width: 0;
+}
+
+.assignment-score-cell.is-replaced {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.assignment-score-cell.is-replaced .assignment-score-original-replaced {
+  flex: 0 0 8ch;
+  width: 8ch;
+  min-width: 8ch;
+  box-sizing: border-box;
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.assignment-replacement-score {
+  flex: 0 0 auto;
+  font-family: "IBM Plex Mono", monospace;
+  line-height: 1.2;
 }
 
 .assignment-score-cell .input {
@@ -7203,6 +7225,35 @@ tbody tr {
 
 .exam-impact-stats {
   margin: 12px 0;
+  grid-template-columns: max-content max-content;
+}
+
+.exam-impact-stats .stat {
+  min-width: 0;
+}
+
+.exam-impact-stats .stat:first-child {
+  width: max-content;
+}
+
+.exam-impact-letter-change {
+  width: max-content;
+}
+
+.exam-impact-letter-change .value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.exam-impact-neutral-separator {
+  color: var(--muted);
+}
+
+.exam-impact-stats .label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #exam-impact {

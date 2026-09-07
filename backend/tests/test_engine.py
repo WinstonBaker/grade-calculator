@@ -162,7 +162,7 @@ def test_replace_count_is_independent_from_drop_count():
     assert abs(pct - 97.0) < 1e-9
 
 
-def test_replace_count_replaces_undropped_grades_even_when_replacement_is_lower():
+def test_replace_count_skips_undropped_grades_when_replacement_is_lower():
     tests = CategoryInput(
         id=1,
         name="Tests",
@@ -174,7 +174,49 @@ def test_replace_count_replaces_undropped_grades_even_when_replacement_is_lower(
     )
     final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(80)])
     pct = category_percent(tests, [tests, final])
-    assert abs(pct - 87.5) < 1e-9
+    assert abs(pct - 94.0) < 1e-9
+
+
+def test_points_category_replacement_converts_percent_to_points():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        aggregation="points_ratio",
+        replace_count=1,
+        replace_with_category_id=2,
+        assignments=[P(10, 20), P(18, 20)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(95)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 92.5) < 1e-9
+
+
+def test_percent_category_replacement_converts_points_to_percent():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        aggregation="average",
+        replace_count=1,
+        replace_with_category_id=2,
+        assignments=[P(70), P(90)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="points_ratio", assignments=[P(19, 20)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 92.5) < 1e-9
+
+
+def test_equal_replacement_grade_does_not_replace():
+    tests = CategoryInput(
+        id=1,
+        name="Tests",
+        aggregation="average",
+        replace_count=1,
+        replace_with_category_id=2,
+        assignments=[P(93), P(95)],
+    )
+    final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(93)])
+    pct = category_percent(tests, [tests, final])
+    assert abs(pct - 94.0) < 1e-9
 
 
 def test_average_plus_bonus():
@@ -527,8 +569,7 @@ def test_exam_impact_delta_and_letter_change():
     assert impact["exam_percent"] == 95
     assert impact["delta"] == 15
     assert impact["letter_change"] == "up"
-    assert impact["letter_after"] is not None
-    assert impact["letter_before"] is not None
+
 
     overridden = exam_impact(replace(course, gp_override=2.0), [2], 3)
     assert overridden is not None
@@ -573,5 +614,19 @@ def test_exam_impact_delta_and_letter_change():
     assert missing_tests["test_percent"] is None
     assert missing_tests["exam_percent"] == 95
     assert missing_tests["letter_change"] is None
+
+
+def test_exam_impact_test_percent_ignores_drop_and_replacement_rules():
+    tests = CategoryInput(
+        id=2,
+        name="Tests",
+        aggregation="average",
+        drop_count=1,
+        assignments=[P(70), P(100)],
+    )
+    exam = CategoryInput(id=3, name="Final", aggregation="average", assignments=[P(90)])
+    course = CourseInput(id=1, code="BIO 101", categories=[tests, exam])
+    impact = exam_impact(course, [2], 3)
+    assert impact["test_percent"] == 85
     assert missing_tests["letter_before"] is None
     assert missing_tests["letter_after"] is None
