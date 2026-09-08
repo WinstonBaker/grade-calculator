@@ -120,6 +120,12 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   const [credits, setCredits] = useState("");
   const [gpaSettings, setGpaSettings] = useState({ gradebook_type: "college", gpa_weight_tags: [] });
   const loadSequence = useRef(0);
+  const canAddCourse = classType === "named"
+    ? courseName.trim().length > 0
+    : department.trim().length > 0
+      && courseNumber.trim().length > 0
+      && (gpaSettings.gpa_basis === "classes"
+        || (credits.trim().length > 0 && Number.isFinite(Number(credits)) && Number(credits) > 0));
 
   const sortCols = useMemo(
     () =>
@@ -306,7 +312,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     const nextCode = classType === "named"
       ? courseName.trim()
       : `${department.trim()} ${courseNumber.trim()}`.toLowerCase();
-    if (!semesterId || !nextCode) return;
+    if (!semesterId || !nextCode || !canAddCourse) return;
     if (!isHighSchool && courses.some((course) => String(course.code || "").trim().toLowerCase() === nextCode)) {
       warning(`Course Already Exists in ${displaySemesterName(current)}`);
       return;
@@ -927,7 +933,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
               onChange={(e) => setCredits(e.target.value)}
             />
           </label> : null}
-          <button className="btn primary" type="submit">
+          <button className={`btn ${canAddCourse ? "primary" : ""}`.trim()} type="submit" disabled={!canAddCourse}>
             Add class
           </button>
         </form> : null}

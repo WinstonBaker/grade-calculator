@@ -50,13 +50,6 @@ def frontend_dist() -> Path:
     return resource_root() / "frontend" / "dist"
 
 
-def downloads_dir() -> Path:
-    path = Path.home() / "Downloads"
-    if path.is_dir():
-        return path
-    return user_data_dir()
-
-
 def current_platform() -> str:
     if sys.platform == "darwin":
         return "macos"

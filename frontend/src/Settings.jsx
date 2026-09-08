@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, fmtGpa, letterClass } from "./api";
 import { PassFailScaleEditor, ScaleRowsEditor, scalesMatch } from "./ScaleEditor.jsx";
@@ -128,6 +128,45 @@ function setupBookLeaves(gradebook) {
   return (gradebook?.periods || []).flatMap(setupPeriodLeaves);
 }
 
+function orderSetupInventory(inventory, gradebookAppearances) {
+  return (inventory || []).map((gradebook) => {
+    if (gradebook.gradebook_type !== "high_school") return gradebook;
+    const appearance = gradebookAppearances?.[gradebook.id]
+      || gradebookAppearances?.[String(gradebook.id)]
+      || {};
+    const configuredPeriodOrder = Array.isArray(appearance.highSchoolAcademicPeriodOrder)
+      ? appearance.highSchoolAcademicPeriodOrder.map((key) => String(key))
+      : [];
+    const periodRanks = new Map(
+      [...configuredPeriodOrder].reverse().map((key, index) => [key, index]),
+    );
+    return {
+      ...gradebook,
+      periods: [...(gradebook.periods || [])].sort((a, b) => {
+        if (!configuredPeriodOrder.length) return 0;
+        const aKey = String(a.terms?.[0]?.academic_period_key || "");
+        const bKey = String(b.terms?.[0]?.academic_period_key || "");
+        const aRank = periodRanks.get(aKey) ?? Number.MAX_SAFE_INTEGER;
+        const bRank = periodRanks.get(bKey) ?? Number.MAX_SAFE_INTEGER;
+        return aRank - bRank || String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true });
+      }).map((period) => {
+        const periodKey = period.terms?.[0]?.academic_period_key;
+        const configured = appearance.highSchoolTermsByPeriod?.[String(periodKey)] || appearance.highSchoolTerms;
+        if (!Array.isArray(configured) || !configured.length) return period;
+        const ranks = new Map(configured.map((term, index) => [String(term?.season || term?.id || "").toLowerCase(), index]));
+        return {
+          ...period,
+          terms: [...(period.terms || [])].sort((a, b) => {
+            const aRank = ranks.get(String(a.season || a.id || "").toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+            const bRank = ranks.get(String(b.season || b.id || "").toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+            return aRank - bRank || Number(a.id || 0) - Number(b.id || 0);
+          }),
+        };
+      }),
+    };
+  });
+}
+
 function uniqueImportedGradebookName(name, usedNames) {
   const base = String(name || "Imported gradebook").trim() || "Imported gradebook";
   if (!usedNames.has(normalizedName(base))) {
@@ -214,6 +253,10 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
   const [importPlan, setImportPlan] = useState([]);
   const [importBusy, setImportBusy] = useState(false);
   const [importMessage, setImportMessage] = useState("");
+  const orderedInventory = useMemo(
+    () => orderSetupInventory(inventory, gradebookAppearances),
+    [gradebookAppearances, inventory]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -240,14 +283,16 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
   }
 
   async function exportSetups() {
-    const selections = inventory.map((gradebook) => {
+    const selections = orderedInventory.map((gradebook) => {
       const termIds = [];
       const courseIds = [];
       const termNames = {};
+      const termOrder = [];
       (gradebook.periods || []).forEach((period) => (period.terms || []).forEach((term) => {
         const courseLeaves = (term.classes || []).filter((course) => selected.has(`course:${course.id}`));
         if (courseLeaves.length || selected.has(`term:${term.id}`)) {
           termIds.push(term.id);
+          termOrder.push(term.id);
           termNames[term.id] = term.name;
         }
         courseLeaves.forEach((course) => courseIds.push(course.id));
@@ -257,6 +302,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
         name: gradebook.name,
         term_ids: termIds,
         course_ids: courseIds,
+        term_order: termOrder,
         term_names: termNames,
         appearance: setupAppearancePayload(gradebookAppearances?.[gradebook.id]),
       };
@@ -487,7 +533,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
         next.period_destinations = { ...current.period_destinations, [dragged.periodKey]: String(target.periodId) };
       }
       if (dragged.type === "term") {
-        const matchingTerm = (inventory.find((book) => String(book.id) === String(target.gradebookId))?.periods || [])
+        const matchingTerm = (orderedInventory.find((book) => String(book.id) === String(target.gradebookId))?.periods || [])
           .flatMap((period) => period.terms || [])
           .find((term) => normalizedName(term.name) === normalizedName(dragged.termName));
         next.term_destinations = {
@@ -590,7 +636,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
           {inventoryError ? <p className="error">{inventoryError}</p> : null}
           <div className="gradebook-export-options">
             <div className="gradebook-export-tree" aria-label="Gradebooks to export">
-              {inventory.map((gradebook) => {
+              {orderedInventory.map((gradebook) => {
               const bookLeaves = setupBookLeaves(gradebook);
               const renderTerm = (term) => {
                 const termLeaves = setupTermLeaves(term);
@@ -643,7 +689,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
               Export file name
               <input className="input" value={filename} onChange={(event) => setFilename(event.target.value)} aria-label="Export file name" />
             </label>
-            <button className="btn primary" type="button" onClick={exportSetups} disabled={exportBusy || !inventory.length}>{exportBusy ? "Preparing…" : "Export setup"}</button>
+            <button className="btn primary" type="button" onClick={exportSetups} disabled={exportBusy || !orderedInventory.length}>{exportBusy ? "Preparing…" : "Export setup"}</button>
           </div>
         </div>
         <div className="gradebook-transfer-import">
@@ -712,7 +758,7 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
                     )))}
                   </div>;
                 })}
-                {inventory.map((gradebook) => <details className="placement-target-book" key={gradebook.id} open>
+                {orderedInventory.map((gradebook) => <details className="placement-target-book" key={gradebook.id} open>
                   <summary onDragOver={allowPlacementDrop} onDrop={(event) => placeDroppedItem(event, { type: "gradebook", gradebookId: gradebook.id, gradebookName: gradebook.name, gradebookType: gradebook.gradebook_type })}>
                     <strong>{gradebook.name}</strong><small className="muted">Drop a term here</small>
                   </summary>
@@ -1036,32 +1082,6 @@ function FlaggingSettings({ appearance, onAppearanceChange }) {
           </tbody>
         </table>
       </form>
-      <div className="appearance-toggle flag-color-toggle">
-        <span className="flag-color-toggle-label">
-          <strong>Color Flagged Assignments</strong>
-          <Tooltip text="Use the first flag’s color as a subtle background for flagged assignment rows." />
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label="Color Flagged Assignments"
-            checked={appearance.colorFlaggedAssignments === true}
-            onChange={(event) => onAppearanceChange((current) => ({ ...current, colorFlaggedAssignments: event.target.checked }))}
-          />
-        </span>
-        {appearance.colorFlaggedAssignments === true ? (
-          <span className="flag-color-toggle-label">
-            <strong>Readable Text Background</strong>
-            <Tooltip text="Add background behind text and icons in the row to increase contrast and readability" />
-            <input
-              type="checkbox"
-              role="switch"
-              aria-label="Readable Text Background"
-              checked={appearance.readableTextBackground !== false}
-              onChange={(event) => onAppearanceChange((current) => ({ ...current, readableTextBackground: event.target.checked }))}
-            />
-          </span>
-        ) : null}
-      </div>
       <ClassLabelsSettings appearance={appearance} onAppearanceChange={onAppearanceChange} />
     </section>
   );
@@ -1611,7 +1631,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
         <h2>Appearance</h2>
         {gradebooks.length ? (
           <section className="gradebook-order-settings">
-            <p className="muted settings-note gradebook-order-heading">Gradebook order</p>
+            <p className="muted settings-note gradebook-order-heading">Gradebook order (1st listed is the main gradebook)</p>
             <table className="semester-titles-table gradebook-order-table">
               <thead><tr><th>Name</th><th>Order</th><th aria-label="Delete" /></tr></thead>
               <tbody>
@@ -1658,6 +1678,40 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
               }
             />
           </label>
+          <div className={`appearance-toggle appearance-toggle-pair ${appearance.colorFlaggedAssignments === true ? "" : "appearance-toggle-pair-single"}`.trim()}>
+            <label className="appearance-toggle-option">
+              <span>
+                <strong>Color Flagged Assignments</strong>
+                <small>Use the first flag’s color as a subtle background for flagged assignment rows.</small>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="Color Flagged Assignments"
+                checked={appearance.colorFlaggedAssignments === true}
+                onChange={(e) =>
+                  onAppearanceChange((current) => ({ ...current, colorFlaggedAssignments: e.target.checked }))
+                }
+              />
+            </label>
+            {appearance.colorFlaggedAssignments === true ? (
+              <label className="appearance-toggle-option">
+                <span>
+                  <strong>Readable Text Background</strong>
+                  <small>Add a background behind flagged assignment text and icons to increase contrast and readability.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-label="Readable Text Background"
+                  checked={appearance.readableTextBackground !== false}
+                  onChange={(e) =>
+                    onAppearanceChange((current) => ({ ...current, readableTextBackground: e.target.checked }))
+                  }
+                />
+              </label>
+            ) : null}
+          </div>
         </div>
         <div className="grade-scale-picker">
           <p className="muted settings-note" style={{ marginTop: 14, marginBottom: 10 }}>
@@ -1990,6 +2044,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
             </label>
           ))}
         </div>
+        {appearance.colorFlaggedAssignments === true ? <>
         <label className="appearance-toggle appearance-subtoggle">
           <span>
             <strong>Auto-contrast text</strong>
@@ -2043,6 +2098,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
             </span>
           </label>
         ) : null}
+        </> : null}
         {themePresetCreateOpen ? createPortal((
           <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.stopPropagation()} onWheel={(e) => e.preventDefault()} onTouchMove={(e) => e.preventDefault()}>
             <form
@@ -2501,7 +2557,8 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
           <section className="panel global-recording-settings" style={{ marginTop: 16 }}>
             <h2>Grade recording</h2>
             <label className="muted settings-recording-interval" style={{ display: "block", marginTop: 14 }}>
-              Grade recording interval (days) <Tooltip anchor="icon" text="How often to ask you to record class percents and semester GPA for progression charts." />
+              <span>Grade recording interval (days)</span>
+              <small style={{ display: "block", marginTop: 4 }}>How often the program sends a reminder for you to record your grades (measured in days).</small>
               <input
                 className="input"
                 style={{ display: "block", width: "min(100%, 160px)", marginTop: 6 }}

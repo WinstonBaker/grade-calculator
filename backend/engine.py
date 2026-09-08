@@ -43,8 +43,6 @@ PRESET_MINIMUM_PASSING = {
     "uncw": "D-", "uncc": "D", "duke": "C-", "cofc": "C",
 }
 
-VALID_QUALITY_POINTS = {qp for _, _, qp in DEFAULT_SCALE}
-
 # School GPA tables. Percent cutoffs are typical 10-point plus/minus bands;
 # instructors can still change them per class. Quality points follow each
 # school's published undergraduate transcript scale.
@@ -628,14 +626,6 @@ def _kept_scores(values: list[float], drop: int) -> list[float]:
     return ranked[:keep]
 
 
-def avg_drop_x(values: list[float], drop: int) -> float | None:
-    """AVGDROPX: average after dropping the lowest `drop` scores, keeping at least one."""
-    kept = _kept_scores(values, drop)
-    if not kept:
-        return None
-    return sum(kept) / len(kept)
-
-
 def points_ratio(assignments: Iterable[AssignmentInput]) -> float | None:
     """PNTSUMTOT: 100 * sum(earned) / sum(possible) for scored rows."""
     earned = 0.0
@@ -761,7 +751,23 @@ def category_percent(
                     )
                     candidates.remove(lowest)
         pct = points_ratio(scored)
-        return pct
+        if pct is None:
+            return None
+        assignment_bonus = sum(
+            item.earned
+            for item in category.assignments
+            if item.is_bonus
+            and item.bonus_type != "category"
+            and item.earned is not None
+        )
+        category_bonus = sum(
+            item.earned
+            for item in category.assignments
+            if item.is_bonus
+            and item.bonus_type == "category"
+            and item.earned is not None
+        )
+        return pct + category_bonus + (assignment_bonus / len(scored) if scored else 0.0)
 
     if not regular:
         return None
@@ -920,12 +926,14 @@ def term_score(quality_points: float | None, credits: float, target_gp: float) -
 def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult:
     """Grade the course without what-if rows."""
     scale = course.scale or [ScaleRow(*row) for row in DEFAULT_SCALE]
+    points_based = is_points_based(course)
+    pass_fail = is_pass_fail(course)
     cat_results: list[CategoryResult] = []
 
     for cat in course.categories:
         calculated_cat = (
             replace(cat, aggregation="points_ratio")
-            if is_points_based(course) and not cat.is_bonus_category
+            if points_based and not cat.is_bonus_category
             else cat
         )
         pct = category_percent(calculated_cat, course.categories)
@@ -959,7 +967,7 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
         if course.bonus_mode in {"none", "static_points"}
         else course.bonus_points or 0.0
     )
-    if is_points_based(course):
+    if points_based:
         raw = course_points_percent(course)
         percent = (raw + applied_bonus) if raw is not None else None
     elif used:
@@ -970,7 +978,7 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
 
     letter, gp = letter_from_percent(round_half_up(percent, course.grade_rounding), scale)
     natural_letter, natural_gp = letter, gp
-    if is_pass_fail(course):
+    if pass_fail:
         pf = course.pass_fail or PassFailScale()
         options = sorted(pf.rows or [], key=lambda row: float(row.get("min_percent", 0)), reverse=True)
         eligible = [row for row in options if percent is not None and percent >= float(row.get("min_percent", 0))]
@@ -980,8 +988,8 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
         letter = course.pass_fail_override or natural_letter
         effective_row = next((row for row in options if row.get("label") == letter), natural_row)
         gp = 0.0 if pf.fail_affects_gpa and effective_row and not effective_row.get("is_passing", False) else None
-    valid_qp = quality_points_set(scale) or VALID_QUALITY_POINTS
-    if course.gp_override == -1 and not is_pass_fail(course):
+    valid_qp = quality_points_set(scale)
+    if course.gp_override == -1 and not pass_fail:
         return CourseResult(
             percent=percent,
             letter="N/A",
@@ -993,12 +1001,9 @@ def evaluate_course(course: CourseInput, target_gp: float = 4.0) -> CourseResult
             categories=cat_results,
             what_if=[],
         )
-    if not is_pass_fail(course) and course.gp_override is not None and course.gp_override in valid_qp:
+    if not pass_fail and course.gp_override is not None and course.gp_override in valid_qp:
         gp = course.gp_override
         letter = next((row.letter for row in scale if row.quality_points == gp), letter)
-    elif not is_pass_fail(course) and course.gp_override is not None:
-        # Invalid override is ignored, matching the spreadsheet MATCH check.
-        pass
 
     natural_score = term_score(natural_gp, course.credits, target_gp) if natural_gp is not None else None
     score = term_score(gp, course.credits, target_gp) if gp is not None else None
@@ -1127,17 +1132,21 @@ def what_if_needed(
         if points_based:
             if target.id is None:
                 continue
-            for letter, cutoff, qp in [(r.letter, r.min_percent, r.quality_points) for r in scale]:
-                if letter == "F":
+            for row in scale:
+                if row.letter == "F":
                     continue
-                needed = exam_score_needed(course, target.id, cutoff_with_rounding(cutoff, course.grade_rounding))
+                needed = exam_score_needed(
+                    course,
+                    target.id,
+                    cutoff_with_rounding(row.min_percent, course.grade_rounding),
+                )
                 rows.append(
                     WhatIfRow(
                         category_id=target.id,
                         category_name=target.name,
-                        letter=letter,
-                        cutoff_percent=cutoff,
-                        quality_points=qp,
+                        letter=row.letter,
+                        cutoff_percent=row.min_percent,
+                        quality_points=row.quality_points,
                         needed=needed,
                     )
                 )
@@ -1153,19 +1162,19 @@ def what_if_needed(
         if not target_weight:
             continue
         total_w = other_weight + target_weight
-        for letter, cutoff, qp in [(r.letter, r.min_percent, r.quality_points) for r in scale]:
-            if letter == "F":
+        for row in scale:
+            if row.letter == "F":
                 continue
             # Want (other_weighted + w * needed) / total_w + bonus = cutoff
-            effective = cutoff_with_rounding(cutoff, course.grade_rounding)
+            effective = cutoff_with_rounding(row.min_percent, course.grade_rounding)
             needed = ((effective - bonus) * total_w - other_weighted) / target_weight
             rows.append(
                 WhatIfRow(
                     category_id=target.id,
                     category_name=target.name,
-                    letter=letter,
-                    cutoff_percent=cutoff,
-                    quality_points=qp,
+                    letter=row.letter,
+                    cutoff_percent=row.min_percent,
+                    quality_points=row.quality_points,
                     needed=needed,
                 )
             )

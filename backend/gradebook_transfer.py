@@ -230,6 +230,7 @@ def export_gradebook_setups(db: Session, selections: list[dict], include_entered
         if not gradebook_id:
             continue
         selected_terms = {int(value) for value in selection.get("term_ids", []) if str(value).isdigit()}
+        requested_term_order = [int(value) for value in selection.get("term_order", []) if str(value).isdigit()]
         selected_courses = {int(value) for value in selection.get("course_ids", []) if str(value).isdigit()}
         term_names = selection.get("term_names") if isinstance(selection.get("term_names"), dict) else {}
         if not selected_terms and not selected_courses:
@@ -245,7 +246,10 @@ def export_gradebook_setups(db: Session, selections: list[dict], include_entered
             .order_by(Semester.year, Semester.season, Semester.id)
             .all()
         )
-        selected = [semester for semester in semesters if semester.id in selected_terms]
+        selected_by_id = {semester.id: semester for semester in semesters}
+        selected = [selected_by_id[semester_id] for semester_id in requested_term_order if semester_id in selected_terms and semester_id in selected_by_id]
+        selected_ids = {semester.id for semester in selected}
+        selected.extend(semester for semester in semesters if semester.id in selected_terms and semester.id not in selected_ids)
         if not selected:
             continue
         profiles = (
@@ -390,6 +394,227 @@ def _term_map(gradebook: dict) -> tuple[dict[str, dict], dict[str, dict]]:
     return terms, periods
 
 
+def _import_scale_profiles(
+    db: Session,
+    destination_id: str,
+    source: dict,
+    destination_is_new: bool,
+) -> dict[str, int]:
+    profile_map: dict[str, int] = {}
+    for profile_data in source.get("scale_profiles", []):
+        if not isinstance(profile_data, dict):
+            continue
+        profile = ScaleProfile(
+            gradebook_id=destination_id,
+            name=str(profile_data.get("name") or "Imported scale")[:64],
+            sort_order=db.query(ScaleProfile).filter(
+                ScaleProfile.gradebook_id == destination_id
+            ).count(),
+            is_primary=profile_data.get("is_primary") is True and destination_is_new,
+            preset_id=profile_data.get("preset_id") or None,
+            pass_label=str(profile_data.get("pass_label") or "S")[:8],
+            fail_label=str(profile_data.get("fail_label") or "U")[:8],
+            pass_min_percent=float(profile_data.get("pass_min_percent") or 70),
+            pass_fail_rows_json=json.dumps(
+                profile_data.get("pass_fail_rows")
+                if isinstance(profile_data.get("pass_fail_rows"), list)
+                else []
+            ),
+            minimum_passing_letter=str(
+                profile_data.get("minimum_passing_letter") or "C-"
+            )[:8],
+        )
+        db.add(profile)
+        db.flush()
+        for row in profile_data.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            db.add(
+                ScaleProfileRow(
+                    profile_id=profile.id,
+                    letter=str(row.get("letter") or "")[:8],
+                    min_percent=float(row.get("min_percent") or 0),
+                    quality_points=float(row.get("quality_points") or 0),
+                )
+            )
+        profile_map[str(profile_data.get("key") or "")] = profile.id
+    return profile_map
+
+
+def _import_course(
+    db: Session,
+    course_data: dict,
+    semester_id: int,
+    code: str,
+    profile_map: dict[str, int],
+) -> None:
+    course = Course(
+        semester_id=semester_id,
+        code=code[:64],
+        credits=float(course_data.get("credits") or 0),
+        bonus_points=float(course_data.get("bonus_points") or 0),
+        bonus_mode=str(course_data.get("bonus_mode") or "static")[:16],
+        grade_rounding=(
+            course_data.get("grade_rounding")
+            if isinstance(course_data.get("grade_rounding"), int)
+            else None
+        ),
+        grading_mode=str(course_data.get("grading_mode") or "weighted")[:16],
+        credit_mode=str(course_data.get("credit_mode") or "for_credit")[:16],
+        gpa_weight_tag=str(course_data.get("gpa_weight_tag") or "unweighted")[:48],
+        pass_label=str(course_data.get("pass_label") or "S")[:8],
+        fail_label=str(course_data.get("fail_label") or "U")[:8],
+        pass_min_percent=float(course_data.get("pass_min_percent") or 70),
+        pass_fail_rows_json=json.dumps(
+            course_data.get("pass_fail_rows")
+            if isinstance(course_data.get("pass_fail_rows"), list)
+            else []
+        ),
+        minimum_passing_letter=str(
+            course_data.get("minimum_passing_letter") or "C-"
+        )[:8],
+        dynamic_weighting_enabled=course_data.get("dynamic_weighting_enabled") is True,
+        scale_profile_id=profile_map.get(
+            str(course_data.get("scale_profile_key") or "")
+        ),
+        gp_override=(
+            float(course_data["gp_override"])
+            if course_data.get("gp_override") is not None
+            else None
+        ),
+        final_gp_override=(
+            float(course_data["final_gp_override"])
+            if course_data.get("final_gp_override") is not None
+            else None
+        ),
+    )
+    db.add(course)
+    db.flush()
+
+    category_map: dict[str, int] = {}
+    categories = course_data.get("categories", [])
+    for category_data in categories:
+        if not isinstance(category_data, dict):
+            continue
+        category = Category(
+            course_id=course.id,
+            name=str(category_data.get("name") or "Category")[:64],
+            weight=float(category_data.get("weight") or 0),
+            weight_per_item=category_data.get("weight_per_item"),
+            aggregation=str(category_data.get("aggregation") or "average")[:32],
+            drop_count=max(0, int(category_data.get("drop_count") or 0)),
+            replace_count=max(0, int(category_data.get("replace_count") or 0)),
+            include_bonus=category_data.get("include_bonus") is True,
+            is_bonus_category=category_data.get("is_bonus_category") is True,
+            sort_order=int(category_data.get("sort_order") or 0),
+        )
+        db.add(category)
+        db.flush()
+        category_map[str(category_data.get("key") or "")] = category.id
+
+    for category_data in categories:
+        if not isinstance(category_data, dict):
+            continue
+        key = str(category_data.get("key") or "")
+        replacement = str(category_data.get("replace_with_key") or "")
+        if key in category_map and replacement in category_map:
+            target = db.get(Category, category_map[key])
+            if target.replace_count > 0:
+                target.replace_with_category_id = category_map[replacement]
+        if key not in category_map:
+            continue
+        for assignment_data in category_data.get("assignments", []):
+            if not isinstance(assignment_data, dict):
+                continue
+            db.add(
+                Assignment(
+                    category_id=category_map[key],
+                    name=str(assignment_data.get("name") or "")[:64],
+                    earned=(
+                        float(assignment_data["earned"])
+                        if assignment_data.get("earned") is not None
+                        else None
+                    ),
+                    possible=(
+                        float(assignment_data["possible"])
+                        if assignment_data.get("possible") is not None
+                        else None
+                    ),
+                    score_text=(
+                        str(assignment_data.get("score_text"))[:128]
+                        if assignment_data.get("score_text") is not None
+                        else None
+                    ),
+                    composite_json=(
+                        assignment_data.get("composite_json")
+                        if isinstance(assignment_data.get("composite_json"), str)
+                        else None
+                    ),
+                    is_bonus=assignment_data.get("is_bonus") is True,
+                    bonus_type=(
+                        str(assignment_data.get("bonus_type"))[:16]
+                        if assignment_data.get("bonus_type")
+                        else None
+                    ),
+                    comment=(
+                        str(assignment_data.get("comment"))[:500]
+                        if assignment_data.get("comment")
+                        else None
+                    ),
+                    flag_ids_json=json.dumps(
+                        assignment_data.get("flag_ids")
+                        if isinstance(assignment_data.get("flag_ids"), list)
+                        else []
+                    ),
+                    sort_order=int(assignment_data.get("sort_order") or 0),
+                )
+            )
+
+    dynamic = (
+        course_data.get("dynamic_weighting")
+        if isinstance(course_data.get("dynamic_weighting"), dict)
+        else {}
+    )
+    options = dynamic.get("options") if isinstance(dynamic, dict) else None
+    if isinstance(options, list):
+        dynamic = {
+            **dynamic,
+            "options": [
+                {
+                    **option,
+                    "weights": {
+                        str(category_map.get(str(key), key)): value
+                        for key, value in (option.get("weights") or {}).items()
+                    },
+                }
+                for option in options
+                if isinstance(option, dict)
+            ],
+        }
+    course.dynamic_weighting_json = json.dumps(dynamic)
+    course.test_category_ids_json = json.dumps(
+        [
+            category_map[key]
+            for key in course_data.get("test_category_keys", [])
+            if key in category_map
+        ]
+    )
+    course.exam_category_id = category_map.get(
+        str(course_data.get("exam_category_key") or "")
+    )
+    for row in course_data.get("scale", []):
+        if not isinstance(row, dict):
+            continue
+        db.add(
+            GradeScale(
+                course_id=course.id,
+                letter=str(row.get("letter") or "")[:8],
+                min_percent=float(row.get("min_percent") or 0),
+                quality_points=float(row.get("quality_points") or 0),
+            )
+        )
+
+
 def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dict:
     """Import a validated setup payload with explicit destination mappings."""
     gradebooks = _valid_export(payload)
@@ -431,33 +656,9 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                             raise ValueError("Each class converted between gradebook types needs a destination term")
         _persist_settings(db, destination_id, source.get("settings", {}), destination_is_new or entry.get("apply_settings") is True)
 
-        profile_map: dict[str, int] = {}
-        for profile_data in source.get("scale_profiles", []):
-            if not isinstance(profile_data, dict):
-                continue
-            profile = ScaleProfile(
-                gradebook_id=destination_id,
-                name=str(profile_data.get("name") or "Imported scale")[:64],
-                sort_order=db.query(ScaleProfile).filter(ScaleProfile.gradebook_id == destination_id).count(),
-                is_primary=profile_data.get("is_primary") is True and destination_is_new,
-                preset_id=profile_data.get("preset_id") or None,
-                pass_label=str(profile_data.get("pass_label") or "S")[:8],
-                fail_label=str(profile_data.get("fail_label") or "U")[:8],
-                pass_min_percent=float(profile_data.get("pass_min_percent") or 70),
-                pass_fail_rows_json=json.dumps(profile_data.get("pass_fail_rows") if isinstance(profile_data.get("pass_fail_rows"), list) else []),
-                minimum_passing_letter=str(profile_data.get("minimum_passing_letter") or "C-")[:8],
-            )
-            db.add(profile)
-            db.flush()
-            for row in profile_data.get("rows", []):
-                if isinstance(row, dict):
-                    db.add(ScaleProfileRow(
-                        profile_id=profile.id,
-                        letter=str(row.get("letter") or "")[:8],
-                        min_percent=float(row.get("min_percent") or 0),
-                        quality_points=float(row.get("quality_points") or 0),
-                    ))
-            profile_map[str(profile_data.get("key") or "")] = profile.id
+        profile_map = _import_scale_profiles(
+            db, destination_id, source, destination_is_new
+        )
 
         terms, periods = _term_map(source)
         term_destinations = entry.get("term_destinations") if isinstance(entry.get("term_destinations"), dict) else {}
@@ -594,91 +795,7 @@ def import_gradebook_setups(db: Session, payload: dict, plan: list[dict]) -> dic
                     skipped_courses += 1
                     continue
                 code = raw_code if target_type == "high_school" else _unique_code(db, semester_id, raw_code)
-                course = Course(
-                    semester_id=semester_id,
-                    code=code[:64],
-                    credits=float(course_data.get("credits") or 0),
-                    bonus_points=float(course_data.get("bonus_points") or 0),
-                    bonus_mode=str(course_data.get("bonus_mode") or "static")[:16],
-                    grade_rounding=course_data.get("grade_rounding") if isinstance(course_data.get("grade_rounding"), int) else None,
-                    grading_mode=str(course_data.get("grading_mode") or "weighted")[:16],
-                    credit_mode=str(course_data.get("credit_mode") or "for_credit")[:16],
-                    gpa_weight_tag=str(course_data.get("gpa_weight_tag") or "unweighted")[:48],
-                    pass_label=str(course_data.get("pass_label") or "S")[:8],
-                    fail_label=str(course_data.get("fail_label") or "U")[:8],
-                    pass_min_percent=float(course_data.get("pass_min_percent") or 70),
-                    pass_fail_rows_json=json.dumps(course_data.get("pass_fail_rows") if isinstance(course_data.get("pass_fail_rows"), list) else []),
-                    minimum_passing_letter=str(course_data.get("minimum_passing_letter") or "C-")[:8],
-                    dynamic_weighting_enabled=course_data.get("dynamic_weighting_enabled") is True,
-                    scale_profile_id=profile_map.get(str(course_data.get("scale_profile_key") or "")),
-                    gp_override=float(course_data["gp_override"]) if course_data.get("gp_override") is not None else None,
-                    final_gp_override=float(course_data["final_gp_override"]) if course_data.get("final_gp_override") is not None else None,
-                )
-                db.add(course)
-                db.flush()
-                category_map: dict[str, int] = {}
-                for category_data in course_data.get("categories", []):
-                    if not isinstance(category_data, dict):
-                        continue
-                    category = Category(
-                        course_id=course.id,
-                        name=str(category_data.get("name") or "Category")[:64],
-                        weight=float(category_data.get("weight") or 0),
-                        weight_per_item=category_data.get("weight_per_item"),
-                        aggregation=str(category_data.get("aggregation") or "average")[:32],
-                        drop_count=max(0, int(category_data.get("drop_count") or 0)),
-                        replace_count=max(0, int(category_data.get("replace_count") or 0)),
-                        include_bonus=category_data.get("include_bonus") is True,
-                        is_bonus_category=category_data.get("is_bonus_category") is True,
-                        sort_order=int(category_data.get("sort_order") or 0),
-                    )
-                    db.add(category)
-                    db.flush()
-                    category_map[str(category_data.get("key") or "")] = category.id
-                for category_data in course_data.get("categories", []):
-                    key = str(category_data.get("key") or "") if isinstance(category_data, dict) else ""
-                    replacement = str(category_data.get("replace_with_key") or "") if isinstance(category_data, dict) else ""
-                    if key in category_map and replacement in category_map:
-                        target = db.get(Category, category_map[key])
-                        if target.replace_count > 0:
-                            target.replace_with_category_id = category_map[replacement]
-                    if key in category_map and isinstance(category_data, dict):
-                        for assignment_data in category_data.get("assignments", []):
-                            if not isinstance(assignment_data, dict):
-                                continue
-                            db.add(Assignment(
-                                category_id=category_map[key],
-                                name=str(assignment_data.get("name") or "")[:64],
-                                earned=float(assignment_data["earned"]) if assignment_data.get("earned") is not None else None,
-                                possible=float(assignment_data["possible"]) if assignment_data.get("possible") is not None else None,
-                                score_text=str(assignment_data.get("score_text"))[:128] if assignment_data.get("score_text") is not None else None,
-                                composite_json=assignment_data.get("composite_json") if isinstance(assignment_data.get("composite_json"), str) else None,
-                                is_bonus=assignment_data.get("is_bonus") is True,
-                                bonus_type=str(assignment_data.get("bonus_type"))[:16] if assignment_data.get("bonus_type") else None,
-                                comment=str(assignment_data.get("comment"))[:500] if assignment_data.get("comment") else None,
-                                flag_ids_json=json.dumps(assignment_data.get("flag_ids") if isinstance(assignment_data.get("flag_ids"), list) else []),
-                                sort_order=int(assignment_data.get("sort_order") or 0),
-                            ))
-                dynamic = course_data.get("dynamic_weighting") if isinstance(course_data.get("dynamic_weighting"), dict) else {}
-                options = dynamic.get("options") if isinstance(dynamic, dict) else None
-                if isinstance(options, list):
-                    dynamic = {**dynamic, "options": [
-                        {**option, "weights": {str(category_map.get(str(key), key)): value for key, value in (option.get("weights") or {}).items()}}
-                        for option in options if isinstance(option, dict)
-                    ]}
-                course.dynamic_weighting_json = json.dumps(dynamic)
-                test_ids = [category_map[key] for key in course_data.get("test_category_keys", []) if key in category_map]
-                course.test_category_ids_json = json.dumps(test_ids)
-                exam_key = str(course_data.get("exam_category_key") or "")
-                course.exam_category_id = category_map.get(exam_key)
-                for row in course_data.get("scale", []):
-                    if isinstance(row, dict):
-                        db.add(GradeScale(
-                            course_id=course.id,
-                            letter=str(row.get("letter") or "")[:8],
-                            min_percent=float(row.get("min_percent") or 0),
-                            quality_points=float(row.get("quality_points") or 0),
-                        ))
+                _import_course(db, course_data, semester_id, code, profile_map)
                 imported_courses += 1
         results.append({
             "id": destination_id,

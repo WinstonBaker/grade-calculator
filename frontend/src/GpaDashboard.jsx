@@ -435,7 +435,7 @@ function truncateDistribution(distribution) {
   return distribution.slice(0, last + 1);
 }
 
-function DistributionTable({ distribution, courses = [], displayCodes = new Map(), simplified = false, periodMode = false, showUnits = false, courseHref }) {
+function DistributionTable({ distribution, courses = [], displayCodes = new Map(), simplified = false, periodMode = false, showUnits = false, courseHref, termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
   const uniformCredits = courses.length > 0 && new Set(courses.map((course) => Number(course.credits) || 0)).size === 1;
@@ -506,9 +506,9 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
           </th>
           {showUnits ? <th>Units</th> : null}
           {!hideCreditColumns ? <th>{creditTerms.label}</th> : null}
-          {!hideCreditColumns ? <th>% {creditTerms.singular}</th> : null}
+          {!hideCreditColumns ? <th>% {creditTerms.plural}</th> : null}
           <th>Courses</th>
-          <th>% course</th>
+          <th>% courses</th>
         </tr>
       </thead>
       <tbody>
@@ -546,7 +546,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
                     <div className="distribution-course distribution-course-head">
                       <span>Class</span>
                       <span>Grade</span>
-                      <span>{periodMode ? "Period" : "Semester"}</span>
+                      <span>{periodMode ? "Period" : termLabel}</span>
                       {!periodMode ? <span>{creditTerms.label}</span> : null}
                     </div>
                     {gradeCourses.map((course) => (
@@ -602,7 +602,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
                     <div className="distribution-course distribution-course-head">
                       <span>Class</span>
                       <span>Grade</span>
-                      <span>{periodMode ? "Period" : "Semester"}</span>
+                      <span>{periodMode ? "Period" : termLabel}</span>
                       {!periodMode ? <span>{creditTerms.label}</span> : null}
                     </div>
                     {row.courses.map((course) => (
@@ -804,6 +804,13 @@ function GradeDistributionCharts({ distribution, courses = [], compact = false, 
   );
 }
 
+function pluralizeTermLabel(label) {
+  const text = String(label || "Term").trim();
+  if (/s$/i.test(text)) return text;
+  if (/y$/i.test(text)) return `${text.slice(0, -1)}ies`;
+  return `${text}s`;
+}
+
 function shortTermName(term) {
   if (term.isAcademicPeriod) return term.name;
   const year = String(term.year || "").slice(-2);
@@ -837,11 +844,13 @@ function trendTermGpa(term, weighted, classBasis, periodMode, weightTags, gpaCap
   return gpaCap == null ? value : Math.min(value, Number(gpaCap));
 }
 
-function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false, periodOrder = [], semesterTitles = [], weightedGpa = false, showScore = true, weightTags = [] }) {
+function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false, periodOrder = [], semesterTitles = [], weightedGpa = false, showScore = true, weightTags = [], termLabel = "Semester" }) {
   const [hover, setHover] = useState(null);
   const [metric, setMetric] = useState("gpa");
   const classBasis = useGpaBasis() === "classes";
   const metricLabel = metric === "score" ? "Score" : metric === "wgpa" ? "WGPA" : "GPA";
+  const termPluralLabel = pluralizeTermLabel(termLabel);
+  const lowerTermLabel = String(termLabel || "Term").toLowerCase();
 
   useEffect(() => {
     if ((!weightedGpa && metric === "wgpa") || (!showScore && metric === "score")) {
@@ -953,11 +962,11 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
         <div className="gpa-trends-head">
           <div>
             <h2>GPA trends</h2>
-            <p className="muted">Included {periodMode ? "periods" : "semesters"}, oldest to newest.</p>
+            <p className="muted">Included {termPluralLabel.toLowerCase()}, oldest to newest.</p>
           </div>
         </div>
         <div className="gpa-trends-chart gpa-trends-empty">
-          <p className="muted">Include a graded semester to see GPA trends.</p>
+          <p className="muted">Include a graded {lowerTermLabel} to see GPA trends.</p>
         </div>
       </section>
     );
@@ -998,7 +1007,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
       <div className="gpa-trends-head">
           <div>
             <h2>GPA trends</h2>
-            <p className="muted">Included {periodMode ? "periods" : "semesters"}, oldest to newest.</p>
+            <p className="muted">Included {termPluralLabel.toLowerCase()}, oldest to newest.</p>
           </div>
         <div className="gpa-trends-toggle" role="group" aria-label="Trend metric">
           <button className={metric === "gpa" ? "active" : ""} type="button" onClick={() => { setMetric("gpa"); setHover(null); }}>
@@ -1016,7 +1025,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
           ) : null}
         </div>
         <div className="gpa-trends-legend" aria-label="Chart legend">
-          <span><i className="semester" />{periodMode ? "Period" : "Semester"} {metricLabel}</span>
+          <span><i className="semester" />{termLabel} {metricLabel}</span>
           <span><i className="cumulative" />Cumulative {metricLabel}</span>
         </div>
       </div>
@@ -1024,7 +1033,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
         <svg
           viewBox={`0 0 ${width} ${height}`}
           role="img"
-          aria-label={`${periodMode ? "Period" : "Semester"} and cumulative ${metricLabel} over time`}
+          aria-label={`${termLabel} and cumulative ${metricLabel} over time`}
           onMouseLeave={() => setHover(null)}
         >
           {yTicks.map((tick) => (
@@ -1101,11 +1110,11 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
         {active ? (
           <>
             <strong>{active.name}</strong>
-            <span>{periodMode ? "Period" : "Semester"} {metricLabel} <b className="mono">{formatMetric(active[semesterKey])}</b></span>
+            <span>{termLabel} {metricLabel} <b className="mono">{formatMetric(active[semesterKey])}</b></span>
             <span>Cumulative {metricLabel} <b className="mono">{formatMetric(active[cumulativeKey])}</b></span>
           </>
         ) : (
-          <span className="muted">Hover a {periodMode ? "period" : "semester"} for exact {metricLabel}s</span>
+          <span className="muted">Hover a {lowerTermLabel} for exact {metricLabel}s</span>
         )}
       </div>
     </section>
@@ -1175,7 +1184,7 @@ function distributionFromCourses(courses, letterOrder = FALLBACK_LETTERS, includ
   return rows;
 }
 
-function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS, embedded = false, minCredits, setMinCredits, courseHref, semesterTitles = [] }) {
+function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS, embedded = false, minCredits, setMinCredits, courseHref, semesterTitles = [], termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
   const gpaBasis = useGpaBasis();
   const showScore = useShowScore();
@@ -1327,7 +1336,7 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS, embedded = fal
                             {r.items.length > 1 ? (
                               <div className="distribution-summary-grid">
                                 <GradeDistributionCharts distribution={r.distribution} courses={r.items} showScoreChart={showScore} compact />
-                                <DistributionTable distribution={r.distribution} courses={r.items} displayCodes={displayCodes} simplified courseHref={courseHref} />
+                                <DistributionTable distribution={r.distribution} courses={r.items} displayCodes={displayCodes} simplified courseHref={courseHref} termLabel={termLabel} />
                               </div>
                             ) : null}
                             <table className="level-course-table">
@@ -1378,7 +1387,7 @@ function CourseCodeStats({ terms, letterOrder = FALLBACK_LETTERS, embedded = fal
   );
 }
 
-function CourseLevelStats({ rows, terms, letterOrder = FALLBACK_LETTERS, embedded = false, courseHref, semesterTitles = [] }) {
+function CourseLevelStats({ rows, terms, letterOrder = FALLBACK_LETTERS, embedded = false, courseHref, semesterTitles = [], termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
   const gpaBasis = useGpaBasis();
   const showScore = useShowScore();
@@ -1565,6 +1574,7 @@ function CourseLevelStats({ rows, terms, letterOrder = FALLBACK_LETTERS, embedde
                                 displayCodes={displayCodes}
                                 simplified
                                 courseHref={courseHref}
+                                termLabel={termLabel}
                               />
                             </div>
                           ) : null}
@@ -1615,7 +1625,7 @@ function CourseLevelStats({ rows, terms, letterOrder = FALLBACK_LETTERS, embedde
   );
 }
 
-function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrder = FALLBACK_LETTERS, embedded = false, highSchoolMode = false, periodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, targetGp = 4, courseHref, semesterTitles = [] }) {
+function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrder = FALLBACK_LETTERS, embedded = false, highSchoolMode = false, periodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, targetGp = 4, courseHref, semesterTitles = [], termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
   const gpaBasis = useGpaBasis();
   const showScore = useShowScore();
@@ -1830,12 +1840,13 @@ function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrd
                                 simplified
                                 periodMode={highSchoolMode}
                                 courseHref={courseHref}
+                                termLabel={termLabel}
                               />
                             </div>
                           ) : null}
                           <table className="level-course-table">
                             <thead>
-                              <tr><th>Class</th><th>{highSchoolMode ? "Period" : "Semester"}</th><th>Percent</th>{showCredits ? <th>{highSchoolMode ? "Units" : creditTerms.label}</th> : null}<th>Letter grade</th></tr>
+                              <tr><th>Class</th><th>{highSchoolMode ? "Period" : termLabel}</th><th>Percent</th>{showCredits ? <th>{highSchoolMode ? "Units" : creditTerms.label}</th> : null}<th>Letter grade</th></tr>
                             </thead>
                             <tbody>
                               {row.items.map((course) => (
@@ -2277,6 +2288,7 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
                                 periodMode={highSchoolMode}
                                 showUnits={showUnits}
                                 courseHref={courseHref}
+                                termLabel={termLabel}
                               />
                             </div>
                           ) : <p className="muted">No classes use this weighting yet.</p>}
@@ -2913,7 +2925,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                 </select>
               </label>
               <label className="muted">
-                Semesters remaining
+                {pluralizeTermLabel(termLabel)} remaining
                 <input
                   className="input"
                   style={{ display: "block", marginTop: 4, width: 90 }}
@@ -2990,8 +3002,8 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
             className="stat"
           >
             <div className="label">
-              Buffer / semester
-              <Tooltip text={`Your overall score spread across the ${data.semesters_remaining} semester${Number(data.semesters_remaining) === 1 ? "" : "s"} you have left. Green/positive means you are ahead of target (${data.target_letter}) and can afford that much score drop each term; red/negative means you need to gain that much score each term.`} />
+              Buffer / {String(termLabel).toLowerCase()}
+              <Tooltip text={`Your overall score spread across the ${data.semesters_remaining} ${Number(data.semesters_remaining) === 1 ? String(termLabel).toLowerCase() : pluralizeTermLabel(termLabel).toLowerCase()} you have left. Green/positive means you are ahead of target (${data.target_letter}) and can afford that much score drop each term; red/negative means you need to gain that much score each term.`} />
             </div>
             <div className={`value ${scoreClass(data.score_per_semester)}`}>
               <AnimatedValue value={hasClasses ? data.score_per_semester : null} format={fmtAnimatedHundredth} />
@@ -3116,6 +3128,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         weightedGpa={weightedGpa}
         showScore={showScore}
         weightTags={data.gpa_weight_tags}
+        termLabel={termLabel}
       />
 
       <section className="panel dashboard-summary-panel" style={{ marginTop: 16 }}>
@@ -3152,6 +3165,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                 displayCodes={displayCodes}
                 periodMode={highSchoolMode}
                 courseHref={courseHref}
+                termLabel={termLabel}
               />
             </div>
           </div>
@@ -3164,6 +3178,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
               minCredits={minCredits}
               setMinCredits={updateMinCredits}
               semesterTitles={semesterTitles}
+              termLabel={termLabel}
               courseHref={courseHref}
             />
             <label className="muted dashboard-min-credits dashboard-min-credits-bottom">
@@ -3182,9 +3197,9 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         ) : summaryView === "weighting" ? (
           <WeightingStats terms={orderedTerms} overallClasses={data.overall_classes} weightTags={data.gpa_weight_tags} letterOrder={letters} termNames={termNames} periodNames={periodNames} termLabel={termLabel} highSchoolMode={highSchoolMode} highSchoolTerms={highSchoolTerms} highSchoolTermsByPeriod={highSchoolTermsByPeriod} semesterTitles={semesterTitles} embedded courseHref={courseHref} />
         ) : summaryView === "levels" ? (
-          <CourseLevelStats rows={data.level_stats} terms={orderedTerms} letterOrder={letters} semesterTitles={semesterTitles} embedded courseHref={courseHref} />
+          <CourseLevelStats rows={data.level_stats} terms={orderedTerms} letterOrder={letters} semesterTitles={semesterTitles} termLabel={termLabel} embedded courseHref={courseHref} />
         ) : (
-          <ClassLabelStats terms={orderedTerms} classLabels={classLabels} courseLabels={courseLabels} letterOrder={letters} highSchoolMode={highSchoolMode} periodNames={periodNames} highSchoolTerms={highSchoolTerms} highSchoolTermsByPeriod={highSchoolTermsByPeriod} semesterTitles={semesterTitles} targetGp={data.target_gp} embedded courseHref={courseHref} />
+          <ClassLabelStats terms={orderedTerms} classLabels={classLabels} courseLabels={courseLabels} letterOrder={letters} highSchoolMode={highSchoolMode} periodNames={periodNames} highSchoolTerms={highSchoolTerms} highSchoolTermsByPeriod={highSchoolTermsByPeriod} semesterTitles={semesterTitles} termLabel={termLabel} targetGp={data.target_gp} embedded courseHref={courseHref} />
         )}
       </section>
 
@@ -3214,7 +3229,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
           <table className="exam-impact-term-table">
             <thead>
               <tr>
-                <th>Semester</th>
+                <th>{termLabel}</th>
                 <th>Avg exam vs tests</th>
                 <th>Letters up</th>
                 <th>Letters down</th>

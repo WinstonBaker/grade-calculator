@@ -2961,6 +2961,11 @@ th button.active {
   gap: 4px;
 }
 
+.cat-card table.cat-scores .assignment-actions-pill > .btn.danger {
+  position: relative;
+  left: -30px;
+}
+
 .cat-card table.cat-scores tr.assignment-row-colored {
   background: color-mix(in srgb, var(--assignment-flag-color) 24%, var(--bg-raised));
 }
@@ -3205,13 +3210,13 @@ th button.active {
   -webkit-appearance: none;
   background-color: transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
-  background-position: right center;
+  background-position: right 1px center;
   background-repeat: no-repeat;
   background-size: 12px 12px;
   border: 0;
   border-bottom: 1px solid var(--line);
   border-radius: 0;
-  padding: 4px 20px 4px 0;
+  padding: 4px 14px 4px 0;
 }
 
 .composite-mode-field .select:focus {
@@ -3452,7 +3457,21 @@ th button.active {
 }
 
 .cat-head-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.cat-head-meta-primary {
   align-items: center;
+  flex-wrap: nowrap;
+}
+
+.category-section-total {
+  color: var(--muted);
+  font-size: 0.9em;
+  line-height: 1.15;
 }
 
 .cat-toggle {
@@ -5022,6 +5041,50 @@ th button.active {
   flex: 0 0 auto;
   accent-color: var(--gold);
   cursor: pointer;
+}
+
+.appearance-toggle-pair {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.appearance-toggle-pair-single {
+  grid-template-columns: 1fr;
+  width: calc(50% - 5px);
+  justify-self: start;
+}
+
+.appearance-toggle-pair .appearance-toggle-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.appearance-toggle-pair .appearance-toggle-option + .appearance-toggle-option {
+  border-left: 0;
+}
+
+@media (max-width: 680px) {
+  .appearance-toggle-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .appearance-toggle-pair-single {
+    width: 100%;
+  }
+
+  .appearance-toggle-pair .appearance-toggle-option + .appearance-toggle-option {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
 }
 
 .theme-colors {

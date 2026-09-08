@@ -8,7 +8,6 @@ from backend.updates import (
     _spawn_detached,
     _validate_release_url,
     _windows_installer_script,
-    _windows_apply_script,
     _windows_uninstall_script,
     acknowledge_update_status,
     apply_update,
@@ -262,24 +261,6 @@ def test_dismiss_endpoint(tmp_path, monkeypatch):
     assert body["dismissed_update_version"] == "1.9.0"
     missing = client.post("/api/updates/dismiss", json={"version": " "})
     assert missing.status_code == 400
-
-
-def test_windows_apply_script_retries_and_falls_back():
-    script = _windows_apply_script(
-        src=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\GradeCaculatorWindowsInstaller.exe"),
-        dst=Path(r"C:\Program Files\Grade Calculator\Grade Calculator.exe"),
-        log=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\apply.log"),
-        marker=Path(r"C:\Users\me\AppData\Roaming\Grade Calculator\updates\update-status.json"),
-        pid=4242,
-        version="1.3.2",
-    )
-    assert "$appPid = 4242" in script
-    assert "for ($i = 0; $i -lt 45; $i++)" in script
-    assert "Move-Item -LiteralPath $dst -Destination $oldPath -Force" in script
-    assert "Copy-Item -LiteralPath $src -Destination $dst -Force" in script
-    assert "failed_launched_staged" in script
-    assert "Start-Process -FilePath $src" in script
-    assert "Write-Status 'applied'" in script
 
 
 def test_windows_installer_script_waits_for_app_and_records_result():

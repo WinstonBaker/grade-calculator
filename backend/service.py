@@ -139,7 +139,6 @@ def profile_pass_fail(profile: ScaleProfile) -> dict:
 from backend.models import (
     AcademicYear,
     Assignment,
-    Category,
     Course,
     Fumble,
     GradeScale,
@@ -731,10 +730,6 @@ def parse_default_scale(settings: Settings | None, db: Session | None = None) ->
     return _scale_from_settings_json(settings)
 
 
-def default_scale_dicts(settings: Settings | None) -> list[dict]:
-    return scale_as_dicts(parse_default_scale(settings))
-
-
 def coerce_target_letter(settings: Settings, scale: list[tuple[str, float, float]]) -> None:
     letters = {letter for letter, _, _ in scale}
     if settings.target_letter in letters:
@@ -899,12 +894,21 @@ def normalize_composite(data: dict) -> dict:
         if not name and not score:
             continue
         weight = raw_item.get("weight", 1)
-        try:
-            weight = float(weight or 1)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Weighted composite weights must be numbers") from exc
-        if mode == "weighted_percent" and weight <= 0:
-            raise ValueError("Weighted composite weights must be greater than zero")
+        if mode == "weighted_percent":
+            if weight in (None, ""):
+                weight = None
+            else:
+                try:
+                    weight = float(weight)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Weighted composite weights must be numbers") from exc
+                if weight <= 0:
+                    raise ValueError("Weighted composite weights must be greater than zero")
+        else:
+            try:
+                weight = float(weight or 1)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Weighted composite weights must be numbers") from exc
         items.append({"name": name, "score": score, "weight": weight})
     return {"mode": mode, "drop_count": drop_count, "total_points": total_points, "items": items}
 
@@ -924,6 +928,8 @@ def composite_score_fields(composite: dict, category_aggregation: str) -> dict:
     for item in composite["items"]:
         raw = item["score"]
         if not raw:
+            continue
+        if mode == "weighted_percent" and item["weight"] is None:
             continue
         if mode == "points":
             earned, possible = parse_score(raw)
@@ -1308,23 +1314,6 @@ def _high_school_overall_grade(course: dict, percent: float, options: dict) -> d
     return grade
 
 
-def high_school_overall_score(
-    terms: list[dict],
-    term_units: dict[int, float],
-    target_gp: float,
-    term_weights_by_period: dict | None = None,
-    rounding_by_period: dict | None = None,
-) -> float:
-    """Calculate one score per class using its full period coverage.
-
-    A class keeps the unit share of every term in which it exists, even when
-    one of those terms has no grade yet. Its overall percent is calculated from
-    the graded term percents, then converted to the period/overall grade.
-    """
-    overall_classes = high_school_overall_classes(terms, term_units, term_weights_by_period, rounding_by_period)
-    return sum(high_school_period_scores(overall_classes, target_gp).values())
-
-
 def high_school_period_scores(overall_classes: list[dict], target_gp: float) -> dict[str, float]:
     """Return the target-relative score for each academic period."""
     scores: dict[str, float] = {}
@@ -1567,6 +1556,79 @@ def serialize_assignment(
     }
 
 
+def _category_aggregation(course: Course, category) -> str:
+    if course.grading_mode == "points" and not category.is_bonus_category:
+        return "points_ratio"
+    return category.aggregation
+
+
+def _serialize_course_categories(course: Course, computed_categories: list) -> list[dict]:
+    computed_by_id = {category.id: category for category in computed_categories}
+    payload = []
+    for category in sorted(course.categories, key=lambda item: (item.sort_order, item.id)):
+        computed = computed_by_id.get(category.id)
+        aggregation = _category_aggregation(course, category)
+        payload.append(
+            {
+                "id": category.id,
+                "name": category.name,
+                "weight": category.weight,
+                "weight_per_item": category.weight_per_item,
+                "aggregation": aggregation,
+                "drop_count": category.drop_count or 0,
+                "replace_count": category.replace_count or 0,
+                "include_bonus": bool(category.include_bonus),
+                "is_bonus_category": bool(category.is_bonus_category),
+                "replace_with_category_id": category.replace_with_category_id,
+                "sort_order": category.sort_order,
+                "percent": computed.percent if computed else None,
+                "effective_weight": computed.effective_weight if computed else category.weight,
+                "weighted": computed.weighted if computed else None,
+                "score_count": computed.score_count if computed else 0,
+                "assignments": [
+                    serialize_assignment(
+                        assignment,
+                        display_as_percent=False,
+                        category_aggregation=aggregation,
+                    )
+                    for assignment in sorted(
+                        category.assignments,
+                        key=lambda item: (item.sort_order, item.id),
+                    )
+                ],
+            }
+        )
+    return payload
+
+
+def _dynamic_weighting_state(course: Course) -> tuple[dict, str | None]:
+    if not course.dynamic_weighting_enabled:
+        return parse_dynamic_weighting(course), None
+
+    winner, scored_options = best_dynamic_option(course)
+    payload = parse_dynamic_weighting(course)
+    if scored_options:
+        payload = {
+            "options": [
+                {
+                    "id": option["id"],
+                    "weights": option["weights"],
+                    "percent": option.get("percent"),
+                }
+                for option in scored_options
+            ]
+        }
+    return payload, winner["id"] if winner else None
+
+
+def _resolved_weight_tag(course: Course, weight_tags: list[dict] | None) -> dict:
+    tag_id = (course.gpa_weight_tag or "unweighted").strip().lower()
+    return next(
+        (item for item in (weight_tags or []) if item.get("id") == tag_id),
+        {"id": "unweighted", "name": "Unweighted", "boost": 0.0},
+    )
+
+
 def serialize_course(
     course: Course,
     target_gp: float,
@@ -1582,55 +1644,8 @@ def serialize_course(
             pass_fail=replace(course_input.pass_fail, fail_affects_gpa=bool(fail_pass_fail_affects_gpa)),
         )
     result = course_grade(course_input, target_gp)
-    cats_by_id = {c.id: c for c in result.categories}
-    categories = []
-    for cat in sorted(course.categories, key=lambda c: (c.sort_order, c.id)):
-        computed = cats_by_id.get(cat.id)
-        categories.append(
-            {
-                "id": cat.id,
-                "name": cat.name,
-                "weight": cat.weight,
-                "weight_per_item": cat.weight_per_item,
-                "aggregation": (
-                    "points_ratio"
-                    if course.grading_mode == "points" and not cat.is_bonus_category
-                    else cat.aggregation
-                ),
-                "drop_count": cat.drop_count or 0,
-                "replace_count": cat.replace_count or 0,
-                "include_bonus": bool(cat.include_bonus),
-                "is_bonus_category": bool(cat.is_bonus_category),
-                "replace_with_category_id": cat.replace_with_category_id,
-                "sort_order": cat.sort_order,
-                "percent": computed.percent if computed else None,
-                "effective_weight": computed.effective_weight if computed else cat.weight,
-                "weighted": computed.weighted if computed else None,
-                "score_count": computed.score_count if computed else 0,
-                "assignments": [
-                    serialize_assignment(
-                        a,
-                        display_as_percent=False,
-                        category_aggregation=(
-                            "points_ratio"
-                            if course.grading_mode == "points" and not cat.is_bonus_category
-                            else cat.aggregation
-                        ),
-                    )
-                    for a in sorted(cat.assignments, key=lambda x: (x.sort_order, x.id))
-                ],
-            }
-        )
-    winner, scored_options = best_dynamic_option(course) if course.dynamic_weighting_enabled else (None, [])
-    dynamic_payload = parse_dynamic_weighting(course)
-    if course.dynamic_weighting_enabled and scored_options:
-        dynamic_payload = {
-            "options": [
-                {"id": opt["id"], "weights": opt["weights"], "percent": opt.get("percent")}
-                for opt in scored_options
-            ]
-        }
-    applied_option_id = winner["id"] if winner else None
+    categories = _serialize_course_categories(course, result.categories)
+    dynamic_payload, applied_option_id = _dynamic_weighting_state(course)
     payload = {
         "id": course.id,
         "semester_id": course.semester_id,
@@ -1687,10 +1702,7 @@ def serialize_course(
             for w in result.what_if
         ],
     }
-    tag_id = (course.gpa_weight_tag or "unweighted").strip().lower()
-    tag = next((item for item in (weight_tags or []) if item.get("id") == tag_id), None)
-    if tag is None:
-        tag = {"id": "unweighted", "name": "Unweighted", "boost": 0.0}
+    tag = _resolved_weight_tag(course, weight_tags)
     payload["gpa_weight_tag"] = tag["id"]
     payload["gpa_weight_tag_name"] = tag["name"]
     payload["gpa_weight_boost"] = float(tag["boost"])
@@ -1882,6 +1894,430 @@ def sort_courses(courses: list[dict], sort_by: str, descending: bool) -> list[di
     return sorted(courses, key=key, reverse=descending)
 
 
+def _assign_display_codes(terms: list[dict]) -> None:
+    courses = [course for term in terms for course in term["courses"]]
+    totals: dict[str, int] = {}
+    for course in courses:
+        key = str(course.get("code") or "").strip().lower()
+        totals[key] = totals.get(key, 0) + 1
+
+    seen: dict[str, int] = {}
+    for course in courses:
+        key = str(course.get("code") or "").strip().lower()
+        seen[key] = seen.get(key, 0) + 1
+        course["display_code"] = (
+            f'{course["code"]} ({seen[key]})' if totals[key] > 1 else course["code"]
+        )
+
+
+def _grade_distribution(
+    included_courses: list[dict],
+    default_rows: list[tuple[str, float, float]],
+    total_credits: float,
+) -> list[dict]:
+    letters = [letter for letter, _, _ in default_rows if letter != "F"]
+    seen = set(letters)
+    for course in included_courses:
+        letter = course.get("letter")
+        if letter and letter != "F" and letter not in seen:
+            letters.append(letter)
+            seen.add(letter)
+
+    distribution = []
+    for letter in letters:
+        matched = [course for course in included_courses if course["letter"] == letter]
+        quality_points = next(
+            (
+                course["quality_points"]
+                for course in matched
+                if course["quality_points"] is not None
+            ),
+            None,
+        )
+        if quality_points is None:
+            quality_points = next(
+                (row[2] for row in default_rows if row[0] == letter), 0.0
+            )
+        credit_hours = sum(course["credits"] for course in matched)
+        distribution.append(
+            {
+                "letter": letter,
+                "quality_points": quality_points,
+                "credit_hours": credit_hours,
+                "credit_pct": (credit_hours / total_credits) if total_credits else 0,
+                "courses": len(matched),
+                "course_pct": (
+                    (len(matched) / len(included_courses)) if included_courses else 0
+                ),
+            }
+        )
+    return distribution
+
+
+def _future_guess_summary(
+    settings: Settings,
+    default_rows: list[tuple[str, float, float]],
+    gpa_basis: str,
+    gpa_credits: float,
+    overall_score: float,
+    weighted_current_units: float,
+    weighted_current_points: float,
+    weight_tags: list[dict],
+    target_gp: float,
+) -> dict:
+    try:
+        guess_raw = json.loads(settings.future_guess_json or "{}")
+    except json.JSONDecodeError:
+        guess_raw = {}
+    if not isinstance(guess_raw, dict):
+        guess_raw = {}
+
+    counts: dict[float, dict[str, float]] = {}
+    for credits, letters in guess_raw.items():
+        if credits == "weighted" or not isinstance(letters, dict):
+            continue
+        try:
+            numeric_credit = float(credits)
+            credit_key = (
+                int(numeric_credit) if numeric_credit.is_integer() else numeric_credit
+            )
+        except (TypeError, ValueError):
+            continue
+        counts[credit_key] = {
+            str(letter): float(count) for letter, count in letters.items()
+        }
+
+    weighted_counts = {}
+    raw_weighted_counts = guess_raw.get("weighted")
+    if isinstance(raw_weighted_counts, dict):
+        weighted_counts = {
+            str(tag_id): {
+                str(letter): float(count)
+                for letter, count in (letters or {}).items()
+            }
+            for tag_id, letters in raw_weighted_counts.items()
+            if isinstance(letters, dict)
+        }
+
+    scale_rows = scale_rows_from_tuples(default_rows)
+    guess_counts = counts
+    if weighted_counts:
+        # Weighted planning still adds one class to the unweighted GPA for
+        # every entered cell; its label only changes the WGPA calculation.
+        guess_counts = {1: {}}
+        for letters in weighted_counts.values():
+            for letter, count in letters.items():
+                guess_counts[1][letter] = guess_counts[1].get(letter, 0) + count
+
+    delta, extra, _ = future_guess_delta(
+        guess_counts,
+        scale_rows,
+        target_gp,
+        1.0 if gpa_basis == "classes" else None,
+    )
+    adjusted_credits = gpa_credits + extra if extra else None
+    adjusted_score = (overall_score + delta) if delta is not None else None
+    adjusted_gpa = (
+        cap_gpa(
+            overall_gpa_from_score(adjusted_score, adjusted_credits, target_gp),
+            settings.gpa_cap,
+        )
+        if adjusted_score is not None and adjusted_credits
+        else None
+    )
+
+    adjusted_wgpa = None
+    if weighted_counts:
+        letter_to_gp = {row.letter: row.quality_points for row in scale_rows}
+        tag_to_boost = {
+            str(tag["id"]): float(tag.get("boost") or 0) for tag in weight_tags
+        }
+        future_units = 0.0
+        future_points = 0.0
+        for tag_id, letters in weighted_counts.items():
+            boost = tag_to_boost.get(tag_id, 0.0)
+            for letter, count in letters.items():
+                number = float(count or 0)
+                quality_points = letter_to_gp.get(letter)
+                if number <= 0 or quality_points is None:
+                    continue
+                future_units += number
+                future_points += number * (quality_points + boost)
+        if future_units:
+            adjusted_wgpa = (
+                cap_gpa(
+                    (weighted_current_points + future_points)
+                    / (weighted_current_units + future_units),
+                    settings.gpa_cap,
+                )
+                if weighted_current_units + future_units
+                else None
+            )
+
+    return {
+        "grid": {"weighted": weighted_counts} if weighted_counts else counts,
+        "delta_score": delta,
+        "extra_credits": extra,
+        "adjusted_credits": adjusted_credits,
+        "adjusted_score": adjusted_score,
+        "adjusted_gpa": adjusted_gpa,
+        "adjusted_wgpa": adjusted_wgpa,
+    }
+
+
+def _overall_classes_payload(overall_classes: list[dict]) -> list[dict]:
+    payload = []
+    for item in overall_classes:
+        final = item["final"]
+        representative = ((item.get("entries") or [{}])[0].get("course") or {})
+        course = final or representative
+        payload.append(
+            {
+                # Keep an identifiable representative course even before a
+                # multi-term class has a final grade, so it can be used by
+                # the fumble planner.
+                "id": course.get("id"),
+                "code": course.get("code"),
+                "occurrence": item.get("occurrence"),
+                "period": item.get("period"),
+                "units": item.get("units"),
+                "overall_percent": final.get("percent") if final is not None else None,
+                "letter": final.get("letter") if final is not None else None,
+                "quality_points": (
+                    final.get("base_quality_points", final.get("quality_points"))
+                    if final is not None
+                    else None
+                ),
+                "weighted_quality_points": (
+                    final.get("quality_points") if final is not None else None
+                ),
+            }
+        )
+    return payload
+
+
+def _fumble_summary(
+    db: Session,
+    *,
+    terms: list[dict],
+    included_terms: list[dict],
+    weighted_course_info: dict,
+    gradebook_type: str,
+    gpa_basis: str,
+    target_gp: float,
+    gpa_cap: float | None,
+    gpa_credits: float,
+    overall_score: float,
+    weighted_current_units: float,
+    weighted_current_points: float,
+) -> dict:
+    rows = []
+    total = 0
+    credits_delta = 0
+    weighted_units_delta = 0.0
+    weighted_points_delta = 0.0
+    by_id = {}
+    course_term = {}
+    term_keys = {}
+    for term in terms:
+        term_keys[term["id"]] = (
+            term["year"],
+            SEASON_ORDER.get(term["season"], 0),
+        )
+        for course in term["courses"]:
+            by_id[course["id"]] = course
+            course_term[course["id"]] = term
+
+    included_course_ids = {
+        course["id"]
+        for term in included_terms
+        for course in term["courses"]
+    }
+    courses_by_code = {}
+    for course_id, course in by_id.items():
+        code_key = str(course.get("code") or "").strip().lower()
+        if code_key:
+            courses_by_code.setdefault(code_key, []).append(course_id)
+
+    fumbles = (
+        db.query(Fumble)
+        .join(Course, Fumble.course_id == Course.id)
+        .join(Semester, Course.semester_id == Semester.id)
+        .filter(Semester.gradebook_id == active_gradebook_id())
+        .all()
+    )
+    for fumble in fumbles:
+        course = by_id.get(fumble.course_id)
+        if not course:
+            continue
+        weighted_info = weighted_course_info.get(fumble.course_id)
+        overall_course = (weighted_info or {}).get("course") or course
+        score_quality_points = (
+            overall_course.get(
+                "base_quality_points",
+                overall_course.get("quality_points"),
+            )
+            if gradebook_type == "high_school"
+            else overall_course.get("quality_points")
+        )
+        fumble_units = (
+            weighted_info["units"]
+            if gradebook_type == "high_school" and weighted_info is not None
+            else (1.0 if gpa_basis == "classes" else course["credits"])
+        )
+        weighted_boost = float(
+            weighted_info["boost"]
+            if weighted_info is not None
+            else course.get("gpa_weight_boost") or 0
+        )
+        weighted_quality_points = (
+            float(score_quality_points) + weighted_boost
+            if score_quality_points is not None
+            else None
+        )
+        term = course_term.get(fumble.course_id) or {}
+        explicit_excluded = fumble.should_have_been_gp is None
+        original_key = term_keys.get(term.get("id"))
+        has_later_retake = any(
+            other_id != fumble.course_id
+            and term_keys.get(
+                (course_term.get(other_id) or {}).get("id"),
+                (-1, -1),
+            )
+            > (original_key or (-1, -1))
+            for other_id in courses_by_code.get(
+                str(course.get("code") or "").strip().lower(),
+                [],
+            )
+        )
+        # A later occurrence can keep an untouched fumble excluded, but it
+        # must not overwrite an explicit "Should" selection. Otherwise the
+        # dropdown for an earlier multi-term class immediately snaps back to
+        # "Not take" after it is changed.
+        auto_excluded = (
+            gradebook_type == "high_school"
+            and has_later_retake
+            and fumble.should_have_been_gp is None
+        )
+        excluded = explicit_excluded or auto_excluded
+        if excluded:
+            # Not taking the class removes its original contribution, so its
+            # score delta is the score recovered by removing it.
+            if fumble.course_id in included_course_ids:
+                if score_quality_points is None:
+                    delta = 0
+                else:
+                    delta = (
+                        -round(3 * (float(score_quality_points) - target_gp))
+                        * float(fumble_units)
+                        if gradebook_type == "high_school"
+                        else -(course.get("score") or 0)
+                    )
+            else:
+                delta = None
+        else:
+            delta_fn = (
+                unit_weighted_fumble_delta
+                if gradebook_type == "high_school"
+                else fumble_delta
+            )
+            delta = delta_fn(
+                score_quality_points,
+                fumble.should_have_been_gp,
+                fumble_units,
+                target_gp,
+            )
+
+        if excluded and fumble.course_id in included_course_ids:
+            if score_quality_points is not None:
+                basis_units = fumble_units
+                weighted_units = float(
+                    weighted_info["units"] if weighted_info else basis_units
+                )
+                credits_delta -= basis_units
+                weighted_units_delta -= weighted_units
+                if weighted_quality_points is not None:
+                    weighted_points_delta -= (
+                        weighted_units * weighted_quality_points
+                    )
+        elif not excluded and fumble.should_have_been_gp is not None and (
+            fumble.course_id in included_course_ids
+            # An ungraded class has no current GPA contribution. Selecting a
+            # hypothetical grade makes its units part of the adjusted GPA,
+            # even when the class's term is not currently included.
+            or score_quality_points is None
+        ):
+            if score_quality_points is None:
+                credits_delta += fumble_units
+                weighted_units_delta += float(fumble_units)
+                weighted_points_delta += float(fumble_units) * (
+                    float(fumble.should_have_been_gp) + weighted_boost
+                )
+            elif weighted_info:
+                weighted_points_delta += float(weighted_info["units"]) * (
+                    float(fumble.should_have_been_gp)
+                    + weighted_boost
+                    - weighted_quality_points
+                )
+
+        if delta is not None:
+            total += delta
+        gpa_delta = None
+        if (
+            not excluded
+            and fumble.should_have_been_gp is not None
+            and score_quality_points is not None
+        ):
+            gpa_delta = float(fumble.should_have_been_gp) - float(
+                score_quality_points
+            )
+        rows.append(
+            {
+                "id": fumble.id,
+                "course_id": course["id"],
+                "code": course["code"],
+                "did_get": score_quality_points,
+                "letter": overall_course.get("letter", course.get("letter")),
+                "should_have_been_gp": (
+                    None if excluded else fumble.should_have_been_gp
+                ),
+                "credits": 1.0 if gpa_basis == "classes" else course["credits"],
+                "delta": delta,
+                "gpa_delta": gpa_delta,
+                "excluded": excluded,
+                "semester_id": term["id"],
+                "semester_name": term["name"],
+            }
+        )
+
+    adjusted_credits = max(0, gpa_credits + credits_delta)
+    score_with = overall_score + total
+    gpa_with = (
+        cap_gpa(
+            overall_gpa_from_score(score_with, adjusted_credits, target_gp),
+            gpa_cap,
+        )
+        if adjusted_credits
+        else None
+    )
+    weighted_units = max(0, weighted_current_units + weighted_units_delta)
+    weighted_points = weighted_current_points + weighted_points_delta
+    weighted_gpa_with = (
+        cap_gpa(weighted_points / weighted_units, gpa_cap)
+        if weighted_units
+        else None
+    )
+    return {
+        "rows": rows,
+        "total": total,
+        "score_with": score_with,
+        "gpa_with": gpa_with,
+        "weighted_gpa_with": weighted_gpa_with,
+        "gpa_credits_with": adjusted_credits,
+        "credits_delta": credits_delta,
+    }
+
+
 def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
     settings = settings_for_gradebook(db)
     gradebook_type = (settings.gradebook_type or "college").strip().lower()
@@ -1912,19 +2348,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         )
         for s in semesters
     ]
-    code_totals = {}
-    for term in terms:
-        for course in term["courses"]:
-            key = str(course.get("code") or "").strip().lower()
-            code_totals[key] = code_totals.get(key, 0) + 1
-    code_seen = {}
-    for term in terms:
-        for course in term["courses"]:
-            key = str(course.get("code") or "").strip().lower()
-            code_seen[key] = code_seen.get(key, 0) + 1
-            course["display_code"] = (
-                f'{course["code"]} ({code_seen[key]})' if code_totals[key] > 1 else course["code"]
-            )
+    _assign_display_codes(terms)
 
     included_terms = [t for t in terms if t["included"]]
     overall_classes = []
@@ -1938,13 +2362,10 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         for semester in gradebook_semesters(db):
             key = high_school_academic_year_key(semester.year, semester.season)
             fallback_terms_per_year[key] = fallback_terms_per_year.get(key, 0) + 1
-        hs_courses = []
         for term in included_terms:
             unit = term_units.get(term["id"], 1 / max(fallback_terms_per_year.get(high_school_academic_year_key(term["year"], term["season"]), 1), 1))
             for course in term["courses"]:
                 course["gpa_units"] = unit
-                if course.get("quality_points") is not None and course.get("gp_override") != -1:
-                    hs_courses.append((course, unit))
         for term in terms:
             unit = term_units.get(term["id"], 1 / max(fallback_terms_per_year.get(high_school_academic_year_key(term["year"], term["season"]), 1), 1))
             term_score = 0.0
@@ -2062,14 +2483,8 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
     if gradebook_type == "high_school":
         # A multi-term class is one overall class for WGPA. Use the same final
         # class result as the overall page instead of averaging each term row.
-        weighted_courses = high_school_overall_classes(
-            terms,
-            term_units,
-            term_weights_by_period,
-            overall_rounding_by_period,
-        )
         weighted_courses = [
-            item for item in weighted_courses if str(item.get("period")) in included_periods
+            item for item in overall_classes if str(item.get("period")) in included_periods
         ]
         weighted_entries = ((item["final"], item["units"]) for item in weighted_courses if item["final"] is not None)
         for item in weighted_courses:
@@ -2126,255 +2541,34 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
 
     included_courses = [c for t in included_terms for c in t["courses"] if c["quality_points"] is not None]
     default_rows = parse_default_scale(settings, db)
-    letters = [letter for letter, _, _ in default_rows if letter != "F"]
-    seen = set(letters)
-    for course in included_courses:
-        letter = course.get("letter")
-        if letter and letter != "F" and letter not in seen:
-            letters.append(letter)
-            seen.add(letter)
-    dist = []
-    for letter in letters:
-        matched = [c for c in included_courses if c["letter"] == letter]
-        qp = next((c["quality_points"] for c in matched if c["quality_points"] is not None), None)
-        if qp is None:
-            qp = next((row[2] for row in default_rows if row[0] == letter), 0.0)
-        ch = sum(c["credits"] for c in matched)
-        dist.append(
-            {
-                "letter": letter,
-                "quality_points": qp,
-                "credit_hours": ch,
-                "credit_pct": (ch / total_credits) if total_credits else 0,
-                "courses": len(matched),
-                "course_pct": (len(matched) / len(included_courses)) if included_courses else 0,
-            }
-        )
+    distribution = _grade_distribution(included_courses, default_rows, total_credits)
 
-    fumble_rows = []
-    fumble_total = 0
-    fumble_credits_delta = 0
-    weighted_fumble_units_delta = 0.0
-    weighted_fumble_points_delta = 0.0
-    by_id = {}
-    course_term = {}
-    term_keys = {}
-    for term in terms:
-        term_keys[term["id"]] = (term["year"], SEASON_ORDER.get(term["season"], 0))
-        for course in term["courses"]:
-            by_id[course["id"]] = course
-            course_term[course["id"]] = term
-    included_course_ids = {
-        course["id"]
-        for term in included_terms
-        for course in term["courses"]
-    }
-    courses_by_code = {}
-    for course_id, course in by_id.items():
-        code_key = str(course.get("code") or "").strip().lower()
-        if code_key:
-            courses_by_code.setdefault(code_key, []).append(course_id)
-    for fumble in (
-        db.query(Fumble)
-        .join(Course, Fumble.course_id == Course.id)
-        .join(Semester, Course.semester_id == Semester.id)
-        .filter(Semester.gradebook_id == active_gradebook_id())
-        .all()
-    ):
-        course = by_id.get(fumble.course_id)
-        if not course:
-            continue
-        weighted_info = weighted_course_info.get(fumble.course_id)
-        overall_course = (weighted_info or {}).get("course") or course
-        score_quality_points = (
-            overall_course.get("base_quality_points", overall_course.get("quality_points"))
-            if gradebook_type == "high_school"
-            else overall_course.get("quality_points")
-        )
-        fumble_units = (
-            weighted_info["units"]
-            if gradebook_type == "high_school" and weighted_info is not None
-            else (1.0 if gpa_basis == "classes" else course["credits"])
-        )
-        weighted_boost = float(
-            weighted_info["boost"]
-            if weighted_info is not None
-            else course.get("gpa_weight_boost") or 0
-        )
-        weighted_quality_points = (
-            float(score_quality_points) + weighted_boost
-            if score_quality_points is not None
-            else None
-        )
-        term = course_term.get(fumble.course_id) or {}
-        explicit_excluded = fumble.should_have_been_gp is None
-        original_key = term_keys.get(term.get("id"))
-        has_later_retake = any(
-            other_id != fumble.course_id
-            and term_keys.get((course_term.get(other_id) or {}).get("id"), (-1, -1)) > (original_key or (-1, -1))
-            for other_id in courses_by_code.get(str(course.get("code") or "").strip().lower(), [])
-        )
-        # A later occurrence can keep an untouched fumble excluded, but it
-        # must not overwrite an explicit "Should" selection. Otherwise the
-        # dropdown for an earlier multi-term class immediately snaps back to
-        # "Not take" after it is changed.
-        auto_excluded = (
-            gradebook_type == "high_school"
-            and has_later_retake
-            and fumble.should_have_been_gp is None
-        )
-        excluded = explicit_excluded or auto_excluded
-        if excluded:
-            # Not taking the class removes its original contribution, so its
-            # score delta is the score recovered by removing it.
-            if fumble.course_id in included_course_ids:
-                if score_quality_points is None:
-                    delta = 0
-                else:
-                    delta = (
-                        -round(3 * (float(score_quality_points) - target_gp)) * float(fumble_units)
-                        if gradebook_type == "high_school"
-                        else -(course.get("score") or 0)
-                    )
-            else:
-                delta = None
-        else:
-            delta_fn = unit_weighted_fumble_delta if gradebook_type == "high_school" else fumble_delta
-            delta = delta_fn(
-                score_quality_points,
-                fumble.should_have_been_gp,
-                fumble_units,
-                target_gp,
-            )
-        if excluded and fumble.course_id in included_course_ids:
-            if score_quality_points is not None:
-                basis_units = fumble_units
-                fumble_credits_delta -= basis_units
-                weighted_fumble_units_delta -= float(weighted_info["units"] if weighted_info else basis_units)
-                if weighted_quality_points is not None:
-                    weighted_fumble_points_delta -= float(weighted_info["units"] if weighted_info else basis_units) * weighted_quality_points
-        elif not excluded and fumble.should_have_been_gp is not None and (
-            fumble.course_id in included_course_ids
-            # An ungraded class has no current GPA contribution. Selecting a
-            # hypothetical grade makes its units part of the adjusted GPA,
-            # even when the class's term is not currently included.
-            or score_quality_points is None
-        ):
-            if score_quality_points is None:
-                fumble_credits_delta += fumble_units
-                weighted_fumble_units_delta += float(fumble_units)
-                weighted_fumble_points_delta += float(fumble_units) * (
-                    float(fumble.should_have_been_gp) + weighted_boost
-                )
-            elif weighted_info:
-                weighted_fumble_points_delta += float(weighted_info["units"]) * (
-                    float(fumble.should_have_been_gp) + weighted_boost - weighted_quality_points
-                )
-        if delta is not None:
-            fumble_total += delta
-        gpa_delta = None
-        if not excluded and fumble.should_have_been_gp is not None and score_quality_points is not None:
-            gpa_delta = float(fumble.should_have_been_gp) - float(score_quality_points)
-        fumble_rows.append(
-            {
-                "id": fumble.id,
-                "course_id": course["id"],
-                "code": course["code"],
-                "did_get": score_quality_points,
-                "letter": overall_course.get("letter", course.get("letter")),
-                "should_have_been_gp": None if excluded else fumble.should_have_been_gp,
-                "credits": 1.0 if gpa_basis == "classes" else course["credits"],
-                "delta": delta,
-                "gpa_delta": gpa_delta,
-                "excluded": excluded,
-                "semester_id": term["id"],
-                "semester_name": term["name"],
-            }
-        )
-
-    adjusted_fumble_credits = max(0, gpa_credits + fumble_credits_delta)
-    score_with = overall_score + fumble_total
-    gpa_with = (
-        cap_gpa(overall_gpa_from_score(score_with, adjusted_fumble_credits, target_gp), settings.gpa_cap)
-        if adjusted_fumble_credits
-        else None
-    )
-    weighted_fumble_units = max(0, weighted_current_units + weighted_fumble_units_delta)
-    weighted_fumble_points = weighted_current_points + weighted_fumble_points_delta
-    weighted_with_fumbles = (
-        cap_gpa(weighted_fumble_points / weighted_fumble_units, settings.gpa_cap)
-        if weighted_fumble_units
-        else None
+    fumbles = _fumble_summary(
+        db,
+        terms=terms,
+        included_terms=included_terms,
+        weighted_course_info=weighted_course_info,
+        gradebook_type=gradebook_type,
+        gpa_basis=gpa_basis,
+        target_gp=target_gp,
+        gpa_cap=settings.gpa_cap,
+        gpa_credits=gpa_credits,
+        overall_score=overall_score,
+        weighted_current_units=weighted_current_units,
+        weighted_current_points=weighted_current_points,
     )
 
-    try:
-        guess_raw = json.loads(settings.future_guess_json or "{}")
-    except json.JSONDecodeError:
-        guess_raw = {}
-    if not isinstance(guess_raw, dict):
-        guess_raw = {}
-    counts: dict[float, dict[str, float]] = {}
-    for cred, letters in guess_raw.items():
-        if cred == "weighted" or not isinstance(letters, dict):
-            continue
-        try:
-            numeric_credit = float(cred)
-            credit_key = int(numeric_credit) if numeric_credit.is_integer() else numeric_credit
-        except (TypeError, ValueError):
-            continue
-        counts[credit_key] = {str(k): float(v) for k, v in letters.items()}
-    weighted_counts = {}
-    raw_weighted_counts = guess_raw.get("weighted")
-    if isinstance(raw_weighted_counts, dict):
-        weighted_counts = {
-            str(tag_id): {str(letter): float(count) for letter, count in (letters or {}).items()}
-            for tag_id, letters in raw_weighted_counts.items()
-            if isinstance(letters, dict)
-        }
-    scale_rows = scale_rows_from_tuples(default_rows)
-    guess_counts = counts
-    if weighted_counts:
-        # Weighted planning still adds one class to the unweighted GPA for
-        # every entered cell; its label only changes the WGPA calculation.
-        guess_counts = {1: {}}
-        for letters in weighted_counts.values():
-            for letter, count in letters.items():
-                guess_counts[1][letter] = guess_counts[1].get(letter, 0) + count
-    delta, extra, _ = future_guess_delta(
-        guess_counts,
-        scale_rows,
+    future_guess = _future_guess_summary(
+        settings,
+        default_rows,
+        gpa_basis,
+        gpa_credits,
+        overall_score,
+        weighted_current_units,
+        weighted_current_points,
+        weight_tags,
         target_gp,
-        1.0 if gpa_basis == "classes" else None,
     )
-    adj_credits = gpa_credits + extra if extra else None
-    adj_score = (overall_score + delta) if delta is not None else None
-    adj_gpa = (
-        cap_gpa(overall_gpa_from_score(adj_score, adj_credits, target_gp), settings.gpa_cap)
-        if adj_score is not None and adj_credits
-        else None
-    )
-    adjusted_wgpa = None
-    if weighted_counts:
-        letter_to_gp = {row.letter: row.quality_points for row in scale_rows}
-        tag_to_boost = {str(tag["id"]): float(tag.get("boost") or 0) for tag in weight_tags}
-        current_units = sum(unit for unit, _ in weighted_pairs)
-        current_points = sum(unit * quality_points for unit, quality_points in weighted_pairs)
-        future_units = 0.0
-        future_points = 0.0
-        for tag_id, letters in weighted_counts.items():
-            boost = tag_to_boost.get(tag_id, 0.0)
-            for letter, count in letters.items():
-                number = float(count or 0)
-                quality_points = letter_to_gp.get(letter)
-                if number <= 0 or quality_points is None:
-                    continue
-                future_units += number
-                future_points += number * (quality_points + boost)
-        if future_units:
-            adjusted_wgpa = cap_gpa(
-                (current_points + future_points) / (current_units + future_units),
-                settings.gpa_cap,
-            ) if current_units + future_units else None
 
     return {
         "target_letter": target_letter,
@@ -2386,23 +2580,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         "high_school_overall_rounding_by_period": overall_rounding_by_period,
         "high_school_term_weights_by_period": term_weights_by_period,
         "high_school_period_scores": overall_period_scores,
-        "overall_classes": [
-            {
-                # Keep an identifiable representative course even before a
-                # multi-term class has a final grade, so it can be used by
-                # the fumble planner.
-                "id": item["final"].get("id") if item["final"] is not None else ((item.get("entries") or [{}])[0].get("course") or {}).get("id"),
-                "code": item["final"].get("code") if item["final"] is not None else ((item.get("entries") or [{}])[0].get("course") or {}).get("code"),
-                "occurrence": item.get("occurrence"),
-                "period": item.get("period"),
-                "units": item.get("units"),
-                "overall_percent": item["final"].get("percent") if item["final"] is not None else None,
-                "letter": item["final"].get("letter") if item["final"] is not None else None,
-                "quality_points": item["final"].get("base_quality_points", item["final"].get("quality_points")) if item["final"] is not None else None,
-                "weighted_quality_points": item["final"].get("quality_points") if item["final"] is not None else None,
-            }
-            for item in overall_classes
-        ],
+        "overall_classes": _overall_classes_payload(overall_classes),
         "semesters_remaining": settings.semesters_remaining,
         "gpa_cap": settings.gpa_cap,
         "fail_pass_fail_affects_gpa": bool(settings.fail_pass_fail_affects_gpa),
@@ -2421,23 +2599,15 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         "credits_remaining": credits_remaining,
         "score_per_semester": score_per_sem,
         "terms": terms,
-        "distribution": dist,
-        "fumbles": fumble_rows,
-        "fumble_total": fumble_total,
-        "score_with_fumbles": score_with,
-        "gpa_with_fumbles": gpa_with,
-        "weighted_gpa_with_fumbles": weighted_with_fumbles,
-        "gpa_credits_with_fumbles": adjusted_fumble_credits,
-        "fumble_credits_delta": fumble_credits_delta,
-        "future_guess": {
-            "grid": {"weighted": weighted_counts} if weighted_counts else counts,
-            "delta_score": delta,
-            "extra_credits": extra,
-            "adjusted_credits": adj_credits,
-            "adjusted_score": adj_score,
-            "adjusted_gpa": adj_gpa,
-            "adjusted_wgpa": adjusted_wgpa,
-        },
+        "distribution": distribution,
+        "fumbles": fumbles["rows"],
+        "fumble_total": fumbles["total"],
+        "score_with_fumbles": fumbles["score_with"],
+        "gpa_with_fumbles": fumbles["gpa_with"],
+        "weighted_gpa_with_fumbles": fumbles["weighted_gpa_with"],
+        "gpa_credits_with_fumbles": fumbles["gpa_credits_with"],
+        "fumble_credits_delta": fumbles["credits_delta"],
+        "future_guess": future_guess,
         "aggregations": list(AGGREGATIONS),
         "aggregation_labels": dict(AGGREGATION_LABELS),
         "default_scale": scale_as_dicts(default_rows),
@@ -2616,6 +2786,14 @@ def _snapshot_is_empty(snapshot: GradeSnapshot) -> bool:
     return not courses and snapshot.term_gpa is None and snapshot.term_wgpa is None
 
 
+def _clear_snapshot_aggregates_if_no_courses(snapshot: GradeSnapshot) -> None:
+    """Remove aggregate GPA values when a checkpoint has no percent points left."""
+    courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
+    if not courses:
+        snapshot.term_gpa = None
+        snapshot.term_wgpa = None
+
+
 def _prune_empty_snapshot(db: Session, snapshot: GradeSnapshot) -> bool:
     if not _snapshot_is_empty(snapshot):
         return False
@@ -2782,6 +2960,7 @@ def patch_grade_snapshot(
             if not updated:
                 raise ValueError("Class point not found on this checkpoint")
         snapshot.courses_json = json.dumps(courses)
+        _clear_snapshot_aggregates_if_no_courses(snapshot)
     if _prune_empty_snapshot(db, snapshot):
         db.commit()
         return {"id": snapshot_id, "deleted": True}
@@ -3006,12 +3185,12 @@ def delete_grade_snapshots(
                 ]
                 row.courses_json = json.dumps(courses)
                 removed += len(original_courses) - len(courses)
-                # A class deletion makes the aggregate checkpoint incomplete
-                # too. Clear it so GPA/WGPA views show the same hole without
-                # deleting the other classes from that date.
-                if row.term_gpa is not None or row.term_wgpa is not None:
-                    row.term_gpa = None
-                    row.term_wgpa = None
+                before_gpa = row.term_gpa
+                before_wgpa = row.term_wgpa
+                _clear_snapshot_aggregates_if_no_courses(row)
+                if before_gpa != row.term_gpa:
+                    removed += 1
+                if before_wgpa != row.term_wgpa:
                     removed += 1
                 changed = True
             if row.id in valid_gpa_ids and (row.term_gpa is not None or row.term_wgpa is not None):
@@ -3044,6 +3223,13 @@ def delete_course_grade_points(db: Session, semester_id: int, course_id: int) ->
             continue
         snapshot.courses_json = json.dumps(remaining)
         removed += len(courses) - len(remaining)
+        before_gpa = snapshot.term_gpa
+        before_wgpa = snapshot.term_wgpa
+        _clear_snapshot_aggregates_if_no_courses(snapshot)
+        if before_gpa != snapshot.term_gpa:
+            removed += 1
+        if before_wgpa != snapshot.term_wgpa:
+            removed += 1
         _prune_empty_snapshot(db, snapshot)
     return removed
 
@@ -3104,22 +3290,6 @@ def lock_older_unlocked_semesters(db: Session, new_sem: Semester) -> None:
             continue
         if _semester_sort_key(other) < new_key:
             other.progression_locked = True
-
-
-def resolve_default_recording_semester_id(db: Session, settings: Settings | None) -> int | None:
-    ranked = sort_semesters(gradebook_semesters(db))
-    if not ranked:
-        return None
-    ids = {sem.id for sem in ranked}
-    current = settings.default_recording_semester_id if settings else None
-    if current in ids:
-        return current
-    fallback = ranked[0].id
-    if settings is not None:
-        settings.default_recording_semester_id = fallback
-        update_gradebook_settings(db, {"default_recording_semester_id": fallback})
-        db.commit()
-    return fallback
 
 
 def grade_prompt_status(db: Session) -> dict:

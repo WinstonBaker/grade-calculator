@@ -42,7 +42,7 @@ from backend.engine import (
     resolve_category_policy,
     scale_as_dicts,
 )
-from backend.models import AcademicYear, Assignment, Category, Course, Fumble, GradeSnapshot, ScaleProfile, Semester, Settings
+from backend.models import AcademicYear, Assignment, Category, Course, Fumble, GradeSnapshot, Semester, Settings
 from backend.schemas import (
     AssignmentCreate,
     AssignmentUpdate,
@@ -159,11 +159,10 @@ def _target(db: Session) -> float:
     return gp
 
 
-def _gpa_cap(db: Session) -> float | None:
-    return _settings(db).gpa_cap
-
-
 DEFAULT_APP_GRADEBOOKS = [{"id": "gradebook-1", "name": "Gradebook 1"}]
+BONUS_MODES = {"static", "static_points", "static_percent", "category", "none"}
+CREDIT_MODES = {"for_credit", "pass_fail"}
+GRADING_MODES = {"weighted", "points"}
 
 
 def _json_value(raw, fallback):
@@ -174,13 +173,10 @@ def _json_value(raw, fallback):
     return value
 
 
-def _app_state_payload(settings: Settings) -> dict:
-    gradebooks = _json_value(settings.gradebooks_json, DEFAULT_APP_GRADEBOOKS)
-    if not isinstance(gradebooks, list):
-        gradebooks = DEFAULT_APP_GRADEBOOKS
-    normalized_gradebooks = []
+def _normalized_gradebook_entries(value) -> tuple[list[dict], set[str]]:
+    normalized = []
     seen = set()
-    for item in gradebooks:
+    for item in value:
         if not isinstance(item, dict):
             continue
         gradebook_id = str(item.get("id") or "").strip()
@@ -188,27 +184,44 @@ def _app_state_payload(settings: Settings) -> dict:
         if not gradebook_id or not name or gradebook_id in seen:
             continue
         seen.add(gradebook_id)
-        normalized_gradebooks.append({"id": gradebook_id, "name": name})
+        normalized.append({"id": gradebook_id, "name": name})
+    return normalized, seen
+
+
+def _normalized_gradebook_lists(value, gradebook_ids: set[str]) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        gradebook_id: [str(item) for item in items if str(item).strip()]
+        for gradebook_id, items in value.items()
+        if gradebook_id in gradebook_ids and isinstance(items, list)
+    }
+
+
+def _normalized_gradebook_dicts(value, gradebook_ids: set[str]) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        gradebook_id: item
+        for gradebook_id, item in value.items()
+        if gradebook_id in gradebook_ids and isinstance(item, dict)
+    }
+
+
+def _app_state_payload(settings: Settings) -> dict:
+    gradebooks = _json_value(settings.gradebooks_json, DEFAULT_APP_GRADEBOOKS)
+    if not isinstance(gradebooks, list):
+        gradebooks = DEFAULT_APP_GRADEBOOKS
+    normalized_gradebooks, seen = _normalized_gradebook_entries(gradebooks)
     if not normalized_gradebooks:
         normalized_gradebooks = [dict(DEFAULT_APP_GRADEBOOKS[0])]
 
-    members = _json_value(settings.gradebook_members_json, {})
-    if not isinstance(members, dict):
-        members = {}
-    normalized_members = {
-        gradebook_id: [str(value) for value in values if str(value).strip()]
-        for gradebook_id, values in members.items()
-        if gradebook_id in seen and isinstance(values, list)
-    }
-
-    appearances = _json_value(settings.gradebook_appearance_json, {})
-    if not isinstance(appearances, dict):
-        appearances = {}
-    normalized_appearances = {
-        gradebook_id: value
-        for gradebook_id, value in appearances.items()
-        if gradebook_id in seen and isinstance(value, dict)
-    }
+    normalized_members = _normalized_gradebook_lists(
+        _json_value(settings.gradebook_members_json, {}), seen
+    )
+    normalized_appearances = _normalized_gradebook_dicts(
+        _json_value(settings.gradebook_appearance_json, {}), seen
+    )
     return {
         "gradebooks": normalized_gradebooks,
         "gradebook_members": normalized_members,
@@ -221,37 +234,12 @@ def _normalize_app_state(body: dict) -> dict:
     gradebooks = body.get("gradebooks")
     if not isinstance(gradebooks, list):
         raise HTTPException(400, "Gradebooks must be a list")
-    normalized_gradebooks = []
-    seen = set()
-    for item in gradebooks:
-        if not isinstance(item, dict):
-            continue
-        gradebook_id = str(item.get("id") or "").strip()
-        name = str(item.get("name") or "").strip()
-        if not gradebook_id or not name or gradebook_id in seen:
-            continue
-        seen.add(gradebook_id)
-        normalized_gradebooks.append({"id": gradebook_id, "name": name})
+    normalized_gradebooks, seen = _normalized_gradebook_entries(gradebooks)
     if not normalized_gradebooks:
         raise HTTPException(400, "Keep at least one gradebook")
 
-    members = body.get("gradebook_members")
-    if not isinstance(members, dict):
-        members = {}
-    normalized_members = {
-        gradebook_id: [str(value) for value in values if str(value).strip()]
-        for gradebook_id, values in members.items()
-        if gradebook_id in seen and isinstance(values, list)
-    }
-
-    appearances = body.get("gradebook_appearance")
-    if not isinstance(appearances, dict):
-        appearances = {}
-    normalized_appearances = {
-        gradebook_id: value
-        for gradebook_id, value in appearances.items()
-        if gradebook_id in seen and isinstance(value, dict)
-    }
+    normalized_members = _normalized_gradebook_lists(body.get("gradebook_members"), seen)
+    normalized_appearances = _normalized_gradebook_dicts(body.get("gradebook_appearance"), seen)
     min_credits = str(body.get("min_credits") or "1").strip()
     try:
         if float(min_credits) < 0:
@@ -402,6 +390,100 @@ def _apply_dynamic_for_courses(db: Session, courses: list[Course]) -> None:
             changed = True
     if changed:
         db.commit()
+
+
+def _courses_with_shared_code(db: Session, course: Course) -> list[Course]:
+    original_code = str(course.code or "").strip().lower()
+    if not original_code:
+        return [course]
+    courses = (
+        db.query(Course)
+        .join(Semester, Course.semester_id == Semester.id)
+        .filter(
+            Semester.gradebook_id == active_gradebook_id(),
+            func.lower(Course.code) == original_code,
+        )
+        .all()
+    )
+    if course not in courses:
+        courses.append(course)
+    return courses
+
+
+def _reject_duplicate_course_codes(
+    db: Session,
+    courses: list[Course],
+    edited_course: Course,
+    next_semester_id: int,
+    next_code: str,
+) -> None:
+    course_ids = {item.id for item in courses}
+    for item in courses:
+        semester_id = next_semester_id if item.id == edited_course.id else item.semester_id
+        duplicate = (
+            db.query(Course)
+            .filter(
+                Course.semester_id == semester_id,
+                Course.code.ilike(next_code),
+                ~Course.id.in_(course_ids),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            raise HTTPException(
+                409, "A class with this code already exists in the selected semester"
+            )
+
+
+def _propagate_high_school_weight_tag(
+    db: Session,
+    course: Course,
+    semester_id: int,
+) -> None:
+    period_key = _high_school_period_key(gradebook_semester(db, semester_id))
+    normalized_code = course.code.strip().lower()
+    if period_key is None or not normalized_code:
+        return
+    related_courses = (
+        db.query(Course)
+        .join(Semester, Course.semester_id == Semester.id)
+        .filter(
+            func.lower(Course.code) == normalized_code,
+            Semester.gradebook_id == active_gradebook_id(),
+        )
+        .all()
+    )
+    for related in related_courses:
+        if _high_school_period_key(related.semester) == period_key:
+            related.gpa_weight_tag = course.gpa_weight_tag
+
+
+def _convert_course_score_texts(course: Course, mode: str) -> None:
+    for category in course.categories:
+        for assignment in category.assignments:
+            raw = (assignment.score_text or "").strip()
+            if not raw and assignment.earned is not None:
+                raw = f"{assignment.earned:g}"
+            if not raw:
+                continue
+            if mode == "points":
+                raw = raw[1:].strip() if raw.startswith("=") else raw
+                if "/" not in raw and "," not in raw:
+                    denominator = (
+                        0 if category.is_bonus_category and assignment.is_bonus else 100
+                    )
+                    raw = f"{raw}/{denominator}"
+            elif ("/" in raw or "," in raw) and not raw.startswith("="):
+                raw = f"={raw}"
+            assignment.score_text = raw
+
+
+def _ensure_dynamic_weighting_option(course: Course) -> None:
+    if parse_dynamic_weighting(course)["options"]:
+        return
+    course.dynamic_weighting_json = dump_dynamic_weighting(
+        {"options": [seed_dynamic_option_from_course(course)]}
+    )
 
 
 @app.get("/api/meta")
@@ -766,7 +848,7 @@ def list_courses(
 def create_course(body: CourseCreate, db: Session = Depends(get_db)):
     _semester_or_404(db, body.semester_id)
     settings = _settings(db)
-    if body.credit_mode not in {"for_credit", "pass_fail"}:
+    if body.credit_mode not in CREDIT_MODES:
         raise HTTPException(400, "credit_mode must be for_credit or pass_fail")
     normalized_code = body.code.strip().lower()
     if settings.gradebook_type != "high_school":
@@ -782,7 +864,7 @@ def create_course(body: CourseCreate, db: Session = Depends(get_db)):
         code=body.code.strip(),
         credits=body.credits,
         bonus_points=body.bonus_points,
-        bonus_mode=body.bonus_mode if body.bonus_mode in {"static", "static_points", "static_percent", "category", "none"} else "none",
+        bonus_mode=body.bonus_mode if body.bonus_mode in BONUS_MODES else "none",
         gp_override=body.gp_override,
         final_gp_override=body.final_gp_override,
         grade_rounding=body.grade_rounding,
@@ -812,36 +894,13 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
     settings = _settings(db)
     next_semester_id = body.semester_id if body.semester_id is not None else course.semester_id
     next_code = body.code.strip() if body.code is not None else course.code
-    renamed_courses = [course]
-    if body.code is not None:
-        original_code = str(course.code or "").strip().lower()
-        if original_code:
-            renamed_courses = (
-                db.query(Course)
-                .join(Semester, Course.semester_id == Semester.id)
-                .filter(
-                    Semester.gradebook_id == active_gradebook_id(),
-                    func.lower(Course.code) == original_code,
-                )
-                .all()
-            )
-            if course not in renamed_courses:
-                renamed_courses.append(course)
+    renamed_courses = (
+        _courses_with_shared_code(db, course) if body.code is not None else [course]
+    )
     if settings.gradebook_type != "high_school":
-        renamed_ids = {item.id for item in renamed_courses}
-        for item in renamed_courses:
-            semester_id = next_semester_id if item.id == course.id else item.semester_id
-            duplicate = (
-                db.query(Course)
-                .filter(
-                    Course.semester_id == semester_id,
-                    Course.code.ilike(next_code),
-                    ~Course.id.in_(renamed_ids),
-                )
-                .first()
-            )
-            if duplicate is not None:
-                raise HTTPException(409, "A class with this code already exists in the selected semester")
+        _reject_duplicate_course_codes(
+            db, renamed_courses, course, next_semester_id, next_code
+        )
     if body.semester_id is not None:
         target_semester = _semester_or_404(db, body.semester_id)
         if target_semester.gradebook_id != course.semester.gradebook_id:
@@ -854,28 +913,13 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         course.credits = body.credits
     if body.credit_mode is not None:
         mode = body.credit_mode.strip().lower()
-        if mode not in {"for_credit", "pass_fail"}:
+        if mode not in CREDIT_MODES:
             raise HTTPException(400, "credit_mode must be for_credit or pass_fail")
         course.credit_mode = mode
     if body.gpa_weight_tag is not None:
         course.gpa_weight_tag = body.gpa_weight_tag.strip() or "unweighted"
         if settings.gradebook_type == "high_school":
-            selected_semester = gradebook_semester(db, next_semester_id)
-            period_key = _high_school_period_key(selected_semester)
-            normalized_code = course.code.strip().lower()
-            if period_key is not None and normalized_code:
-                related_courses = (
-                    db.query(Course)
-                    .join(Semester, Course.semester_id == Semester.id)
-                    .filter(
-                        func.lower(Course.code) == normalized_code,
-                        Semester.gradebook_id == active_gradebook_id(),
-                    )
-                    .all()
-                )
-                for related in related_courses:
-                    if _high_school_period_key(related.semester) == period_key:
-                        related.gpa_weight_tag = course.gpa_weight_tag
+            _propagate_high_school_weight_tag(db, course, next_semester_id)
     if "pass_fail_override" in body.model_fields_set:
         value = (body.pass_fail_override or "").strip()
         allowed = {row["label"] for row in course_pass_fail(course)["rows"]}
@@ -886,7 +930,7 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         course.bonus_points = body.bonus_points
     if body.bonus_mode is not None:
         mode = body.bonus_mode.strip().lower()
-        if mode not in {"static", "static_points", "static_percent", "category", "none"}:
+        if mode not in BONUS_MODES:
             raise HTTPException(400, "bonus_mode must be static, static_points, static_percent, category, or none")
         course.bonus_mode = mode
     if "gp_override" in body.model_fields_set:
@@ -903,7 +947,7 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
     if "grading_mode" in body.model_fields_set:
         previous_mode = course.grading_mode or "weighted"
         mode = (body.grading_mode or "weighted").strip().lower()
-        if mode not in {"weighted", "points"}:
+        if mode not in GRADING_MODES:
             raise HTTPException(400, "grading_mode must be weighted or points")
         if mode == "weighted" and (
             course.bonus_mode == "static_points"
@@ -920,21 +964,7 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
                     category.aggregation = "average"
         course.grading_mode = mode
         if mode != previous_mode:
-            for category in course.categories:
-                for assignment in category.assignments:
-                    raw = (assignment.score_text or "").strip()
-                    if not raw and assignment.earned is not None:
-                        raw = f"{assignment.earned:g}"
-                    if not raw:
-                        continue
-                    if mode == "points":
-                        raw = raw[1:].strip() if raw.startswith("=") else raw
-                        if "/" not in raw and "," not in raw:
-                            denominator = 0 if category.is_bonus_category and assignment.is_bonus else 100
-                            raw = f"{raw}/{denominator}"
-                    elif ("/" in raw or "," in raw) and not raw.startswith("="):
-                        raw = f"={raw}"
-                    assignment.score_text = raw
+            _convert_course_score_texts(course, mode)
         if mode == "points":
             course.dynamic_weighting_enabled = False
     if "dynamic_weighting_enabled" in body.model_fields_set:
@@ -942,19 +972,11 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         if (course.grading_mode or "weighted") == "points":
             course.dynamic_weighting_enabled = False
         if course.dynamic_weighting_enabled:
-            payload = parse_dynamic_weighting(course)
-            if not payload["options"]:
-                course.dynamic_weighting_json = dump_dynamic_weighting(
-                    {"options": [seed_dynamic_option_from_course(course)]}
-                )
+            _ensure_dynamic_weighting_option(course)
     if "dynamic_weighting" in body.model_fields_set:
         course.dynamic_weighting_json = dump_dynamic_weighting(body.dynamic_weighting)
         if course.dynamic_weighting_enabled:
-            payload = parse_dynamic_weighting(course)
-            if not payload["options"]:
-                course.dynamic_weighting_json = dump_dynamic_weighting(
-                    {"options": [seed_dynamic_option_from_course(course)]}
-                )
+            _ensure_dynamic_weighting_option(course)
     try:
         db.commit()
     except IntegrityError as exc:

@@ -1593,8 +1593,16 @@ def test_snapshot_skips_ungraded_and_edits_points(tmp_path):
         leftover = client.get(f"/api/semesters/{sem_id}/snapshots").json()
         assert len(leftover) == 1
         assert [row["code"] for row in leftover[0]["courses"]] == ["CSC 101"]
-        assert leftover[0]["term_gpa"] is None
-        assert leftover[0]["term_wgpa"] is None
+        assert leftover[0]["term_gpa"] is not None
+        assert leftover[0]["term_wgpa"] is not None
+
+        removed_last = client.request(
+            "DELETE",
+            f"/api/semesters/{sem_id}/snapshots",
+            json={"course_points": [{"snapshot_id": snap["id"], "course_id": by_code["CSC 101"]["course_id"]}]},
+        ).json()
+        assert removed_last["deleted"] >= 1
+        assert client.get(f"/api/semesters/{sem_id}/snapshots").json() == []
 
         empty_sem = client.post("/api/semesters", json={"year": 2020, "season": "fall"}).json()
         client.post(

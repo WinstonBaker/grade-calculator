@@ -25,6 +25,8 @@ const SPECULATION_MODE_TOAST_ID = "speculation-mode-status";
 const GLOBAL_APPEARANCE_KEYS = new Set([
   "gradeColors",
   "tooltips",
+  "colorFlaggedAssignments",
+  "readableTextBackground",
   "gradeScale",
   "customGradeColors",
   "gradeScalePresets",
@@ -943,7 +945,7 @@ export default function App() {
     setGradebookMenuOpen(false);
     setGradebookCreateOpen(false);
     setGradebookNameDraft("");
-    navigate(`/gpa?gradebook=${id}`);
+    navigate(`/gradebook-settings?gradebook=${id}`);
   }
 
   function renameGradebook(name) {

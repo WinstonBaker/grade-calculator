@@ -117,6 +117,39 @@ function formatBonusPercent(value) {
   return Number(value) < 0 ? `${text}%` : `+${text}%`;
 }
 
+function convertBonusScoreToPoints(raw, bonusType = "assignment") {
+  let text = String(raw || "").trim();
+  if (text.startsWith("=")) text = text.slice(1).trim();
+  const parsed = parseScoreExpression(`=${text}`);
+  if (parsed && Number.isFinite(Number(parsed.earned))) {
+    const percent = bonusType === "category" && Number(parsed.possible) > 0
+      ? (100 * Number(parsed.earned)) / Number(parsed.possible)
+      : Number(parsed.earned);
+    return `${formatGradeNumber(percent)}/${bonusType === "category" ? 100 : 0}`;
+  }
+  const percent = Number(text.replace(/%$/, "").trim());
+  return Number.isFinite(percent)
+    ? `${formatGradeNumber(percent)}/${bonusType === "category" ? 100 : 0}`
+    : `${text}/${bonusType === "category" ? 100 : 0}`;
+}
+
+function convertScoreToCategoryBonusPoints(assignment) {
+  if (assignment?.earned == null) return null;
+  const possible = Number(assignment.possible);
+  const percent = Number.isFinite(possible) && possible > 0
+    ? (100 * Number(assignment.earned)) / possible
+    : Number(assignment.earned);
+  return Number.isFinite(percent) ? `${formatGradeNumber(percent)}/100` : null;
+}
+
+function convertZeroDenominatorToBonus(raw) {
+  let text = String(raw || "").trim();
+  if (text.startsWith("=")) text = text.slice(1).trim();
+  const parsed = parseScoreExpression(`=${text}`);
+  if (!parsed || Number(parsed.possible) !== 0 || !Number.isFinite(Number(parsed.earned))) return null;
+  return formatGradeNumber(parsed.earned);
+}
+
 function pctFromWeight(weight) {
   if (weight == null || Number.isNaN(Number(weight))) return "";
   return String(Number((Number(weight) * 100).toPrecision(12)));
@@ -155,13 +188,39 @@ function pointsCategoryPercent(category, course = null) {
     ? pointsCourseKeptAssignments(course).get(category?.id) || []
     : category?.assignments || [];
   for (const assignment of assignments) {
-    if (assignment.is_bonus || assignment.earned == null) continue;
+    if (
+      assignment.is_bonus
+      || assignment.earned == null
+      || (assignment.possible != null && Number(assignment.possible) === 0)
+    ) continue;
     const denominator = Number(assignment.possible);
     earned += Number(assignment.earned);
     possible += Number.isFinite(denominator) && denominator > 0 ? denominator : 100;
     hasScore = true;
   }
   return hasScore && possible > 0 ? (100 * earned) / possible : null;
+}
+
+function pointsCategoryTotals(category, assignments = null, replacementScores = new Map()) {
+  const scoredAssignments = assignments || category?.assignments || [];
+  let earned = 0;
+  let possible = 0;
+  let hasScore = false;
+  for (const assignment of scoredAssignments) {
+    if (
+      assignment.is_bonus
+      || assignment.earned == null
+      || (assignment.possible != null && Number(assignment.possible) === 0)
+    ) continue;
+    const denominator = pointsPossibleForAssignment(assignment);
+    const replacement = replacementScores.get(assignment.id);
+    earned += replacement
+      ? (Number(replacement.percent) / 100) * denominator
+      : Number(assignment.earned);
+    possible += denominator;
+    hasScore = true;
+  }
+  return hasScore && possible > 0 ? { earned, possible } : null;
 }
 
 function pointsCoursePercent(course) {
@@ -196,7 +255,11 @@ function pointsCourseKeptAssignments(course) {
     .map((category) => ({
       category,
       assignments: (category.assignments || []).filter(
-        (assignment) => !assignment.is_bonus && assignment.earned != null
+        (assignment) => (
+          !assignment.is_bonus
+          && assignment.earned != null
+          && (assignment.possible == null || Number(assignment.possible) > 0)
+        )
       ),
     }));
   const kept = new Map(scoredByCategory.map(({ category, assignments }) => [category.id, assignments]));
@@ -302,6 +365,8 @@ function speculativeCompositeFields(composite, categoryAggregation) {
   const items = (composite?.items || []).map((item) => {
     const raw = String(item?.score || "").trim();
     if (!raw) return null;
+    const weight = compositeItemWeight(item, mode);
+    if (mode === "weighted_percent" && weight == null) return null;
     let earned = null;
     let possible = null;
     let percent = null;
@@ -324,7 +389,7 @@ function speculativeCompositeFields(composite, categoryAggregation) {
       percent = Number(raw.replace(/%$/, ""));
       if (!Number.isFinite(percent)) return null;
     }
-    return { earned, possible, percent, weight: Number(item?.weight) || 1 };
+    return { earned, possible, percent, weight: weight ?? 1 };
   }).filter(Boolean);
   if (!items.length) return { earned: null, possible: null, score_text: null };
 
@@ -884,15 +949,25 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
             continue;
           }
           if (toPoints) {
-            if (raw.startsWith("=")) raw = raw.slice(1).trim();
-            if (!raw.includes("/") && !raw.includes(",")) {
-              raw = `${raw}/${category.is_bonus_category && assignment.is_bonus ? 0 : 100}`;
-            }
-          } else if ((raw.includes("/") || raw.includes(",")) && !raw.startsWith("=")) {
-            raw = `=${raw}`;
+            raw = assignment.is_bonus
+              ? convertBonusScoreToPoints(raw, assignment.bonus_type)
+              : raw.startsWith("=")
+                ? raw.slice(1).trim()
+                : raw;
+            if (!assignment.is_bonus && !raw.includes("/") && !raw.includes(",")) raw = `${raw}/100`;
           }
           try {
-            next = await api.patchAssignment(assignment.id, { score: raw });
+            const bonusScore = !toPoints ? convertZeroDenominatorToBonus(raw) : null;
+            next = await api.patchAssignment(
+              assignment.id,
+              bonusScore != null
+                ? { score: bonusScore, is_bonus: true, bonus_type: "assignment" }
+                : {
+                    score: !toPoints && (raw.includes("/") || raw.includes(",")) && !raw.startsWith("=")
+                      ? `=${raw}`
+                      : raw,
+                  }
+            );
           } catch (err) {
             console.error(err);
       }
@@ -939,18 +1014,37 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
         ? await api.patchCategory(categoryModal.cat.id, payload)
         : await api.createCategory({ course_id: Number(id), ...payload });
     const previous = categoryModal?.cat;
-    if (
-      previous
+    const switchingToPoints = previous
       && previous.aggregation !== "points_ratio"
       && payload.aggregation === "points_ratio"
-      && !previous.is_bonus_category
-    ) {
+      && !previous.is_bonus_category;
+    const switchingToAverage = previous
+      && previous.aggregation === "points_ratio"
+      && payload.aggregation !== "points_ratio"
+      && !previous.is_bonus_category;
+    if (switchingToPoints || switchingToAverage) {
       for (const assignment of previous.assignments || []) {
         let raw = String(assignment.score_input || assignment.display || "").trim();
         if (!raw) continue;
-        if (raw.startsWith("=")) raw = raw.slice(1).trim();
-        if (!raw.includes("/") && !raw.includes(",")) raw = `${raw}/100`;
+        if (switchingToPoints) {
+          if (raw.startsWith("=")) raw = raw.slice(1).trim();
+          raw = assignment.is_bonus
+            ? convertBonusScoreToPoints(raw, assignment.bonus_type)
+            : !raw.includes("/") && !raw.includes(",")
+              ? `${raw}/100`
+              : raw;
         next = await api.patchAssignment(assignment.id, { score: raw });
+          continue;
+        }
+        const bonusScore = convertZeroDenominatorToBonus(raw);
+        next = await api.patchAssignment(
+          assignment.id,
+          bonusScore != null
+            ? { score: bonusScore, is_bonus: true, bonus_type: "assignment" }
+            : {
+                score: raw.includes("/") || raw.includes(",") ? `=${raw.replace(/^=/, "")}` : raw,
+              }
+        );
       }
     }
     setCourse(next);
@@ -2499,6 +2593,20 @@ function defaultComposite() {
   return { mode: "percent", drop_count: 0, items: [{ name: "", score: "", weight: "" }] };
 }
 
+function compositeEditorWeight(item, mode) {
+  if (mode === "weighted_percent" && (item?.weight == null || String(item.weight).trim() === "")) {
+    return "";
+  }
+  return item?.weight ?? 1;
+}
+
+function normalizeCompositeWeight(value) {
+  const raw = String(value ?? "").trim().replace(/%+$/, "");
+  if (!raw) return "";
+  const weight = Number(raw);
+  return Number.isFinite(weight) && weight > 0 ? formatGradeNumber(weight) : "";
+}
+
 function defaultCompositeItemName(items, currentIndex) {
   const numberedNames = (items || []).reduce((highest, item, index) => {
     if (index === currentIndex) return highest;
@@ -2527,13 +2635,22 @@ function compositeItemPercent(score, mode) {
   return Number.isFinite(percent) ? percent : null;
 }
 
+function compositeItemWeight(item, mode) {
+  if (mode !== "weighted_percent") return 1;
+  const raw = String(item?.weight ?? "").trim().replace(/%+$/, "");
+  if (!raw) return null;
+  const weight = Number(raw);
+  return Number.isFinite(weight) && weight > 0 ? weight : null;
+}
+
 function droppedCompositeItemIndexes(items, dropCount, mode) {
   const scored = (items || [])
     .map((item, index) => ({
       index,
       percent: compositeItemPercent(item?.score, mode),
+      weight: compositeItemWeight(item, mode),
     }))
-    .filter((item) => item.percent != null);
+    .filter((item) => item.percent != null && item.weight != null);
   const toDrop = Math.min(
     Math.max(Number(dropCount) || 0, 0),
     Math.max(scored.length - 1, 0),
@@ -2748,7 +2865,7 @@ function AssignmentFlag({ flag, onDelete, activeAnnotationKey, activeKey, onActi
   );
 }
 
-function AssignmentActionMenu({ composite, averageCategory, isBonus, bonusType, hasComment, flags = [], assignedFlagIds = [], onToggleFlag, onToggleBonus, onConvert, onNormal, onAddComment, onDeleteComment }) {
+function AssignmentActionMenu({ composite, bonusEligible, isBonus, bonusType, hasComment, flags = [], assignedFlagIds = [], onToggleFlag, onToggleBonus, onConvert, onNormal, onAddComment, onDeleteComment }) {
   const [open, setOpen] = useState(false);
   const [selectedBonusType, setSelectedBonusType] = useState(bonusType || "assignment");
   const wrapRef = useRef(null);
@@ -2841,7 +2958,7 @@ function AssignmentActionMenu({ composite, averageCategory, isBonus, bonusType, 
             </button>
             <Tooltip text="Composite Grade allows you to effectively make an assignment into its own category, allowing easy entry of complex point-based assignment parts or an assignment list that drops the lowest grades" side="right" />
           </div>
-          {averageCategory ? (
+          {bonusEligible ? (
             isBonus ? (
               <button
                 className="assignment-kebab-item"
@@ -2908,14 +3025,14 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
   const [items, setItems] = useState(
     (initial.items || []).length
       ? [
-          ...initial.items.map((item) => ({ name: item.name || "", score: item.score || "", weight: item.weight ?? 1 })),
+          ...initial.items.map((item) => ({ name: item.name || "", score: item.score || "", weight: compositeEditorWeight(item, initial.mode) })),
       { name: "", score: "", weight: "" },
         ]
       : defaultComposite().items
   );
   const draftRef = useRef({ mode, dropCount, totalPoints, items });
   const saveTimer = useRef(null);
-  const target = categoryAggregation === "points_ratio" ? "Points" : "Grade as a Percent";
+  const target = categoryAggregation === "points_ratio" ? "Points" : "Grade as Percent";
   const scorePlaceholder = mode === "points" ? "19/20" : "95 or =19/20";
   const droppedItemIndexes = useMemo(
     () => droppedCompositeItemIndexes(items, dropCount, mode),
@@ -2930,7 +3047,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
     ));
     const savedItems = meaningfulSavedItems.length
       ? [
-          ...meaningfulSavedItems.map((item) => ({ name: item.name || "", score: item.score || "", weight: item.weight ?? 1 })),
+          ...meaningfulSavedItems.map((item) => ({ name: item.name || "", score: item.score || "", weight: compositeEditorWeight(item, saved.mode) })),
           { name: "", score: "", weight: "" },
         ]
       : defaultComposite().items;
@@ -2951,7 +3068,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
-  function updateDraft(patch) {
+  function updateDraft(patch, { persist = true } = {}) {
     const next = { ...draftRef.current, ...patch };
     draftRef.current = next;
     setMode(next.mode);
@@ -2971,12 +3088,17 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
       onSpeculativeChange?.(composite);
       return;
     }
+    if (!persist) return;
     saveTimer.current = setTimeout(() => {
       onSave(composite);
     }, 350);
   }
 
-  function updateItem(index, key, value) {
+  function commitDraft() {
+    updateDraft({}, { persist: true });
+  }
+
+  function updateItem(index, key, value, options) {
     const nextItems = draftRef.current.items.map((item, itemIndex) => (
       itemIndex === index ? { ...item, [key]: value } : item
     ));
@@ -2997,7 +3119,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
     }
     updateDraft({
       items: nextItems,
-    });
+    }, options);
     if (speculationMode && key === "score") {
       setSpeculativeEditedScoreIndexes((current) => new Set(current).add(index));
     }
@@ -3019,7 +3141,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
           <select
             className="select"
             style={{
-              width: mode === "weighted_percent" ? "228px" : mode === "percent" ? "170px" : "82px",
+              width: mode === "weighted_percent" ? "210px" : mode === "percent" ? "146px" : "58px",
             }}
             value={mode}
             onChange={(event) => changeMode(event.target.value)}
@@ -3028,7 +3150,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
             <option value="percent">Grades as Percent</option>
             <option value="weighted_percent">Weighted Grades as Percent</option>
           </select>
-          <span className="mono">to {target}</span>
+          <span>to {target}</span>
           {mode === "percent" && categoryAggregation === "points_ratio" ? (
             <>
               <span className="mono">out of:</span>
@@ -3078,9 +3200,10 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
                 <input
                   className="input"
                   placeholder="Name"
-                  value={item.name}
-                  onChange={(event) => updateItem(index, "name", event.target.value)}
-                />
+                    value={item.name}
+                    onChange={(event) => updateItem(index, "name", event.target.value, { persist: false })}
+                    onBlur={commitDraft}
+                  />
               </td>
               {mode === "weighted_percent" ? (
                 <td className="col-composite-weight">
@@ -3093,8 +3216,16 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
                       ? String(item.weight ?? "").replace(/%+$/, "")
                       : item.weight === "" ? "" : `${String(item.weight).replace(/%+$/, "")}%`}
                     onFocus={() => setEditingWeightIndex(index)}
-                    onChange={(event) => updateItem(index, "weight", event.target.value.replace(/%+$/, ""))}
-                    onBlur={() => setEditingWeightIndex(null)}
+                    onChange={(event) => updateItem(index, "weight", event.target.value.replace(/%+$/, ""), { persist: false })}
+                    onBlur={() => {
+                      const currentWeight = draftRef.current.items[index]?.weight;
+                      const normalizedWeight = normalizeCompositeWeight(currentWeight);
+                      if (normalizedWeight !== currentWeight) {
+                        updateItem(index, "weight", normalizedWeight, { persist: false });
+                      }
+                      setEditingWeightIndex(null);
+                      commitDraft();
+                    }}
                   />
                 </td>
               ) : null}
@@ -3104,8 +3235,11 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
                   placeholder={scorePlaceholder}
                   value={compositeScoreDisplay(item.score, mode, editingScoreIndex === index)}
                   onFocus={() => setEditingScoreIndex(index)}
-                  onChange={(event) => updateItem(index, "score", event.target.value)}
-                  onBlur={() => setEditingScoreIndex(null)}
+                  onChange={(event) => updateItem(index, "score", event.target.value, { persist: false })}
+                  onBlur={() => {
+                    setEditingScoreIndex(null);
+                    commitDraft();
+                  }}
                 />
               </td>
               <td className="col-actions">
@@ -3241,6 +3375,15 @@ function CategoryCard({
     || (cat.assignments || []).some((assignment) => Number(assignment.possible) === 0)
   );
   const displayPercent = pointsMode && !isBonusCategory ? pointsCategoryPercent(cat, course) : cat.percent;
+  const categoryTotals = !isBonusCategory && (pointsMode || cat.aggregation === "points_ratio")
+    ? pointsCategoryTotals(
+        cat,
+        pointsMode
+          ? pointsCourseKeptAssignments(course).get(cat.id) || []
+          : (cat.assignments || []).filter((assignment) => !droppedIds.has(assignment.id)),
+        replacementScores
+      )
+    : null;
   const hasSpeculativeEdit = speculationMode && (cat.assignments || []).some((assignment) => (
     Object.prototype.hasOwnProperty.call(speculativeScores, assignment.id)
   ));
@@ -3409,13 +3552,16 @@ function CategoryCard({
             </svg>
           </button>
         </div>
-        <div className="row cat-head-meta">
-          <span className={`mono ${hasSpeculativeEdit ? "speculative-grade" : ""}`.trim()}>
-            {isBonusCategory
-              ? bonusUsesPoints
-                ? `Bonus: +${cat.percent == null ? "0" : formatGradeNumber(cat.percent)} pt`
-                : `${cat.name} +${cat.percent == null ? "0" : fmtPct(cat.percent)}%`
-              : `Section: ${displayPercent == null ? "—" : `${fmtPct(displayPercent)}%`}`}
+        <div className="cat-head-meta">
+          <div className="row cat-head-meta-primary">
+          <span className={`mono category-section-label ${hasSpeculativeEdit ? "speculative-grade" : ""}`.trim()}>
+            <span>
+              {isBonusCategory
+                ? bonusUsesPoints
+                  ? `Bonus: +${cat.percent == null ? "0" : formatGradeNumber(cat.percent)} pt`
+                  : `${cat.name} +${cat.percent == null ? "0" : fmtPct(cat.percent)}%`
+                : `Section: ${displayPercent == null ? "—" : `${fmtPct(displayPercent)}%`}`}
+            </span>
           </span>
           {isBonusCategory || hideWeights ? null : (
             <span className="muted mono">Weight: {fmtWeightPct(cat.effective_weight)}%</span>
@@ -3436,6 +3582,12 @@ function CategoryCard({
               />
             </svg>
           </button>
+          </div>
+          {!isBonusCategory && categoryTotals ? (
+            <span className="category-section-total mono">
+              = {formatGradeNumber(categoryTotals.earned)}/{formatGradeNumber(categoryTotals.possible)}
+            </span>
+          ) : null}
         </div>
       </div>
       {open ? (
@@ -3648,17 +3800,24 @@ function CategoryCard({
                       onChange(await api.patchAssignment(a.id, { flag_ids: nextIds }));
                     }}
                     hasComment={Boolean(String(a.comment || "").trim())}
-                    averageCategory={
+                    bonusEligible={
                       !isBonusCategory
                       && cat.aggregation === "average"
                       && meaningfulAssignmentCount > 1
                     }
                     isBonus={Boolean(a.is_bonus)}
                     bonusType={a.bonus_type}
-                    onToggleBonus={async (type) => onChange(await api.patchAssignment(a.id, {
-                      is_bonus: type != null,
-                      bonus_type: type,
-                    }))}
+                    onToggleBonus={async (type) => {
+                      const patch = {
+                        is_bonus: type != null,
+                        bonus_type: type,
+                      };
+                      if (type === "category" && !isBonusCategory && cat.aggregation === "points_ratio") {
+                        const score = convertScoreToCategoryBonusPoints(a);
+                        if (score != null) patch.score = score;
+                      }
+                      onChange(await api.patchAssignment(a.id, patch));
+                    }}
                     onConvert={() => convertToComposite(a.id)}
                     onNormal={() => makeNormalGrade(a.id)}
                     onAddComment={() => setCommentEditorId(a.id)}

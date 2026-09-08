@@ -8,7 +8,6 @@ from backend.engine import (
     CourseInput,
     PassFailScale,
     ScaleRow,
-    avg_drop_x,
     category_percent,
     course_grade,
     course_points_percent,
@@ -31,6 +30,7 @@ from backend.engine import (
     DEFAULT_SCALE,
     SCALE_PRESETS,
 )
+from backend.service import composite_score_fields, normalize_composite
 
 
 def P(earned, possible=100, bonus=False, name=""):
@@ -44,18 +44,19 @@ def test_parse_score():
     assert parse_score("  ") == (None, None)
 
 
-def test_avg_drop_x_ma407_hw():
-    scores = [95, 90, 100, 80, 99.14, 100, 71, 100, 70.1]
-    assert abs(avg_drop_x(scores, 1) - 91.8925) < 1e-6
+def test_weighted_composite_ignores_items_without_a_weight():
+    composite = normalize_composite(
+        {
+            "mode": "weighted_percent",
+            "items": [
+                {"name": "Project 1", "score": "100", "weight": ""},
+                {"name": "Project 2", "score": "80", "weight": "50"},
+            ],
+        }
+    )
 
-
-def test_avg_drop_x_keeps_one():
-    assert avg_drop_x([70], 5) == 70
-
-
-def test_avg_drop_x_drops_all_but_one():
-    assert avg_drop_x([70, 80, 90], 3) == 90
-    assert avg_drop_x([70, 80, 90], 10) == 90
+    assert composite["items"][0]["weight"] is None
+    assert composite_score_fields(composite, "average")["score_text"] == "80"
 
 
 def test_resolve_current_category_policy():
@@ -189,6 +190,18 @@ def test_points_category_replacement_converts_percent_to_points():
     final = CategoryInput(id=2, name="Final", aggregation="average", assignments=[P(95)])
     pct = category_percent(tests, [tests, final])
     assert abs(pct - 92.5) < 1e-9
+
+
+def test_points_category_bonuses_are_applied():
+    category = CategoryInput(
+        aggregation="points_ratio",
+        assignments=[
+            P(90, 100),
+            AssignmentInput(earned=20, possible=0, is_bonus=True, bonus_type="assignment"),
+            AssignmentInput(earned=5, possible=0, is_bonus=True, bonus_type="category"),
+        ],
+    )
+    assert abs(category_percent(category) - 115.0) < 1e-9
 
 
 def test_percent_category_replacement_converts_points_to_percent():
