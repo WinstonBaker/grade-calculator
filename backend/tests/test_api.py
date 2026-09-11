@@ -1217,6 +1217,59 @@ def test_high_school_overall_score_uses_period_coverage_not_graded_terms(tmp_pat
         teardown()
 
 
+def test_high_school_overall_class_exposes_interpolated_percent_before_all_terms(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        updated = client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        assert updated.status_code == 200
+        fall = client.post(
+            "/api/semesters", json={"year": 2030, "season": "fall", "included": True}
+        ).json()
+        spring = client.post(
+            "/api/semesters", json={"year": 2030, "season": "spring", "included": True}
+        ).json()
+        client.post(
+            "/api/academic-years",
+            json={"name": "2030-31", "semester_ids": [fall["id"], spring["id"]]},
+        )
+        client.post(
+            "/api/courses",
+            json={"semester_id": fall["id"], "code": "ENG 101", "gp_override": 4.0},
+        )
+        spring_course = client.post(
+            "/api/courses",
+            json={"semester_id": spring["id"], "code": "ENG 101"},
+        ).json()
+
+        overall = next(
+            row for row in client.get("/api/gpa").json()["overall_classes"]
+            if row["code"] == "ENG 101"
+        )
+        assert overall["percent"] == pytest.approx(93.0)
+        assert overall["overall_percent"] == pytest.approx(93.0)
+        assert overall["letter"] == "A"
+
+        # Once the second term is graded, the same overall field becomes the
+        # actual weighted result across both terms.
+        completed = client.patch(
+            f"/api/courses/{spring_course['id']}",
+            json={"gp_override": 3.667},
+        )
+        assert completed.status_code == 200
+        overall = next(
+            row for row in client.get("/api/gpa").json()["overall_classes"]
+            if row["code"] == "ENG 101"
+        )
+        assert overall["percent"] == pytest.approx(91.5)
+        assert overall["overall_percent"] == pytest.approx(91.5)
+        assert overall["letter"] == "A-"
+    finally:
+        teardown()
+
+
 def test_high_school_final_override_does_not_change_term_grade(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -1789,6 +1842,79 @@ def test_grading_mode_points_based(tmp_path):
 
         bad = client.patch(f"/api/courses/{cid}", json={"grading_mode": "curve"})
         assert bad.status_code == 400
+    finally:
+        teardown()
+
+
+def test_na_course_is_excluded_from_gpa_dashboard_rollups(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        graded = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "ENG 101", "credits": 3, "gp_override": 4.0},
+        )
+        assert graded.status_code == 200
+        excluded = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "N/A 101", "credits": 3, "gp_override": -1},
+        )
+        assert excluded.status_code == 200
+
+        gpa = client.get("/api/gpa").json()
+        term = next(row for row in gpa["terms"] if row["id"] == sem_id)
+        assert term["course_count"] == 1
+        assert term["term_gpa"] == pytest.approx(4.0)
+        assert gpa["total_credits"] == pytest.approx(3.0)
+        assert gpa["gpa_credits"] == pytest.approx(3.0)
+
+        settings = client.patch(
+            "/api/settings",
+            json={"gradebook_type": "high_school", "gpa_basis": "classes"},
+        )
+        assert settings.status_code == 200
+        high_school = client.get("/api/gpa").json()
+        assert [row["code"] for row in high_school["overall_classes"]] == ["ENG 101"]
+    finally:
+        teardown()
+
+
+def test_empty_bonus_score_is_valid_in_points_course(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "MATH 201", "credits": 3},
+        ).json()
+        cid = course["id"]
+        client.patch(f"/api/courses/{cid}", json={"grading_mode": "points"})
+        category = client.post(
+            "/api/categories",
+            json={"course_id": cid, "name": "Tests", "weight": 1, "aggregation": "average"},
+        ).json()
+
+        created = client.post(
+            "/api/assignments",
+            json={"category_id": category["id"], "name": "Extra credit", "score": "", "is_bonus": True},
+        )
+        assert created.status_code == 200
+        assignment = created.json()["categories"][0]["assignments"][0]
+        assert assignment["is_bonus"] is True
+        assert assignment["earned"] is None
+        assert assignment["possible"] is None
+        assert assignment["display"] == ""
+        assert assignment["score_input"] == ""
+
+        filled = client.patch(f"/api/assignments/{assignment['id']}", json={"score": "2/0"})
+        assert filled.status_code == 200
+        cleared = client.patch(f"/api/assignments/{assignment['id']}", json={"score": ""})
+        assert cleared.status_code == 200
+        assignment = cleared.json()["categories"][0]["assignments"][0]
+        assert assignment["earned"] is None
+        assert assignment["possible"] is None
+        assert assignment["display"] == ""
+        assert assignment["score_input"] == ""
     finally:
         teardown()
 

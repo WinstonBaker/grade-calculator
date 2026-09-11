@@ -574,6 +574,7 @@ export function replaceMinWithPercent(cat, replacement) {
 
 function assignmentPossible(item) {
   const possible = Number(item?.possible);
+  if (Number.isFinite(possible) && possible === 0) return 0;
   if (Number.isFinite(possible) && possible !== 0) return possible;
   return 100;
 }
@@ -597,7 +598,10 @@ function projectPointsPercentFromExam(course, examCategoryId, examPercent) {
     }
     for (const item of cat.assignments || []) {
       if (item.is_bonus) {
-        if (cat.include_bonus && item.earned != null) bonus += Number(item.earned);
+        if (
+          item.earned != null
+          && (cat.include_bonus || item.possible == null || Number(item.possible) === 0)
+        ) bonus += Number(item.earned);
         continue;
       }
       if (item.earned == null || !Number.isFinite(Number(item.earned))) continue;
@@ -723,7 +727,11 @@ export function pointsExamNeededRows(course, examPossible) {
     for (const item of category.assignments || []) {
       if (item.earned == null) continue;
       if (item.is_bonus) {
-        if (category.include_bonus) earned += Number(item.earned);
+        if (
+          category.include_bonus
+          || item.possible == null
+          || Number(item.possible) === 0
+        ) earned += Number(item.earned);
         continue;
       }
       earned += Number(item.earned);
@@ -767,7 +775,11 @@ export function pointsPercentFromExam(course, examPossible, examEarned) {
     for (const item of category.assignments || []) {
       if (item.earned == null) continue;
       if (item.is_bonus) {
-        if (category.include_bonus) earned += Number(item.earned);
+        if (
+          category.include_bonus
+          || item.possible == null
+          || Number(item.possible) === 0
+        ) earned += Number(item.earned);
         continue;
       }
       earned += Number(item.earned);

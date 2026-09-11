@@ -545,14 +545,24 @@ export default function App() {
   const selectedAcademicYear = query.get("academicYear");
   const isClassView = /^\/courses\/[^/]+$/.test(location.pathname);
   const activeAppearance = useMemo(
-    () => ({
-      ...appearance,
-      ...stripGlobalAppearance(gradebookAppearance[selectedGradebookId]),
-      // App-wide appearance preferences always win over legacy gradebook
-      // snapshots and can only be changed from global Settings.
-      ...globalAppearanceValues(appearance),
-    }),
-    [appearance, gradebookAppearance, selectedGradebookId]
+    () => {
+      const scopedAppearance = stripGlobalAppearance(gradebookAppearance[selectedGradebookId]);
+      const hasSavedCreditLabel = Object.prototype.hasOwnProperty.call(scopedAppearance, "creditLabelId");
+      const defaultCreditLabel = gpaBasis === "classes" ? "classes" : "credits";
+      return {
+        ...appearance,
+        ...scopedAppearance,
+        // App-wide appearance preferences always win over legacy gradebook
+        // snapshots and can only be changed from global Settings.
+        ...globalAppearanceValues(appearance),
+        // A gradebook with variable units starts with "Credits". Once the
+        // user chooses a different label, the gradebook-scoped value wins.
+        ...(hasSavedCreditLabel
+          ? {}
+          : { creditLabelId: defaultCreditLabel, creditLabelCustom: "" }),
+      };
+    },
+    [appearance, gradebookAppearance, gpaBasis, selectedGradebookId]
   );
   const termLabel = resolveTermLabel(activeAppearance);
   const isHighSchool = gradebookType === "high_school";
@@ -723,11 +733,21 @@ export default function App() {
 
   function updateGradebookAppearance(updater) {
     setGradebookAppearance((current) => {
-      const base = { ...appearance, ...stripGlobalAppearance(current[selectedGradebookId]) };
+      const currentScoped = stripGlobalAppearance(current[selectedGradebookId]);
+      const hadSavedCreditLabel = Object.prototype.hasOwnProperty.call(currentScoped, "creditLabelId");
+      const base = { ...appearance, ...currentScoped };
       const next = typeof updater === "function" ? updater(base) : updater;
+      const nextScoped = stripGlobalAppearance(next);
+      // Do not turn an inherited global label into a gradebook-specific
+      // setting just because another gradebook setting was edited. A label is
+      // saved only when it was already scoped or the user changed it.
+      if (!hadSavedCreditLabel && next.creditLabelId === appearance.creditLabelId) {
+        delete nextScoped.creditLabelId;
+        delete nextScoped.creditLabelCustom;
+      }
       return {
         ...current,
-        [selectedGradebookId]: stripGlobalAppearance(next),
+        [selectedGradebookId]: nextScoped,
       };
     });
   }
@@ -942,6 +962,10 @@ export default function App() {
     const id = `gradebook-${nextNumber}`;
     setGradebooks((current) => [...current, { id, name }]);
     setGradebookMembers((current) => ({ ...current, [id]: [] }));
+    setGradebookAppearance((current) => ({
+      ...current,
+      [id]: { creditLabelId: "credits", creditLabelCustom: "" },
+    }));
     setGradebookMenuOpen(false);
     setGradebookCreateOpen(false);
     setGradebookNameDraft("");
@@ -1448,9 +1472,7 @@ export default function App() {
                         aria-selected={item.id === selectedGradebookId}
                         onClick={() => {
                           setGradebookMenuOpen(false);
-                          const params = new URLSearchParams(location.search);
-                          params.set("gradebook", item.id);
-                          navigate(`${location.pathname}?${params.toString()}${location.hash}`);
+                          navigate(`/gpa?gradebook=${encodeURIComponent(item.id)}`);
                         }}
                       >
                         {item.name}
@@ -1645,7 +1667,7 @@ export default function App() {
             />
             <Route
               path="/gradebook-settings"
-              element={<Settings key={selectedGradebookId} mode="gradebook" gradebookId={selectedGradebookId} gradebooks={gradebooks} gradebookAppearances={gradebookAppearance} appearance={activeAppearance} gradebookName={selectedGradebook?.name || ""} onGradebookNameChange={renameGradebook} onDeleteGradebook={requestDeleteGradebook} onImportedGradebookSetups={registerImportedGradebookSetups} academicPeriods={visibleAcademicYears} semesters={orderedSemesters} onAddAcademicPeriod={addAcademicPeriod} onDeleteAcademicPeriod={deleteAcademicPeriod} onAcademicPeriodChange={saveAcademicPeriodName} onAppearanceChange={updateGradebookAppearance} onChange={refresh} />}
+                element={<Settings key={selectedGradebookId} mode="gradebook" gradebookId={selectedGradebookId} gradebooks={gradebooks} gradebookAppearances={gradebookAppearance} appearance={activeAppearance} gradebookName={selectedGradebook?.name || ""} onGradebookNameChange={renameGradebook} onDeleteGradebook={requestDeleteGradebook} onImportedGradebookSetups={registerImportedGradebookSetups} academicPeriods={visibleAcademicYears} semesters={orderedSemesters} onAddAcademicPeriod={addAcademicPeriod} onDeleteAcademicPeriod={deleteAcademicPeriod} onAcademicPeriodChange={saveAcademicPeriodName} onAppearanceChange={updateGradebookAppearance} onCreditLabelChange={(value) => updateGradebookAppearance((current) => ({ ...current, creditLabelId: value }))} onCreditLabelCustomChange={(value) => updateGradebookAppearance((current) => ({ ...current, creditLabelCustom: value }))} onChange={refresh} />}
             />
             </Routes>
           </Suspense>

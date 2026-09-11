@@ -1099,7 +1099,7 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
     const overallScore = unweightedGp == null
       ? null
       : Math.round((Number(unweightedGp) - Number(gpaSettings.target_gp ?? 4)) * 3) * Number(classCredit || 0);
-    return { row, entries: termEntries, aggregatePercent: backendClass?.overall_percent ?? aggregatePercent, calculatedPercent, representative, grade, unweightedGp, weightedGp, overallScore, classCredit, override };
+    return { row, entries: termEntries, aggregatePercent: backendClass?.percent ?? backendClass?.overall_percent ?? aggregatePercent, calculatedPercent, representative, grade, unweightedGp, weightedGp, overallScore, classCredit, override };
   });
   const graded = rollups.filter((item) => item.unweightedGp != null);
   const semesterGpa = graded.length ? graded.reduce((sum, item) => sum + Number(item.unweightedGp), 0) / graded.length : null;

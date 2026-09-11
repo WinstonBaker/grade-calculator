@@ -1087,7 +1087,7 @@ function FlaggingSettings({ appearance, onAppearanceChange }) {
   );
 }
 
-export default function Settings({ mode = "global", appearance, gradebookName = "", gradebookId = null, gradebooks = [], gradebookAppearances = {}, onGradebookNameChange, onGradebookOrderChange, onAddGradebook, onDeleteGradebook, onImportedGradebookSetups, academicPeriods = [], semesters = [], onAddAcademicPeriod, onDeleteAcademicPeriod, onAcademicPeriodChange, onAppearanceChange, onChange }) {
+export default function Settings({ mode = "global", appearance, gradebookName = "", gradebookId = null, gradebooks = [], gradebookAppearances = {}, onGradebookNameChange, onGradebookOrderChange, onAddGradebook, onDeleteGradebook, onImportedGradebookSetups, academicPeriods = [], semesters = [], onAddAcademicPeriod, onDeleteAcademicPeriod, onAcademicPeriodChange, onAppearanceChange, onCreditLabelChange, onCreditLabelCustomChange, onChange }) {
   const { push, warning } = useToasts();
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
@@ -2351,7 +2351,6 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
               <span className="settings-field-label">Unit Type <Tooltip anchor="icon" text="Fixed Units count each class as one unit, though Multi-term gradebooks can make class have partial units. Variable Unit weights classes by their assigned credits or units. Multi-term gradebooks are locked to Fixed Units." /></span>
               <select className="select" disabled={(data.gradebook_type || "college") === "high_school"} value={(data.gradebook_type || "college") === "high_school" ? "classes" : (data.gpa_basis || "credits")} onChange={(e) => {
                 updateSettings({ gpa_basis: e.target.value });
-                onAppearanceChange((current) => ({ ...current, creditLabelId: e.target.value === "classes" ? "classes" : "credits" }));
               }}>
                 {(data.gradebook_type || "college") === "high_school" ? <option value="classes">Fixed Unit</option> : <>
                   <option value="credits">Variable Unit</option>
@@ -2467,12 +2466,18 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                 <label className="muted settings-display-gpa-field">
                   <span className="settings-field-label">Class Labels <Tooltip anchor="icon" text="Choose the word used when displaying the unit count for classes, such as Classes, Credits, or Units." /></span>
                   <div className={`settings-display-gpa-control${appearance.creditLabelId === "other" ? " has-custom" : ""}`}>
-                    <select className="select" value={appearance.creditLabelId || "credits"} onChange={(e) => onAppearanceChange((current) => ({ ...current, creditLabelId: e.target.value }))}>
+                    <select className="select" value={appearance.creditLabelId || "credits"} onChange={(e) => {
+                      if (onCreditLabelChange) onCreditLabelChange(e.target.value);
+                      else onAppearanceChange((current) => ({ ...current, creditLabelId: e.target.value }));
+                    }}>
                       {CREDIT_LABEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
                     </select>
                     {appearance.creditLabelId === "other" ? (
                       <>
-                        <input className="input" value={appearance.creditLabelCustom || ""} placeholder="e.g. Units" aria-label="Custom credit name" onChange={(e) => onAppearanceChange((current) => ({ ...current, creditLabelCustom: e.target.value }))} />
+                        <input className="input" value={appearance.creditLabelCustom || ""} placeholder="e.g. Units" aria-label="Custom credit name" onChange={(e) => {
+                          if (onCreditLabelCustomChange) onCreditLabelCustomChange(e.target.value);
+                          else onAppearanceChange((current) => ({ ...current, creditLabelCustom: e.target.value }));
+                        }} />
                       </>
                     ) : null}
                   </div>

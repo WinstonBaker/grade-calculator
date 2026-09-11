@@ -643,7 +643,11 @@ def points_ratio(assignments: Iterable[AssignmentInput]) -> float | None:
 
 
 def _points_possible(item: AssignmentInput) -> float:
-    return float(item.possible) if item.possible not in (None, 0) else 100.0
+    # A zero denominator is a points bonus: it contributes earned points but
+    # must never add an artificial 100 points to the denominator.
+    if item.possible == 0:
+        return 0.0
+    return float(item.possible) if item.possible is not None else 100.0
 
 
 def _ranked_points_subset(
@@ -654,7 +658,12 @@ def _ranked_points_subset(
     keep_count = len(eligible) - min(max(drop, 0), max(len(eligible) - 1, 0))
     return fixed + sorted(
         eligible,
-        key=lambda item: item.earned - ratio * _points_possible(item),
+        # Drop Lowest Grades means the lowest individual percentage, not the
+        # item that maximizes the final combined ratio after dropping.
+        key=lambda item: (
+            item.percent() if item.percent() is not None else float("-inf"),
+            item.name,
+        ),
         reverse=True,
     )[:keep_count]
 
@@ -665,33 +674,10 @@ def _best_points_subset(
     base_earned: float = 0.0,
     base_possible: float = 0.0,
 ) -> list[AssignmentInput]:
-    """Keep the fixed-size subset that maximizes the resulting points ratio.
-
-    For a candidate ratio r, the best k-row subset is the k rows with the
-    largest (earned - r * possible) contribution. Binary search over r finds
-    the optimal ratio without enumerating every combination of rows.
-    """
+    """Keep the fixed-size subset after dropping the lowest percentages."""
     if not assignments:
         return []
-    keep_count = len(assignments) - min(max(drop, 0), len(assignments) - 1)
-    if keep_count >= len(assignments):
-        return assignments
-
-    low = -1_000_000.0
-    high = 1_000_000.0
-    for _ in range(70):
-        ratio = (low + high) / 2.0
-        kept = _ranked_points_subset(assignments, drop, ratio)
-        contribution = base_earned + sum(item.earned for item in kept if item.earned is not None)
-        contribution -= ratio * (
-            base_possible + sum(_points_possible(item) for item in kept)
-        )
-        if contribution >= 0:
-            low = ratio
-        else:
-            high = ratio
-
-    return _ranked_points_subset(assignments, drop, low)
+    return _ranked_points_subset(assignments, drop, 0.0)
 
 
 def _regular_percents(category: CategoryInput) -> list[float]:
@@ -730,9 +716,21 @@ def category_percent(
         return sum(bonuses)
 
     if policy.aggregation == "points_ratio":
-        scored = [a for a in category.assignments if a.has_score() and not a.is_bonus]
+        scored = [
+            a for a in category.assignments
+            if a.has_score() and not a.is_bonus and a.possible != 0
+        ]
+        zero_denominator_bonus = sum(
+            item.earned
+            for item in category.assignments
+            if item.earned is not None and item.possible in (None, 0)
+        )
         if policy.drop_count:
-            scored = _best_points_subset(scored, policy.drop_count, 0)
+            scored = _best_points_subset(
+                scored,
+                policy.drop_count,
+                base_earned=zero_denominator_bonus,
+            )
         if policy.replace_with_category_id is not None and categories:
             other = next((c for c in categories if c.id == policy.replace_with_category_id), None)
             if other is not None:
@@ -753,12 +751,18 @@ def category_percent(
         pct = points_ratio(scored)
         if pct is None:
             return None
+        regular_possible = sum(
+            float(item.possible)
+            for item in scored
+            if item.possible is not None
+        )
         assignment_bonus = sum(
             item.earned
             for item in category.assignments
             if item.is_bonus
             and item.bonus_type != "category"
             and item.earned is not None
+            and item.possible not in (None, 0)
         )
         category_bonus = sum(
             item.earned
@@ -766,8 +770,14 @@ def category_percent(
             if item.is_bonus
             and item.bonus_type == "category"
             and item.earned is not None
+            and item.possible not in (None, 0)
         )
-        return pct + category_bonus + (assignment_bonus / len(scored) if scored else 0.0)
+        point_bonus_percent = (
+            100.0 * zero_denominator_bonus / regular_possible
+            if regular_possible > 0
+            else 0.0
+        )
+        return pct + point_bonus_percent + category_bonus + (assignment_bonus / len(scored) if scored else 0.0)
 
     if not regular:
         return None
@@ -811,7 +821,9 @@ def effective_weight(category: CategoryInput) -> float:
 
 
 def _assignment_possible(item: AssignmentInput) -> float:
-    if item.possible not in (None, 0):
+    if item.possible == 0:
+        return 0.0
+    if item.possible is not None:
         return float(item.possible)
     return 100.0
 
@@ -825,13 +837,19 @@ def course_points_percent(course: CourseInput) -> float | None:
     fixed_earned = 0.0
     any_row = False
     for cat in course.categories:
-        scored = [item for item in cat.assignments if not item.is_bonus and item.earned is not None]
+        scored = [
+            item for item in cat.assignments
+            if not item.is_bonus and item.earned is not None and item.possible != 0
+        ]
         scored_by_category.append((cat, scored))
         any_row = any_row or bool(scored)
         for item in scored:
             earned += item.earned
             possible += _assignment_possible(item)
         for item in cat.assignments:
+            if item.earned is not None and item.possible in (None, 0) and not cat.is_bonus_category:
+                fixed_earned += item.earned
+                any_row = True
             if item.is_bonus:
                 if (
                     cat.is_bonus_category
@@ -877,6 +895,10 @@ def course_points_percent(course: CourseInput) -> float | None:
             kept = _ranked_points_subset(scored, drop, low)
             earned += sum(item.earned for item in kept if item.earned is not None)
             possible += sum(_assignment_possible(item) for item in kept)
+    else:
+        # Keep zero-denominator bonus points in the numerator even when no
+        # category has a drop rule.
+        earned += fixed_earned
     if not any_row or possible == 0:
         return None
     static_points = course.bonus_points if course.bonus_mode == "static_points" else 0.0

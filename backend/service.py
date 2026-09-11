@@ -1379,6 +1379,8 @@ def high_school_overall_classes(
         period = high_school_academic_year_key(term.get("year"), term.get("season"))
         occurrences: dict[str, int] = {}
         for course in term.get("courses") or []:
+            if course.get("gp_override") == -1:
+                continue
             code = str(course.get("code") or "").strip().lower()
             if not code:
                 continue
@@ -1868,7 +1870,7 @@ def serialize_semester(
         "term_for_credit_credits": for_credit_credits,
         "term_pass_fail_credits": pass_fail_credits,
         "term_score": score,
-        "course_count": len(courses),
+        "course_count": sum(1 for course in courses if course.get("gp_override") != -1),
         "courses": courses,
     }
 
@@ -2081,6 +2083,11 @@ def _overall_classes_payload(overall_classes: list[dict]) -> list[dict]:
                 "occurrence": item.get("occurrence"),
                 "period": item.get("period"),
                 "units": item.get("units"),
+                # The overall result is the class grade whether it is based
+                # on every expected term or is currently interpolated from
+                # the graded terms. Expose it as the normal percent field so
+                # consumers do not need to distinguish those states.
+                "percent": final.get("percent") if final is not None else None,
                 "overall_percent": final.get("percent") if final is not None else None,
                 "letter": final.get("letter") if final is not None else None,
                 "quality_points": (

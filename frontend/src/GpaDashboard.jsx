@@ -35,6 +35,10 @@ function isGradedCreditSummaryCourse(course) {
   return course.quality_points != null || course.pass_fail_override != null || course.letter != null;
 }
 
+function isDashboardVisibleCourse(course) {
+  return Boolean(course) && course.gp_override !== -1;
+}
+
 function isPassingCreditSummaryCourse(course) {
   if (course.credit_mode === "pass_fail") {
     const letter = course.pass_fail_override ?? course.letter;
@@ -50,10 +54,17 @@ function fumblesBySemester(terms, fumbles, highSchoolMode = false, periodGroups 
   const groups = [];
   const seen = new Set();
   const courseNames = buildCourseDisplayCodes(terms, null, semesterTitles);
-  const labeledFumbles = (fumbles || []).map((row) => ({
-    ...row,
-    code: courseNames.get(row.course_id) || row.code,
-  }));
+  const visibleCourseIds = new Set(
+    (terms || []).flatMap((term) => (
+      (term.courses || []).filter(isDashboardVisibleCourse).map((course) => String(course.id))
+    )),
+  );
+  const labeledFumbles = (fumbles || [])
+    .filter((row) => visibleCourseIds.has(String(row.course_id)))
+    .map((row) => ({
+      ...row,
+      code: courseNames.get(row.course_id) || row.code,
+    }));
   if (highSchoolMode) {
     const periodByCourseId = new Map();
     const periodBySemesterId = new Map();
@@ -96,7 +107,11 @@ function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = 
   const rootRef = useRef(null);
   const groups = useMemo(
     () => {
-      if (!highSchoolMode) return (terms || []).filter((term) => term.courses?.length);
+      if (!highSchoolMode) {
+        return (terms || [])
+          .map((term) => ({ ...term, courses: (term.courses || []).filter(isDashboardVisibleCourse) }))
+          .filter((term) => term.courses.length);
+      }
       const overallByPeriod = new Map();
       (overallClasses || []).forEach((course) => {
         if (course?.id == null) return;
@@ -132,7 +147,10 @@ function FumbleCourseSelect({ terms, fumbles, value, onChange, highSchoolMode = 
     return Math.min(50, Math.max(24, longestLabel + 2));
   }, [displayCodes, scale, selectableCourses]);
   const selected = selectableCourses.find((course) => String(course.id) === String(value))
-    || (terms || []).flatMap((term) => term.courses || []).find((course) => String(course.id) === String(value));
+    || (terms || [])
+      .flatMap((term) => term.courses || [])
+      .filter(isDashboardVisibleCourse)
+      .find((course) => String(course.id) === String(value));
   const selectedGrade = fumbleCourseGrade(selected, scale);
   const addedCourseIds = new Set((fumbles || []).map((fumble) => String(fumble.course_id)));
 
@@ -276,6 +294,7 @@ function highSchoolScoreForCourses(courses, termCount, targetGp = 4) {
   if (!termCount) return null;
   const classes = new Map();
   (courses || []).forEach((course) => {
+    if (!isDashboardVisibleCourse(course)) return;
     const key = String(course.code || "").trim().toLowerCase();
     if (!key) return;
     const current = classes.get(key) || { count: 0, final: null, latestId: -1 };
@@ -389,6 +408,7 @@ function buildSlices(rows, valueKey) {
 function scoreDistributionFromCourses(courses, chartDistribution) {
   const groups = new Map();
   for (const course of courses || []) {
+    if (!isDashboardVisibleCourse(course)) continue;
     const letter = course.credit_mode === "pass_fail"
       ? (course.pass_fail_override || course.letter)
       : course.letter;
@@ -433,6 +453,10 @@ function truncateDistribution(distribution) {
   }
   if (last < 0) return [];
   return distribution.slice(0, last + 1);
+}
+
+function distributionCoursePercent(course) {
+  return course?.percent ?? course?.overall_percent;
 }
 
 function DistributionTable({ distribution, courses = [], displayCodes = new Map(), simplified = false, periodMode = false, showUnits = false, courseHref, termLabel = "Semester" }) {
@@ -557,7 +581,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
                           </Link>
                         </span>
                         <span className="course-letter-display">
-                          <span className="mono">{course.percent == null ? "-%" : `${fmtPct(course.percent, 2)}%`}</span>
+                          <span className="mono">{distributionCoursePercent(course) == null ? "-%" : `${fmtPct(distributionCoursePercent(course), 2)}%`}</span>
                           {course.gp_override != null || course.pass_fail_override != null ? <span className="grade-override-marker percentage-override-marker" aria-label="Grade overridden">*</span> : null}
                         </span>
                         <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
@@ -716,7 +740,16 @@ function DonutChart({ title, slices, total, centerTotal = total, centerValueClas
         </div>
       </div>
       {!compact ? (
-        <div className="donut-tooltip muted">Hover a slice for details</div>
+        <div className={`donut-tooltip muted ${tip ? "has-detail" : ""}`.trim()}>
+          {tip ? (
+            <>
+              <strong>
+                {hoverDetail(tip)} <span className={`letter ${letterClass(tip.letter)}`}>{tip.letter}</span>
+              </strong>
+              <span>{tip.displayValue ?? tip.value} {hoverUnit || unit}</span>
+            </>
+          ) : "Hover a slice for details"}
+        </div>
       ) : null}
     </div>
   );
@@ -1129,7 +1162,7 @@ function subjectPrefix(code) {
 }
 
 function distributionFromCourses(courses, letterOrder = FALLBACK_LETTERS, includePassFailLabels = false) {
-  const graded = courses.filter((c) => c.letter && (c.quality_points != null || c.credit_mode === "pass_fail"));
+  const graded = courses.filter((c) => isDashboardVisibleCourse(c) && c.letter && (c.quality_points != null || c.credit_mode === "pass_fail"));
   const regular = graded.filter((c) => c.credit_mode !== "pass_fail");
   const passFail = graded.filter((c) => c.credit_mode === "pass_fail");
   const totalCredits = graded.reduce((sum, c) => sum + (Number(c.credits) || 0), 0);
@@ -1939,7 +1972,7 @@ function SignedValue({ value, compact = false }) {
   );
 }
 
-function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setFumbleCourse, fumbleGp, setFumbleGp, fumbleAlreadyAdded, apply, highSchoolMode = false, periodGroups = [], semesterTitles = [] }) {
+function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setFumbleCourse, fumbleGp, setFumbleGp, fumbleAlreadyAdded, apply, highSchoolMode = false, periodGroups = [], semesterTitles = [], courseHref }) {
   const creditTerms = useCreditTerms();
   const selectedFumbleGrade = data.default_scale.find((row) => String(row.quality_points) === String(fumbleGp));
   const showWeightedGpa = weightedGpa && data.weighted_overall_gpa != null;
@@ -2020,7 +2053,11 @@ function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setF
             </tr>
             {group.rows.map((f) => (
               <tr key={f.id}>
-                <td>{f.code}</td>
+                <td>
+                  <Link to={courseHref?.({ id: f.course_id, semester_id: f.semester_id }) || `/courses/${f.course_id}`}>
+                    {f.code}
+                  </Link>
+                </td>
                 <td className={`mono ${f.did_get == null ? "fumble-grade-empty" : gradeScaleRowForGp(data.default_scale, f.did_get) ? letterClass(gradeScaleRowForGp(data.default_scale, f.did_get).letter) : ""}`}>
                   {f.did_get == null ? "--" : fmtGpa(f.did_get)}
                 </td>
@@ -2099,7 +2136,8 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
           .replace(/\s+(Fall|Spring|Summer)$/i, "")
       );
     };
-    const isGradedCourse = (course) => course.quality_points != null || course.credit_mode === "pass_fail";
+    const isGradedCourse = (course) => isDashboardVisibleCourse(course)
+      && (course.quality_points != null || course.credit_mode === "pass_fail");
     const overallById = new Map(
       (overallClasses || []).map((course) => [String(course.id), course]),
     );
@@ -2344,9 +2382,16 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   const [showAllGuessLetters, setShowAllGuessLetters] = useState(false);
   const namedCourses = classType === "named";
   const guessSeeded = useRef(false);
+  const dashboardTerms = useMemo(
+    () => (data?.terms || []).map((term) => {
+      const courses = (term.courses || []).filter(isDashboardVisibleCourse);
+      return { ...term, courses, course_count: courses.length };
+    }),
+    [data],
+  );
   const orderedTerms = useMemo(
-    () => highSchoolMode ? (data?.terms || []) : sortSemesters(data?.terms || [], semesterTitles),
-    [data, highSchoolMode, semesterTitles]
+    () => highSchoolMode ? dashboardTerms : sortSemesters(dashboardTerms, semesterTitles),
+    [dashboardTerms, highSchoolMode, semesterTitles]
   );
   const displayCodes = useMemo(() => buildCourseDisplayCodes(orderedTerms, null, semesterTitles), [orderedTerms, semesterTitles]);
   const displayTermName = (term) => {
@@ -2509,7 +2554,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   );
   const distributionCourses = useMemo(() => {
     if (!highSchoolMode) {
-      return (data?.terms || [])
+      return orderedTerms
         .filter((term) => term.included)
         .flatMap((term) => (
           (term.courses || []).map((course) => ({ ...course, semester: displayTermName(term) }))
@@ -2670,7 +2715,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
 
   const flatCourses = useMemo(() => {
     if (!data) return [];
-    const rows = data.terms.flatMap((t) =>
+    const rows = orderedTerms.flatMap((t) =>
       t.courses.map((c) => ({
         ...c,
         semester: displayCoursePeriod(t),
@@ -2681,7 +2726,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
     );
     if (highSchoolMode) {
       const periodTermCounts = new Map();
-      data.terms.forEach((term) => {
+      orderedTerms.forEach((term) => {
         const period = displayCoursePeriod(term);
         periodTermCounts.set(
           period,
@@ -2769,7 +2814,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       const cmp = av > bv ? 1 : -1;
       return desc ? -cmp : cmp;
     });
-  }, [data, highSchoolMode, highSchoolTerms, highSchoolTermsByPeriod, periodNames, semesterTitles, sort, desc, termNames]);
+  }, [data, highSchoolMode, highSchoolTerms, highSchoolTermsByPeriod, orderedTerms, periodNames, semesterTitles, sort, desc, termNames]);
 
   const highSchoolUnitBreakdown = useMemo(() => {
     if (!highSchoolMode) return [];
@@ -2794,7 +2839,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
 
   const creditBreakdown = useMemo(() => {
     if (highSchoolMode) return null;
-    const courses = (data?.terms || [])
+    const courses = orderedTerms
       .filter((term) => term.included)
       .flatMap((term) => term.courses || [])
       .filter(isGradedCreditSummaryCourse);
@@ -2810,7 +2855,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       passed: summarize(passed),
       failed: summarize(failed),
     };
-  }, [data, highSchoolMode]);
+  }, [data, highSchoolMode, orderedTerms]);
 
   function toggleSort(next) {
     if (GRADE_SORT_KEYS.has(next)) {
@@ -2892,12 +2937,12 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   }
 
   function expandAllTerms() {
-    setOpenTerms(Object.fromEntries(data.terms.map((t) => [t.id, true])));
+    setOpenTerms(Object.fromEntries(orderedTerms.map((t) => [t.id, true])));
     setSemestersSectionOpen(true);
   }
 
   function collapseAllTerms() {
-    setOpenTerms(Object.fromEntries(data.terms.map((t) => [t.id, false])));
+    setOpenTerms(Object.fromEntries(orderedTerms.map((t) => [t.id, false])));
   }
 
   return (
@@ -3214,10 +3259,11 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
           setFumbleGp={setFumbleGp}
           fumbleAlreadyAdded={fumbleAlreadyAdded}
           apply={apply}
-          highSchoolMode={highSchoolMode}
-          periodGroups={periodGroups}
-          semesterTitles={semesterTitles}
-        />
+                highSchoolMode={highSchoolMode}
+                periodGroups={periodGroups}
+                semesterTitles={semesterTitles}
+                courseHref={courseHref}
+              />
 
         {data.exam_impact?.cumulative?.courses ? (
           <section className="panel exam-impact-panel" style={{ marginTop: 16 }}>

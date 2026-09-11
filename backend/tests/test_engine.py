@@ -98,7 +98,7 @@ def test_points_ratio():
     assert abs(points_ratio(rows) - expected) < 1e-9
 
 
-def test_points_drop_maximizes_ratio_instead_of_points_lost():
+def test_points_drop_removes_lowest_assignment_percentage():
     cat = CategoryInput(
         aggregation="points_ratio",
         drop_count=1,
@@ -107,7 +107,7 @@ def test_points_drop_maximizes_ratio_instead_of_points_lost():
     assert abs(category_percent(cat) - 90.0) < 1e-9
 
 
-def test_points_course_drop_maximizes_overall_ratio():
+def test_points_course_drop_removes_lowest_assignment_percentage():
     course = CourseInput(
         grading_mode="points",
         categories=[
@@ -202,6 +202,54 @@ def test_points_category_bonuses_are_applied():
         ],
     )
     assert abs(category_percent(category) - 115.0) < 1e-9
+
+
+def test_zero_denominator_points_bonus_is_numerator_only_in_category():
+    category = CategoryInput(
+        aggregation="points_ratio",
+        drop_count=1,
+        assignments=[
+            P(18, 20),
+            P(15, 20),
+            P(84, 100),
+            P(2, 0),
+        ],
+    )
+    # Drop 15/20, then add the 2/0 bonus to the numerator without adding
+    # another 100 possible points: (18 + 84 + 2) / (20 + 100).
+    assert abs(category_percent(category) - (104 / 120 * 100)) < 1e-9
+
+
+def test_zero_denominator_points_bonus_is_numerator_only_in_course():
+    course = CourseInput(
+        grading_mode="points",
+        categories=[
+            CategoryInput(
+                aggregation="points_ratio",
+                drop_count=1,
+                assignments=[
+                    P(18, 20),
+                    P(15, 20),
+                    P(84, 100),
+                    P(2, 0),
+                ],
+            )
+        ],
+    )
+    assert abs(course_points_percent(course) - (104 / 120 * 100)) < 1e-9
+
+
+def test_zero_denominator_points_bonus_counts_without_drop_rule():
+    course = CourseInput(
+        grading_mode="points",
+        categories=[
+            CategoryInput(
+                aggregation="points_ratio",
+                assignments=[P(90, 100), P(2, 0)],
+            )
+        ],
+    )
+    assert abs(course_points_percent(course) - 92.0) < 1e-9
 
 
 def test_percent_category_replacement_converts_points_to_percent():

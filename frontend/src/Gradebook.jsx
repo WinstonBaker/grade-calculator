@@ -104,6 +104,16 @@ function formatGradeNumber(value) {
   return number.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+function formatExamScoreDisplay(raw) {
+  const text = String(raw ?? "");
+  if (!text.trim().startsWith("=")) return text;
+  const expression = parseScoreExpression(text);
+  if (!expression || !Number.isFinite(expression.earned) || !Number.isFinite(expression.possible) || expression.possible === 0) {
+    return text;
+  }
+  return formatGradeNumber((100 * expression.earned) / expression.possible);
+}
+
 function formatCompactReplacementNumber(value) {
   return formatGradeNumber(value).replace(/^(\-?)0\./, "$1.");
 }
@@ -188,15 +198,18 @@ function pointsCategoryPercent(category, course = null) {
     ? pointsCourseKeptAssignments(course).get(category?.id) || []
     : category?.assignments || [];
   for (const assignment of assignments) {
-    if (
-      assignment.is_bonus
-      || assignment.earned == null
-      || (assignment.possible != null && Number(assignment.possible) === 0)
-    ) continue;
+    if (assignment.is_bonus || assignment.earned == null) continue;
     const denominator = Number(assignment.possible);
     earned += Number(assignment.earned);
-    possible += Number.isFinite(denominator) && denominator > 0 ? denominator : 100;
+    possible += Number.isFinite(denominator) && denominator > 0 ? denominator : 0;
     hasScore = true;
+  }
+  for (const assignment of category?.assignments || []) {
+    if (!assignment.is_bonus || assignment.earned == null) continue;
+    if (assignment.possible == null || Number(assignment.possible) === 0) {
+      earned += Number(assignment.earned);
+      hasScore = true;
+    }
   }
   return hasScore && possible > 0 ? (100 * earned) / possible : null;
 }
@@ -207,11 +220,7 @@ function pointsCategoryTotals(category, assignments = null, replacementScores = 
   let possible = 0;
   let hasScore = false;
   for (const assignment of scoredAssignments) {
-    if (
-      assignment.is_bonus
-      || assignment.earned == null
-      || (assignment.possible != null && Number(assignment.possible) === 0)
-    ) continue;
+    if (assignment.is_bonus || assignment.earned == null) continue;
     const denominator = pointsPossibleForAssignment(assignment);
     const replacement = replacementScores.get(assignment.id);
     earned += replacement
@@ -219,6 +228,13 @@ function pointsCategoryTotals(category, assignments = null, replacementScores = 
       : Number(assignment.earned);
     possible += denominator;
     hasScore = true;
+  }
+  for (const assignment of category?.assignments || []) {
+    if (!assignment.is_bonus || assignment.earned == null) continue;
+    if (assignment.possible == null || Number(assignment.possible) === 0) {
+      earned += Number(assignment.earned);
+      hasScore = true;
+    }
   }
   return hasScore && possible > 0 ? { earned, possible } : null;
 }
@@ -240,10 +256,15 @@ function pointsCoursePercent(course) {
       continue;
     }
     for (const assignment of category.assignments || []) {
-      if (assignment.is_bonus || assignment.earned == null) continue;
+      if (assignment.earned == null) continue;
+      if (assignment.possible == null || Number(assignment.possible) === 0) {
+        bonusPoints += Number(assignment.earned);
+        continue;
+      }
+      if (assignment.is_bonus) continue;
       earned += Number(assignment.earned);
       const denominator = Number(assignment.possible);
-      possible += Number.isFinite(denominator) && denominator > 0 ? denominator : 100;
+      possible += Number.isFinite(denominator) && denominator > 0 ? denominator : 0;
     }
   }
   return possible > 0 ? (100 * (earned + bonusPoints)) / possible + bonusPercent : null;
@@ -254,11 +275,11 @@ function pointsCourseKeptAssignments(course) {
     .filter((category) => !category.is_bonus_category)
     .map((category) => ({
       category,
-      assignments: (category.assignments || []).filter(
-        (assignment) => (
+        assignments: (category.assignments || []).filter(
+          (assignment) => (
           !assignment.is_bonus
           && assignment.earned != null
-          && (assignment.possible == null || Number(assignment.possible) > 0)
+          && (assignment.possible == null || Number(assignment.possible) >= 0)
         )
       ),
     }));
@@ -310,6 +331,15 @@ function pointsCourseSummary(course) {
     for (const assignment of keptByCategory.get(category.id) || []) {
       earned += Number(assignment.earned);
       possible += pointsPossibleForAssignment(assignment);
+    }
+    for (const assignment of category.assignments || []) {
+      if (
+        assignment.is_bonus
+        && assignment.earned != null
+        && (assignment.possible == null || Number(assignment.possible) === 0)
+      ) {
+        bonusPoints += Number(assignment.earned);
+      }
     }
   }
   if (possible <= 0) return null;
@@ -1704,11 +1734,12 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
         </div>
         {showExamCalc ? (
           <ExamCalc
-            course={course}
+            course={displayCourse}
             examCatId={examCatId}
             examScoreRaw={examScoreRaw}
             onExamCatId={saveExamCategory}
             onExamScoreRaw={setExamScoreRaw}
+            speculative={speculationPreview}
           />
         ) : null}
       </div>
@@ -2071,13 +2102,15 @@ function ScaleEditor({ course, profiles, presets, onSave, onApply, onRoundingCha
   );
 }
 
-function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw }) {
+function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw, speculative = false }) {
   const rounding = course.grade_rounding ?? null;
   const resolvedId = examCatId ?? null;
   const selected = resolvedId != null;
   const pointsMode = course.grading_mode === "points";
   const [examTotalPointsRaw, setExamTotalPointsRaw] = useState("");
+  const [examScoreEditing, setExamScoreEditing] = useState(false);
   const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
+  const examScoreDisplay = examScoreEditing ? examScoreRaw : formatExamScoreDisplay(examScoreRaw);
   const projected = useMemo(() => {
     if (pointsMode) return pointsPercentFromExam(course, examTotalPointsRaw, examScoreRaw);
     return selected ? projectPercentFromExam(course, resolvedId, examPct) : null;
@@ -2147,8 +2180,10 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                 className="input"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
                 placeholder={pointsMode ? "16" : examCat?.aggregation === "points_ratio" ? "19/20" : "95 or =19/20"}
-                value={examScoreRaw}
+                value={examScoreDisplay}
+                onFocus={() => setExamScoreEditing(true)}
                 onChange={(e) => onExamScoreRaw(e.target.value)}
+                onBlur={() => setExamScoreEditing(false)}
               />
             </label>
           </div>
@@ -2181,7 +2216,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                 {tableRows.map((row) => (
                   <tr key={row.letter}>
                     <td
-                      className={`mono exam-cutoff-exam-cell ${
+                      className={`mono exam-cutoff-exam-cell ${speculative ? "speculative-exam-percent" : ""} ${
                         row.needed > 100 ? "neg" : row.needed < 0 ? "pos" : ""
                       }`}
                     >
@@ -2448,6 +2483,7 @@ function CategorySettingsModal({
 
 function pointsPossibleForAssignment(assignment) {
   const possible = Number(assignment.possible);
+  if (Number.isFinite(possible) && possible === 0) return 0;
   return Number.isFinite(possible) && possible > 0 ? possible : 100;
 }
 
@@ -2458,8 +2494,8 @@ function rankedPointsAssignments(assignments, drop, ratio) {
   return fixed.concat(
     [...eligible]
       .sort((a, b) => (
-        (Number(b.earned) - ratio * pointsPossibleForAssignment(b))
-        - (Number(a.earned) - ratio * pointsPossibleForAssignment(a))
+        (Number(b.earned) / pointsPossibleForAssignment(b))
+        - (Number(a.earned) / pointsPossibleForAssignment(a))
       ))
       .slice(0, keep)
   );
@@ -3349,7 +3385,11 @@ function CategoryCard({
     }
   }
   function validScoreEntry(raw) {
-    const text = String(raw || "").trim();
+    const text = String(raw ?? "").trim();
+    // A blank bonus is an intentionally ungraded assignment, not an invalid
+    // points score. This must be checked before points-format validation so a
+    // points-based class can leave a bonus empty until it is earned.
+    if (!text) return true;
     if (text.startsWith("=")) {
       const expression = parseScoreExpression(text);
       return Boolean(
@@ -3363,7 +3403,7 @@ function CategoryCard({
         )
       );
     }
-    if (!requiresPoints || !text) return true;
+    if (!requiresPoints) return true;
     if (isPointsScore(text, pointsMode || weightedPointsCategory || bonusPoints, bonusPoints)) return true;
     if (!pointsMode && !weightedPointsCategory && text.startsWith("=")) {
       return isPointsScore(text.slice(1).trim(), false, false);
@@ -3404,6 +3444,12 @@ function CategoryCard({
 
   function queueScoreSave(assignmentId, raw) {
     setScoreDrafts((d) => ({ ...d, [assignmentId]: raw }));
+    setScoreErrors((errors) => {
+      if (!errors[assignmentId]) return errors;
+      const copy = { ...errors };
+      delete copy[assignmentId];
+      return copy;
+    });
     if (speculationMode) {
       onSpeculativeScoreChange?.(assignmentId, raw);
     }
@@ -3416,12 +3462,19 @@ function CategoryCard({
       setScoreErrors((errors) => ({ ...errors, [assignmentId]: "Enter points as numerator/denominator, such as 3/5." }));
       return;
     }
+    const score = String(raw ?? "");
     const next = await api.patchAssignment(assignmentId, {
-      score: raw,
-      clear_score: raw.trim() === "",
+      score,
+      clear_score: score.trim() === "",
     });
     setScoreDrafts((d) => {
       const copy = { ...d };
+      delete copy[assignmentId];
+      return copy;
+    });
+    setScoreErrors((errors) => {
+      if (!errors[assignmentId]) return errors;
+      const copy = { ...errors };
       delete copy[assignmentId];
       return copy;
     });
@@ -3558,7 +3611,7 @@ function CategoryCard({
             <span>
               {isBonusCategory
                 ? bonusUsesPoints
-                  ? `Bonus: +${cat.percent == null ? "0" : formatGradeNumber(cat.percent)} pt`
+                  ? `Bonus: +${cat.percent == null ? "0" : formatGradeNumber(cat.percent)} pts`
                   : `${cat.name} +${cat.percent == null ? "0" : fmtPct(cat.percent)}%`
                 : `Section: ${displayPercent == null ? "—" : `${fmtPct(displayPercent)}%`}`}
             </span>
