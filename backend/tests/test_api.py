@@ -185,7 +185,7 @@ def test_meta_includes_version_and_downloads(tmp_path):
         assert any(p["id"] == "unc" for p in body["scale_presets"])
         assert body["aggregations"] == ["average", "points_ratio"]
         assert body["aggregation_labels"]["average"] == "Average"
-        assert body["aggregation_labels"]["points_ratio"] == "Points ratio"
+        assert body["aggregation_labels"]["points_ratio"] == "Points"
         preset_ids = {p["id"] for p in body["scale_presets"]}
         assert preset_ids == {"ncsu", "unc", "clemson", "ecu", "uncw", "uncc", "duke", "cofc"}
         assert body["default_scale"][0]["letter"] == "A+"
@@ -1328,7 +1328,7 @@ def test_high_school_final_override_does_not_change_term_grade(tmp_path):
         terms = {term["id"]: term for term in gpa["terms"]}
         assert terms[fall["id"]]["term_gpa"] == 3.0
         assert terms[spring["id"]]["term_gpa"] == pytest.approx(4.333)
-        assert gpa["overall_gpa"] == pytest.approx(4.333)
+        assert gpa["overall_gpa"] == pytest.approx(3.667)
     finally:
         teardown()
 
@@ -1749,10 +1749,10 @@ def test_deleting_class_point_removes_same_class_and_day_across_terms(tmp_path):
         second_remaining = client.get(f"/api/semesters/{semesters[1]['id']}/snapshots").json()[0]
         assert [row["code"] for row in first_remaining["courses"]] == ["SCI 101"]
         assert [row["code"] for row in second_remaining["courses"]] == ["SCI 202"]
-        assert first_remaining["term_gpa"] is None
-        assert first_remaining["term_wgpa"] is None
-        assert second_remaining["term_gpa"] is None
-        assert second_remaining["term_wgpa"] is None
+        assert first_remaining["term_gpa"] is not None
+        assert first_remaining["term_wgpa"] is not None
+        assert second_remaining["term_gpa"] is not None
+        assert second_remaining["term_wgpa"] is not None
     finally:
         teardown()
 

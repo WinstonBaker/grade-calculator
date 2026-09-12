@@ -898,7 +898,10 @@ a {
 }
 
 .speculation-mode .cat-card {
-  border-width: 2px;
+  /* Keep the tile's layout dimensions unchanged; the extra emphasis is
+     painted inward instead of increasing the auto-sized card's border. */
+  border-width: 1px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gold) 42%, var(--line));
 }
 
 .speculation-mode .gradebook-header *,
@@ -3329,6 +3332,20 @@ th button.active {
   white-space: nowrap;
 }
 
+.assignment-score-cell.is-denominator-only,
+.assignment-score-cell.is-denominator-only .input,
+.composite-item-denominator-only .input {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.assignment-score-cell.is-denominator-only .input,
+.composite-item-denominator-only .input {
+  opacity: 0.72;
+}
+
 .assignment-score-cell.is-replaced .assignment-score-original-replaced {
   flex: 0 0 8ch;
   width: 8ch;
@@ -3751,31 +3768,54 @@ th button.active {
   position: relative;
 }
 
-.exam-cutoff-head-row::after {
-  content: "→";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  color: var(--muted);
-  font-weight: 400;
-  pointer-events: none;
-}
-
 .exam-cutoff-exam-head,
 .exam-cutoff-exam-cell {
-  width: 50%;
+  width: 60%;
   text-align: left;
 }
 
+.exam-cutoff-exam-head,
+.exam-cutoff-letter-head {
+  font-size: 15.2px;
+}
+
 .exam-cutoff-exam-head {
-  padding-right: 28px;
+  padding-right: 0;
+  white-space: nowrap;
+}
+
+.exam-cutoff-letter-header-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .exam-cutoff-letter-head,
 .exam-cutoff-letter-cell {
-  width: 50%;
+  width: 40%;
   text-align: center;
+}
+
+.exam-cutoff-letter-head {
+  position: relative;
+}
+
+.exam-cutoff-letter-header-content {
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+.exam-cutoff-letter-label {
+  display: inline-block;
+  position: relative;
+}
+
+.exam-cutoff-header-arrow {
+  position: absolute;
+  right: calc(100% + 18px);
+  top: 0;
 }
 
 .exam-preview {
@@ -9175,6 +9215,23 @@ tbody tr {
 .uninstall-modal-card { width: min(560px, 100%); max-height: calc(100dvh - 48px); overflow: auto; padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-raised); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
 .uninstall-modal-card h1 { margin-top: 0; }
 .uninstall-modal-card .checkbox { display: flex; gap: 8px; margin: 14px 0; }
+
+.cat-card table.cat-scores .assignment-score-cell.is-denominator-only,
+.cat-card table.cat-scores .assignment-score-cell.is-denominator-only .input {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.assignment-score-cell.is-denominator-only .input:focus,
+.composite-item-denominator-only .input:focus {
+  color: var(--text);
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 35%, transparent);
+  opacity: 1;
+}
 
 @media (max-width: 760px) {
   .gradebook-transfer-import {

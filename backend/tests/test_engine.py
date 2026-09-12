@@ -29,6 +29,7 @@ from backend.engine import (
     unit_weighted_fumble_delta,
     DEFAULT_SCALE,
     SCALE_PRESETS,
+    denominator_only_score,
 )
 from backend.service import composite_score_fields, normalize_composite
 
@@ -42,6 +43,39 @@ def test_parse_score():
     assert parse_score("19/20") == (19.0, 20.0)
     assert parse_score("19,20") == (19.0, 20.0)
     assert parse_score("  ") == (None, None)
+
+
+def test_denominator_only_points_entry_is_ungraded():
+    assert denominator_only_score("/5") == 5.0
+    assert denominator_only_score(" / 5.5 ") == 5.5
+    assert denominator_only_score("/0") is None
+    with pytest.raises(ValueError):
+        parse_score("=/5")
+
+
+def test_points_category_ignores_denominator_only_entry():
+    cat = CategoryInput(
+        aggregation="points_ratio",
+        assignments=[P(None, 5), P(8, 10)],
+    )
+    assert category_percent(cat) == 80
+
+
+def test_points_composite_ignores_denominator_only_item():
+    composite = normalize_composite(
+        {
+            "mode": "points",
+            "items": [
+                {"name": "Not graded yet", "score": "/5"},
+                {"name": "Graded", "score": "4/5"},
+            ],
+        }
+    )
+    assert composite_score_fields(composite, "points_ratio") == {
+        "earned": 4.0,
+        "possible": 5.0,
+        "score_text": "4/5",
+    }
 
 
 def test_weighted_composite_ignores_items_without_a_weight():
@@ -127,6 +161,7 @@ def test_replace_min_with_final():
         id=1,
         name="Tests",
         aggregation="average",
+        replace_count=1,
         replace_with_category_id=2,
         assignments=[P(95), P(93)],
     )
@@ -140,6 +175,7 @@ def test_replace_min_with_final_happens_after_drop():
         id=1,
         name="Tests",
         drop_count=1,
+        replace_count=1,
         replace_with_category_id=2,
         assignments=[P(95), P(93), P(70)],
     )
@@ -252,6 +288,32 @@ def test_zero_denominator_points_bonus_counts_without_drop_rule():
     assert abs(course_points_percent(course) - 92.0) < 1e-9
 
 
+def test_points_course_bonus_category_is_not_double_counted():
+    course = CourseInput(
+        grading_mode="points",
+        bonus_mode="category",
+        categories=[
+            CategoryInput(
+                id=1,
+                name="Homework",
+                aggregation="points_ratio",
+                assignments=[P(90, 100)],
+            ),
+            CategoryInput(
+                id=2,
+                name="Bonus",
+                aggregation="points_ratio",
+                is_bonus_category=True,
+                assignments=[
+                    AssignmentInput(earned=5, possible=0, is_bonus=True, bonus_type="category"),
+                ],
+            ),
+        ],
+    )
+    assert abs(course_points_percent(course) - 95.0) < 1e-9
+    assert abs(course_grade(course).percent - 95.0) < 1e-9
+
+
 def test_percent_category_replacement_converts_points_to_percent():
     tests = CategoryInput(
         id=1,
@@ -328,6 +390,7 @@ def test_course_completed_only_and_bonus():
         code="DEMO",
         credits=3,
         bonus_points=5,
+        bonus_mode="static_percent",
         categories=[
             CategoryInput(id=1, name="HW", weight=0.2, assignments=[P(100), P(90)]),
             CategoryInput(id=2, name="Tests", weight=0.5, assignments=[P(80)]),
@@ -431,6 +494,7 @@ def test_project_from_exam_replace_min_with():
                 name="Tests",
                 weight=0.5,
                 aggregation="average",
+                replace_count=1,
                 replace_with_category_id=2,
                 assignments=[P(70), P(90)],
             ),
@@ -689,5 +753,5 @@ def test_exam_impact_test_percent_ignores_drop_and_replacement_rules():
     course = CourseInput(id=1, code="BIO 101", categories=[tests, exam])
     impact = exam_impact(course, [2], 3)
     assert impact["test_percent"] == 85
-    assert missing_tests["letter_before"] is None
-    assert missing_tests["letter_after"] is None
+    assert impact["letter_before"] is None
+    assert impact["letter_after"] is None

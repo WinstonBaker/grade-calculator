@@ -45,6 +45,7 @@ class CourseUpdate(BaseModel):
     pass_fail_override: str | None = None
     test_category_ids: list[int] | None = None
     exam_category_id: int | None = None
+    exam_total_points: float | None = Field(default=None, gt=0)
     grading_mode: str | None = None
     dynamic_weighting_enabled: bool | None = None
     dynamic_weighting: dict | None = None

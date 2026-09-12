@@ -63,6 +63,8 @@ class Course(Base):
     dynamic_weighting_json: Mapped[str] = mapped_column(Text, default="{}")
     # High-school GPA weighting category. The configured boost lives on Settings.
     gpa_weight_tag: Mapped[str] = mapped_column(String(48), default="unweighted")
+    # Saved denominator for the points-based final-exam calculator.
+    exam_total_points: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     semester: Mapped[Semester] = relationship(back_populates="courses")
     categories: Mapped[list[Category]] = relationship(

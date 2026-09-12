@@ -599,6 +599,17 @@ def parse_score(raw: str | None) -> tuple[float | None, float | None]:
     return float(text), 100.0
 
 
+def denominator_only_score(raw: str | None) -> float | None:
+    """Return the denominator from a plain /N ungraded points entry."""
+    text = str(raw or "").strip()
+    if not re.fullmatch(r"/\s*(?:\d+(?:\.\d*)?|\.\d+)", text):
+        return None
+    possible = float(text[1:].strip())
+    if not math.isfinite(possible) or possible <= 0:
+        return None
+    return possible
+
+
 def resolve_category_policy(
     aggregation: str = "average",
     drop_count: int | None = 0,
@@ -857,7 +868,6 @@ def course_points_percent(course: CourseInput) -> float | None:
                     and course.bonus_mode == "category"
                     and item.earned is not None
                 ):
-                    earned += item.earned
                     fixed_earned += item.earned
                     any_row = True
                 elif cat.include_bonus and not cat.is_bonus_category and item.earned is not None:

@@ -31,6 +31,7 @@ from backend.engine import (
     ScaleRow,
     course_grade,
     course_level_band,
+    denominator_only_score,
     evaluate_course,
     exam_impact,
     fumble_delta,
@@ -625,8 +626,6 @@ def create_scale_profile(
     source = primary_scale_profile(db)
     if rows is None:
         rows = profile_rows_as_tuples(source) if source and source.rows else _scale_from_settings_json(settings_for_gradebook(db))
-        if preset_id is None and source is not None:
-            preset_id = source.preset_id
     if pass_fail is None:
         pass_fail = profile_pass_fail(source) if source is not None else DEFAULT_PASS_FAIL
     pass_fail = normalize_pass_fail(pass_fail)
@@ -797,12 +796,18 @@ def delete_scale_profile(db: Session, profile: ScaleProfile) -> None:
     if not remaining:
         raise ValueError("Can not delete the only default scale")
     was_primary = bool(profile.is_primary)
-    (
+    courses = (
         db.query(Course)
-        .join(Semester, Course.semester_id == Semester.id)
-        .filter(Course.scale_profile_id == profile.id, Semester.gradebook_id == active_gradebook_id())
-        .update({Course.scale_profile_id: None}, synchronize_session=False)
+        .filter(
+            Course.scale_profile_id == profile.id,
+            Course.semester_id.in_(
+                db.query(Semester.id).filter(Semester.gradebook_id == active_gradebook_id())
+            ),
+        )
+        .all()
     )
+    for course in courses:
+        course.scale_profile_id = None
     db.delete(profile)
     db.flush()
     if was_primary:
@@ -832,6 +837,12 @@ def apply_score_fields(
         if allow_zero_denominator and require_ratio and bonus and not text.startswith("=") and "/" not in text and "," not in text:
             obj.earned = float(text)
             obj.possible = 0.0
+            obj.score_text = text
+            return
+        denominator = denominator_only_score(text)
+        if require_ratio and not bonus and denominator is not None:
+            obj.earned = None
+            obj.possible = denominator
             obj.score_text = text
             return
         if require_ratio and not text.startswith("=") and "/" not in text and "," not in text:
@@ -932,6 +943,8 @@ def composite_score_fields(composite: dict, category_aggregation: str) -> dict:
         if mode == "weighted_percent" and item["weight"] is None:
             continue
         if mode == "points":
+            if denominator_only_score(raw) is not None:
+                continue
             earned, possible = parse_score(raw)
             if earned is None or possible is None or possible <= 0:
                 raise ValueError("Composite points must use a positive denominator, like 3/5")
@@ -1427,7 +1440,10 @@ def high_school_overall_classes(
                     current["latest_id"] = course_id
 
     for item in classes.values():
-        item["units"] = item["occurrences"] / max(period_term_counts.get(item["period"], 1), 1)
+        item["units"] = sum(
+            float(term_units.get(entry["term_id"], 0) or 0)
+            for entry in item["entries"]
+        )
         if item["override_candidates"]:
             _, override_course = max(item["override_candidates"], key=lambda entry: entry[0])
             item["final"] = high_school_final_course(override_course)
@@ -1681,6 +1697,7 @@ def serialize_course(
         "test_category_ids": course_test_category_ids(course),
         "test_category_ids_configured": course_test_category_ids_configured(course),
         "exam_category_id": course.exam_category_id,
+        "exam_total_points": course.exam_total_points,
         "grading_mode": course.grading_mode or "weighted",
         "credit_mode": course.credit_mode or "for_credit",
         "pass_fail_override": course.pass_fail_override,
@@ -2413,7 +2430,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             item for item in overall_classes if str(item.get("period")) in included_periods
         ]
         gpa_pairs = [
-            (item["units"], item["final"].get("base_quality_points", item["final"]["quality_points"]))
+            (item["units"], item["final"]["quality_points"])
             for item in included_overall_classes
             if item["final"] is not None
             and (

@@ -950,6 +950,8 @@ def update_course(course_id: int, body: CourseUpdate, db: Session = Depends(get_
         set_course_test_category_ids(course, [tid for tid in owned if tid is not None])
     if "exam_category_id" in body.model_fields_set:
         course.exam_category_id = _owned_category_id(course, body.exam_category_id)
+    if "exam_total_points" in body.model_fields_set:
+        course.exam_total_points = body.exam_total_points
     if "grading_mode" in body.model_fields_set:
         previous_mode = course.grading_mode or "weighted"
         mode = (body.grading_mode or "weighted").strip().lower()

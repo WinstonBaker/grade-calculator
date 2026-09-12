@@ -16,7 +16,7 @@ from sqlalchemy.engine import Connection
 
 # Keep this number stable for the v1.4 data format. Future releases increment
 # it and register the migration that moves the previous format forward.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 Migration = Callable[[Connection], None]
 
 
@@ -48,7 +48,11 @@ def _migrate_v3(connection: Connection) -> None:
     )
 
 
-MIGRATIONS: dict[int, Migration] = {2: _migrate_v2, 3: _migrate_v3}
+def _migrate_v4(connection: Connection) -> None:
+    connection.execute(text("ALTER TABLE courses ADD COLUMN exam_total_points FLOAT"))
+
+
+MIGRATIONS: dict[int, Migration] = {2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4}
 
 
 def apply_forward_migrations(

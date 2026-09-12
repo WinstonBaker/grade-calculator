@@ -116,6 +116,7 @@ def _course_payload(course: Course, include_entered_assignments: bool = False) -
         "scale": _rows(course.scale_rows),
         "test_category_keys": [category_keys[item] for item in test_ids if item in category_keys],
         "exam_category_key": category_keys.get(course.exam_category_id),
+        "exam_total_points": course.exam_total_points,
         "categories": [
             {
                 "key": category_keys[category.id],
@@ -462,6 +463,11 @@ def _import_course(
         grading_mode=str(course_data.get("grading_mode") or "weighted")[:16],
         credit_mode=str(course_data.get("credit_mode") or "for_credit")[:16],
         gpa_weight_tag=str(course_data.get("gpa_weight_tag") or "unweighted")[:48],
+        exam_total_points=(
+            float(course_data["exam_total_points"])
+            if course_data.get("exam_total_points") is not None
+            else None
+        ),
         pass_label=str(course_data.get("pass_label") or "S")[:8],
         fail_label=str(course_data.get("fail_label") or "U")[:8],
         pass_min_percent=float(course_data.get("pass_min_percent") or 70),

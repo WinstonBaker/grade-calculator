@@ -362,6 +362,12 @@ function pointsCourseSummary(course) {
       }
     }
   }
+  // In a points-based class, an overall-percent bonus is stored on the
+  // course rather than in the bonus category. Keep it separate from the
+  // numerator so the header can show both the points ratio and the bonus.
+  if (course.bonus_mode !== "category" && course.bonus_mode !== "none" && course.bonus_mode !== "static_points") {
+    bonusPercent += Number(course.bonus_points) || 0;
+  }
   if (possible <= 0) return null;
   const percentBonusPoints = (bonusPercent / 100) * possible;
   return {
@@ -389,6 +395,15 @@ function speculativeAssignment(assignment, raw) {
   }
   const text = String(raw ?? "").trim();
   if (!text) return { ...assignment, display: "", score_input: "", earned: null };
+  if (isDenominatorOnlyScore(text)) {
+    return {
+      ...assignment,
+      display: text,
+      score_input: text,
+      earned: null,
+      possible: Number(text.slice(1).trim()),
+    };
+  }
 
   const expression = parseScoreExpression(text);
   if (expression && Number.isFinite(expression.earned) && Number.isFinite(expression.possible)) {
@@ -619,6 +634,12 @@ function isPointsScore(raw, allowZeroDenominator = false, allowSinglePoints = fa
   const match = text.match(/^-?\d+(?:\.\d+)?\s*[/,]\s*-?\d+(?:\.\d+)?$/);
   const denominator = match ? Number(match[0].split(/[\/,]/)[1]) : null;
   return Boolean(match && (allowZeroDenominator || denominator !== 0));
+}
+
+function isDenominatorOnlyScore(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^\/\s*(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return false;
+  return Number(text.slice(1).trim()) > 0;
 }
 
 function draftToPayload(draft) {
@@ -1290,6 +1311,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     }
   }
 
+  async function saveExamTotalPoints(value) {
+    try {
+      await saveCourse({ exam_total_points: value });
+    } catch (err) {
+      setError(err.message);
+      throw err;
+    }
+  }
+
   return (
     <div className={speculationMode ? "gradebook speculation-mode" : "gradebook"}>
       <SpeculationSummaryReporter summary={speculationSummary} onChange={onSpeculationSummaryChange} />
@@ -1708,7 +1738,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           onClick={() => setShowExamCalc((v) => !v)}
         >
           <span className={`term-accordion-chevron ${showExamCalc ? "open" : ""}`}>▸</span>
-          Exam Grade Needed Table
+          Final Exam Grade Needed Table
         </button>
       </div>
       <div className={showExamCalc ? "split" : undefined}>
@@ -1765,6 +1795,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
             examScoreRaw={examScoreRaw}
             onExamCatId={saveExamCategory}
             onExamScoreRaw={setExamScoreRaw}
+            onExamTotalPointsChange={saveExamTotalPoints}
             speculative={speculationPreview}
           />
         ) : null}
@@ -2128,13 +2159,36 @@ function ScaleEditor({ course, profiles, presets, onSave, onApply, onRoundingCha
   );
 }
 
-function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw, speculative = false }) {
+function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw, onExamTotalPointsChange, speculative = false }) {
   const rounding = course.grade_rounding ?? null;
   const resolvedId = examCatId ?? null;
   const selected = resolvedId != null;
   const pointsMode = course.grading_mode === "points";
-  const [examTotalPointsRaw, setExamTotalPointsRaw] = useState("");
+  const [examTotalPointsRaw, setExamTotalPointsRaw] = useState(
+    course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
+  );
   const [examScoreEditing, setExamScoreEditing] = useState(false);
+  useEffect(() => {
+    setExamTotalPointsRaw(
+      course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
+    );
+  }, [course.id, course.exam_total_points, pointsMode]);
+
+  async function commitExamTotalPoints() {
+    const text = examTotalPointsRaw.trim();
+    if (!text) {
+      await onExamTotalPointsChange(null);
+      return;
+    }
+    const value = Number(text);
+    if (!Number.isFinite(value) || value <= 0) {
+      setExamTotalPointsRaw(
+        course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
+      );
+      return;
+    }
+    await onExamTotalPointsChange(value);
+  }
   const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
   const examScoreDisplay = examScoreEditing ? examScoreRaw : formatExamScoreDisplay(examScoreRaw);
   const projected = useMemo(() => {
@@ -2161,7 +2215,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   return (
     <div className="panel exam-calc-panel">
       <p className="muted">
-        Course grade if this exam scores a given percent, and what you need for each cutoff.
+        Course grade if this final exam scores a given percent, and what you need for each cutoff.
         {rounding != null
           ? ` Targets assume the final percent is rounded to ${ROUNDING_NOTE[rounding] || "the set precision"}.`
           : ""}
@@ -2172,7 +2226,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
         <>
           <div className="exam-calc-fields">
               {pointsMode ? null : <label className="muted">
-              Exam category
+                Final exam category
               <select
                 className="select"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -2189,7 +2243,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
             </label>}
             {pointsMode ? (
               <label className="muted">
-                Total Points on Exam
+                Total Points on Final Exam
                 <input
                   className="input"
                   style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -2197,13 +2251,14 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                   placeholder="20"
                   value={examTotalPointsRaw}
                   onChange={(e) => setExamTotalPointsRaw(e.target.value)}
+                  onBlur={commitExamTotalPoints}
                 />
               </label>
             ) : null}
             <label className="muted">
               {pointsMode && Number(examTotalPointsRaw) > 0
-                ? `Exam score (out of ${formatGradeNumber(examTotalPointsRaw)})`
-                : "Exam score"}
+                ? `Final exam score (out of ${formatGradeNumber(examTotalPointsRaw)})`
+                : "Final exam score"}
               <input
                 className="input"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -2224,7 +2279,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
           ) : (pointsMode ? examTotalPointsRaw.trim() && examScoreRaw.trim() && projected == null : selected && examScoreRaw.trim() && projected == null) ? (
             <p className="muted">
               {course.grading_mode === "points"
-                ? "Enter a valid score to preview the course grade."
+                ? "Enter a valid final exam score to preview the course grade."
                 : "Enter a valid score and give this category a weight."}
             </p>
           ) : null}
@@ -2236,8 +2291,17 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
             <table className="exam-cutoff-table">
               <thead>
                 <tr className="exam-cutoff-head-row">
-                  <th className="exam-cutoff-exam-head">{pointsMode ? "Points / Exam %" : "Exam %"}</th>
-                  <th className="exam-cutoff-letter-head">Letter</th>
+                  <th className="exam-cutoff-exam-head">
+                    {pointsMode ? "Points / Exam %" : "Final exam %"}
+                  </th>
+                  <th className="exam-cutoff-letter-head">
+                    <span className="exam-cutoff-letter-header-content">
+                      <span className="exam-cutoff-letter-label">
+                        Letter
+                        <span className="exam-cutoff-header-arrow" aria-hidden="true">→</span>
+                      </span>
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -2750,6 +2814,7 @@ function convertCompositeItemsForMode(items, fromMode, toMode) {
     const score = String(item.score || "").trim();
     if (!score) return item;
     if (fromPoints && !toPoints) {
+      if (isDenominatorOnlyScore(score)) return { ...item, score: "" };
       return score.startsWith("=") ? item : { ...item, score: `=${score}` };
     }
     if (toPoints) {
@@ -3258,8 +3323,9 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
           {items.map((item, index) => {
             const itemPercent = colorAssignmentGrades ? compositeItemPercent(item.score, mode) : null;
             const itemTone = itemPercent == null ? "" : letterClass(letterFromPercent(itemPercent, scale));
+            const denominatorOnly = mode === "points" && isDenominatorOnlyScore(item.score);
             return (
-              <tr className={droppedItemIndexes.has(index) ? "cat-score-dropped" : undefined} key={index}>
+              <tr className={droppedItemIndexes.has(index) ? "cat-score-dropped" : denominatorOnly ? "composite-item-denominator-only" : undefined} key={index}>
               <td className="col-name">
                 <input
                   className="input"
@@ -3295,7 +3361,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
               ) : null}
               <td className="col-score">
                 <input
-                  className={`input mono ${itemTone} ${speculationMode && speculativeEditedScoreIndexes.has(index) ? "speculative-grade" : ""}`.trim()}
+                  className={`input mono ${itemTone} ${denominatorOnly ? "is-denominator-only" : ""} ${speculationMode && speculativeEditedScoreIndexes.has(index) ? "speculative-grade" : ""}`.trim()}
                   placeholder={scorePlaceholder}
                   value={compositeScoreDisplay(item.score, mode, editingScoreIndex === index)}
                   onFocus={() => setEditingScoreIndex(index)}
@@ -3436,6 +3502,7 @@ function CategoryCard({
       );
     }
     if (!requiresPoints) return true;
+    if ((pointsMode || weightedPointsCategory) && isDenominatorOnlyScore(text)) return true;
     if (isPointsScore(text, pointsMode || weightedPointsCategory || bonusPoints, bonusPoints)) return true;
     if (!pointsMode && !weightedPointsCategory && text.startsWith("=")) {
       return isPointsScore(text.slice(1).trim(), false, false);
@@ -3690,7 +3757,10 @@ function CategoryCard({
         </thead>
         <tbody>
           {cat.assignments.map((a) => {
-            const savedDisplay = isBonusCategory && bonusUsesPoints && a.earned != null && Number(a.possible) === 0
+            const denominatorOnly = !a.is_bonus && isDenominatorOnlyScore(a.score_input || a.display);
+            const savedDisplay = denominatorOnly
+              ? (a.score_input || a.display).trim()
+              : isBonusCategory && bonusUsesPoints && a.earned != null && Number(a.possible) === 0
               ? `${formatGradeNumber(a.earned)}/0`
               : isBonusCategory && bonusPercentMode && a.earned != null
                 ? formatGradeNumber(a.earned)
@@ -3737,7 +3807,7 @@ function CategoryCard({
                       )
                     : null
                 : null;
-            const scoreTone = isDropped || isReplaced ? "" : letterClass(scoreLetter);
+            const scoreTone = denominatorOnly || isDropped || isReplaced ? "" : letterClass(scoreLetter);
             const replacementTone = colorAssignmentGrades
               ? letterClass(letterFromPercent(replacementScore?.percent, scale))
               : "";
@@ -3821,14 +3891,14 @@ function CategoryCard({
                 </div>
               </td>
               <td className="col-score">
-                <div className={`assignment-score-cell assignment-score-pill ${bonusPrefix ? "has-bonus" : ""} ${isReplaced ? "is-replaced" : ""}`.trim()}>
+                <div className={`assignment-score-cell assignment-score-pill ${bonusPrefix ? "has-bonus" : ""} ${denominatorOnly ? "is-denominator-only" : ""} ${isReplaced ? "is-replaced" : ""}`.trim()}>
                   {bonusPrefix ? (
                     <span className="assignment-bonus-prefix" aria-label={`${bonusPrefix} bonus`}>
                       {bonusPrefix}
                     </span>
                   ) : null}
                   <input
-                    className={`input ${scoreTone} ${isReplaced ? "assignment-score-original-replaced" : ""} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}
+                    className={`input ${scoreTone} ${denominatorOnly ? "is-denominator-only" : ""} ${isReplaced ? "assignment-score-original-replaced" : ""} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}
                     placeholder={scorePlaceholder}
                     value={draft}
                     style={assignmentFlags.length && colorFlaggedAssignments
