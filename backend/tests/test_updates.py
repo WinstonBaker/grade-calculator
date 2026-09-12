@@ -279,7 +279,10 @@ def test_windows_installer_script_waits_for_app_and_records_result():
     assert "Test-LockedFile" in script
     assert "Stop-GradeCalculatorWebView" in script
     assert "Start-Process -FilePath $installer" in script
-    assert "'/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'" in script
+    assert "'/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NORESTARTAPPLICATIONS', '/CLOSEAPPLICATIONS', '/FORCECLOSEAPPLICATIONS'" in script
+    assert "$installerLog = 'C:\\Users\\me\\AppData\\Roaming\\Grade Calculator\\updates\\installer.log'" in script
+    assert "('/LOG=' + $installerLog)" in script
+    assert "Get-Content -LiteralPath $installerLog -Tail 24" in script
     assert "$process.WaitForExit()" in script
     assert "$executable = 'C:\\Users\\me\\AppData\\Local\\Programs\\Grade Calculator\\Grade Calculator.exe'" in script
     assert "Test-RunningExecutable" in script
