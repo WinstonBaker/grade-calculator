@@ -313,7 +313,7 @@ a {
 }
 
 .sidebar-bottom-tools.is-class-view .speculation-toggle {
-  border-width: 2px;
+  border-width: 1px;
   box-shadow: inset 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
@@ -3733,6 +3733,10 @@ th button.active {
   margin: 12px 0 4px;
 }
 
+.exam-calc-panel > p:first-child {
+  margin-top: 0;
+}
+
 .exam-calc-fields label {
   display: flex;
   flex-direction: column;
@@ -3762,6 +3766,10 @@ th button.active {
 .exam-cutoff-exam-cell {
   width: 50%;
   text-align: left;
+}
+
+.exam-cutoff-exam-head {
+  padding-right: 28px;
 }
 
 .exam-cutoff-letter-head,

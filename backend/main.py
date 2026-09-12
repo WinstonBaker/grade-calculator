@@ -328,6 +328,12 @@ def _assignment_or_404(db: Session, assignment_id: int) -> Assignment:
     return assignment
 
 
+def _allows_zero_denominator(category: Category) -> bool:
+    return category.aggregation == "points_ratio" or (
+        category.course.grading_mode == "points" and not category.is_bonus_category
+    )
+
+
 def _fumble_or_404(db: Session, fumble_id: int) -> Fumble:
     row = (
         db.query(Fumble)
@@ -1226,6 +1232,32 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
                     raw = f"{assignment.earned:g}"
             if not raw:
                 continue
+            if is_bonus_category:
+                text = raw[1:].strip() if raw.startswith("=") else raw
+                if cat.aggregation == "points_ratio" and previous_aggregation != "points_ratio":
+                    text = text.removesuffix("%").strip()
+                    try:
+                        earned = float(text)
+                    except (TypeError, ValueError):
+                        continue
+                    assignment.earned = earned
+                    assignment.possible = 0.0
+                    assignment.score_text = f"{earned:g}/0"
+                elif cat.aggregation != "points_ratio" and previous_aggregation == "points_ratio":
+                    parts = text.replace(",", "/").split("/")
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        earned = float(parts[0].strip())
+                        possible = float(parts[1].strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if possible != 0:
+                        continue
+                    assignment.earned = earned
+                    assignment.possible = None
+                    assignment.score_text = f"{earned:g}"
+                continue
             if cat.aggregation == "average" and previous_aggregation == "points_ratio":
                 if ("/" in raw or "," in raw) and not raw.startswith("="):
                     raw = f"={raw}"
@@ -1302,10 +1334,7 @@ def create_assignment(body: AssignmentCreate, db: Session = Depends(get_db)):
             body,
             body.is_bonus,
             require_ratio=not cat.is_bonus_category and cat.course.grading_mode == "points",
-            allow_zero_denominator=bool(
-                cat.course.grading_mode == "points"
-                or (not cat.is_bonus_category and cat.aggregation == "points_ratio")
-            ),
+            allow_zero_denominator=_allows_zero_denominator(cat),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1358,13 +1387,7 @@ def update_assignment(assignment_id: int, body: AssignmentUpdate, db: Session = 
                 require_ratio=(
                     not item.category.is_bonus_category and item.category.course.grading_mode == "points"
                 ),
-                allow_zero_denominator=bool(
-                    item.category.course.grading_mode == "points"
-                    or (
-                        not item.category.is_bonus_category
-                        and item.category.aggregation == "points_ratio"
-                    )
-                ),
+                allow_zero_denominator=_allows_zero_denominator(item.category),
             )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

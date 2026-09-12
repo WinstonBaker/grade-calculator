@@ -3269,7 +3269,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
           <section className="panel exam-impact-panel" style={{ marginTop: 16 }}>
           <div className="tooltip-heading">
             <h2>Exam impact</h2>
-            <Tooltip text="Summary on how your final exam scores impacted your grades, including the average difference in grades and the number of classes whose letter grade went up or down after an exam" />
+            <Tooltip side="right" text="Summary on how your final exam scores impacted your grades, including the average difference in grades and the number of classes whose letter grade went up or down after an exam" />
           </div>
           <ExamImpactStats summary={data.exam_impact.cumulative} />
           <table className="exam-impact-term-table">

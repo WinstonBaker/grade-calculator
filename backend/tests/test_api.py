@@ -1919,6 +1919,92 @@ def test_empty_bonus_score_is_valid_in_points_course(tmp_path):
         teardown()
 
 
+def test_bonus_percent_mode_uses_single_percent_value(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "MATH 202", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories",
+            json={
+                "course_id": course["id"],
+                "name": "Bonus",
+                "weight": 0,
+                "aggregation": "average",
+                "is_bonus_category": True,
+            },
+        ).json()
+        client.patch(f"/api/courses/{course['id']}", json={"grading_mode": "points"})
+
+        rejected = client.post(
+            "/api/assignments",
+            json={"category_id": category["id"], "name": "Extra credit", "score": "2/0", "is_bonus": True},
+        )
+        assert rejected.status_code == 400
+
+        accepted = client.post(
+            "/api/assignments",
+            json={"category_id": category["id"], "name": "Extra credit", "score": "2", "is_bonus": True},
+        )
+        assert accepted.status_code == 200
+        assignment = accepted.json()["categories"][0]["assignments"][0]
+        assert assignment["earned"] == 2
+        assert assignment["possible"] is None
+        assert assignment["display"] == "2"
+    finally:
+        teardown()
+
+
+def test_bonus_category_mode_conversion_uses_zero_denominator(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "MATH 203", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories",
+            json={
+                "course_id": course["id"],
+                "name": "Bonus",
+                "weight": 0,
+                "aggregation": "average",
+                "is_bonus_category": True,
+            },
+        ).json()
+        percent = client.post(
+            "/api/assignments",
+            json={"category_id": category["id"], "name": "Extra credit", "score": "2", "is_bonus": True},
+        ).json()
+        assignment = percent["categories"][0]["assignments"][0]
+        assert assignment["display"] == "2"
+        assert assignment["possible"] is None
+
+        points = client.patch(
+            f"/api/categories/{category['id']}",
+            json={"aggregation": "points_ratio"},
+        ).json()
+        assignment = points["categories"][0]["assignments"][0]
+        assert assignment["earned"] == 2
+        assert assignment["possible"] == 0
+        assert assignment["display"] == "2/0"
+
+        back_to_percent = client.patch(
+            f"/api/categories/{category['id']}",
+            json={"aggregation": "average"},
+        ).json()
+        assignment = back_to_percent["categories"][0]["assignments"][0]
+        assert assignment["earned"] == 2
+        assert assignment["possible"] is None
+        assert assignment["display"] == "2"
+    finally:
+        teardown()
+
+
 def test_reorder_categories(tmp_path):
     client = make_client(tmp_path)
     try:

@@ -160,6 +160,26 @@ function convertZeroDenominatorToBonus(raw) {
   return formatGradeNumber(parsed.earned);
 }
 
+function convertCategoryPercentToPoints(raw) {
+  const text = normalizePercentBonusScore(raw);
+  const value = Number(text);
+  return Number.isFinite(value) ? `${formatGradeNumber(value)}/0` : `${text}/0`;
+}
+
+function convertCategoryPointsToPercent(raw) {
+  return convertZeroDenominatorToBonus(raw) ?? normalizePercentBonusScore(raw);
+}
+
+function normalizePercentBonusScore(raw) {
+  const text = String(raw ?? "").trim();
+  return text.endsWith("%") ? text.slice(0, -1).trim() : text;
+}
+
+function isPercentBonusScore(raw) {
+  const text = normalizePercentBonusScore(raw);
+  return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) && Number.isFinite(Number(text));
+}
+
 function pctFromWeight(weight) {
   if (weight == null || Number.isNaN(Number(weight))) return "";
   return String(Number((Number(weight) * 100).toPrecision(12)));
@@ -314,7 +334,7 @@ function pointsCourseSummary(course) {
   const keptByCategory = pointsCourseKeptAssignments(course);
   for (const category of course?.categories || []) {
     if (category.is_bonus_category) {
-      const hasPointBonus = (category.assignments || []).some(
+      const hasPointBonus = category.aggregation === "points_ratio" && (category.assignments || []).some(
         (assignment) => assignment.earned != null && Number(assignment.possible) === 0
       );
       if (hasPointBonus) {
@@ -347,7 +367,8 @@ function pointsCourseSummary(course) {
   return {
     classEarned: earned,
     classPossible: possible,
-    bonusPoints: bonusPoints + percentBonusPoints,
+    bonusPoints,
+    percentBonusPoints,
     totalEarned: earned + bonusPoints + percentBonusPoints,
     totalPossible: possible,
     bonusPercent,
@@ -552,14 +573,17 @@ function weightedCourseSummary(course) {
 
 function PointsSummary({ summary, tone, speculative = false }) {
   if (!summary) return null;
-  const bonusLabel = summary.bonusPercent > 0 && summary.bonusPoints > 0
-    ? `${formatGradeNumber(summary.bonusPoints)} (${formatGradeNumber(summary.bonusPercent)}%)`
-    : formatGradeNumber(summary.bonusPoints);
+  const displayedEarned = Number(summary.classEarned || 0) + Number(summary.bonusPoints || 0);
+  const bonusLabel = [
+    summary.bonusPoints ? `${formatGradeNumber(summary.bonusPoints)} pts` : "",
+    summary.bonusPercent ? formatBonusPercent(summary.bonusPercent) : "",
+  ].filter(Boolean).join(" · ");
   const hasBonus = summary.bonusPoints !== 0 || summary.bonusPercent !== 0;
   return (
     <span className="grade-hero-points-wrap">
       <strong className={`mono grade-hero-points ${tone} ${speculative ? "speculative-grade" : ""}`.trim()}>
-        = {formatGradeNumber(summary.totalEarned)}/{formatGradeNumber(summary.totalPossible)}
+        = {formatGradeNumber(displayedEarned)}/{formatGradeNumber(summary.totalPossible)}
+        {summary.bonusPercent ? <span className="grade-hero-points-percent-bonus"> {formatBonusPercent(summary.bonusPercent)}</span> : null}
       </strong>
       {hasBonus ? (
         <span className="grade-hero-points-popover" role="tooltip">
@@ -1046,27 +1070,29 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     const previous = categoryModal?.cat;
     const switchingToPoints = previous
       && previous.aggregation !== "points_ratio"
-      && payload.aggregation === "points_ratio"
-      && !previous.is_bonus_category;
+      && payload.aggregation === "points_ratio";
     const switchingToAverage = previous
       && previous.aggregation === "points_ratio"
-      && payload.aggregation !== "points_ratio"
-      && !previous.is_bonus_category;
+      && payload.aggregation !== "points_ratio";
     if (switchingToPoints || switchingToAverage) {
       for (const assignment of previous.assignments || []) {
         let raw = String(assignment.score_input || assignment.display || "").trim();
         if (!raw) continue;
         if (switchingToPoints) {
           if (raw.startsWith("=")) raw = raw.slice(1).trim();
-          raw = assignment.is_bonus
+          raw = previous.is_bonus_category
+            ? convertCategoryPercentToPoints(raw)
+            : assignment.is_bonus
             ? convertBonusScoreToPoints(raw, assignment.bonus_type)
             : !raw.includes("/") && !raw.includes(",")
               ? `${raw}/100`
               : raw;
-        next = await api.patchAssignment(assignment.id, { score: raw });
+          next = await api.patchAssignment(assignment.id, { score: raw });
           continue;
         }
-        const bonusScore = convertZeroDenominatorToBonus(raw);
+        const bonusScore = previous.is_bonus_category
+          ? convertCategoryPointsToPercent(raw)
+          : convertZeroDenominatorToBonus(raw);
         next = await api.patchAssignment(
           assignment.id,
           bonusScore != null
@@ -2117,8 +2143,8 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   }, [course, resolvedId, examPct, selected, pointsMode, examTotalPointsRaw, examScoreRaw]);
   const grade = gradeFromPercent(projected, course.scale, rounding);
   const needed = useMemo(
-    () => (pointsMode ? pointsExamNeededRows(course, examScoreRaw) : selected ? examNeededRows(course, resolvedId) : []),
-    [course, resolvedId, selected, pointsMode, examScoreRaw]
+    () => (pointsMode ? pointsExamNeededRows(course, examTotalPointsRaw) : selected ? examNeededRows(course, resolvedId) : []),
+    [course, resolvedId, selected, pointsMode, examTotalPointsRaw]
   );
   const blankRows = useMemo(
     () => (course.scale || []).filter((row) => row.letter !== "F").map((row) => ({ letter: row.letter })),
@@ -2133,7 +2159,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
     : selected ? needed : blankRows;
 
   return (
-    <div className="panel">
+    <div className="panel exam-calc-panel">
       <p className="muted">
         Course grade if this exam scores a given percent, and what you need for each cutoff.
         {rounding != null
@@ -2175,7 +2201,9 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
               </label>
             ) : null}
             <label className="muted">
-              Exam score
+              {pointsMode && Number(examTotalPointsRaw) > 0
+                ? `Exam score (out of ${formatGradeNumber(examTotalPointsRaw)})`
+                : "Exam score"}
               <input
                 className="input"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -2223,7 +2251,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
               {pointsMode
                 ? row.needed_points == null
                   ? ""
-                  : `${fmtPct(row.needed_percent)}% / ${fmtPct(row.needed_points)}`
+                  : `${fmtPct(row.needed_points)} / ${fmtPct(row.needed_percent)}%`
                         : row.needed == null ? "" : fmtPct(row.needed)}
                     </td>
                     <td className="exam-cutoff-letter-cell">
@@ -3353,9 +3381,12 @@ function CategoryCard({
     || String(assignment.score_input || assignment.display || "").trim()
   )).length;
   const bonusPoints = isBonusCategory && pointsMode && cat.aggregation === "points_ratio";
+  const bonusPercentMode = isBonusCategory && cat.aggregation !== "points_ratio";
   const weightedPointsCategory = !isBonusCategory && !pointsMode && cat.aggregation === "points_ratio";
   const requiresPoints = bonusPoints || weightedPointsCategory || (!isBonusCategory && pointsMode);
-  const scorePlaceholder = bonusPoints
+  const scorePlaceholder = bonusPercentMode
+    ? "1"
+    : bonusPoints
     ? "1/0"
     : weightedPointsCategory
       ? "19/20"
@@ -3390,6 +3421,7 @@ function CategoryCard({
     // points score. This must be checked before points-format validation so a
     // points-based class can leave a bonus empty until it is earned.
     if (!text) return true;
+    if (bonusPercentMode) return isPercentBonusScore(text);
     if (text.startsWith("=")) {
       const expression = parseScoreExpression(text);
       return Boolean(
@@ -3410,10 +3442,7 @@ function CategoryCard({
     }
     return false;
   }
-  const bonusUsesPoints = isBonusCategory && pointsMode && (
-    cat.aggregation === "points_ratio"
-    || (cat.assignments || []).some((assignment) => Number(assignment.possible) === 0)
-  );
+  const bonusUsesPoints = isBonusCategory && pointsMode && cat.aggregation === "points_ratio";
   const displayPercent = pointsMode && !isBonusCategory ? pointsCategoryPercent(cat, course) : cat.percent;
   const categoryTotals = !isBonusCategory && (pointsMode || cat.aggregation === "points_ratio")
     ? pointsCategoryTotals(
@@ -3462,7 +3491,7 @@ function CategoryCard({
       setScoreErrors((errors) => ({ ...errors, [assignmentId]: "Enter points as numerator/denominator, such as 3/5." }));
       return;
     }
-    const score = String(raw ?? "");
+    const score = bonusPercentMode ? normalizePercentBonusScore(raw) : String(raw ?? "");
     const next = await api.patchAssignment(assignmentId, {
       score,
       clear_score: score.trim() === "",
@@ -3483,9 +3512,10 @@ function CategoryCard({
 
   async function createDraftAssignment() {
     const name = newAssignmentDraft.current.name.trim();
-    const score = newAssignmentDraft.current.score.trim();
+    const rawScore = newAssignmentDraft.current.score.trim();
+    const score = bonusPercentMode ? normalizePercentBonusScore(rawScore) : rawScore;
     if ((!name && !score) || creatingAssignment.current) return;
-    if (!validScoreEntry(score)) return;
+    if (!validScoreEntry(rawScore)) return;
     creatingAssignment.current = true;
     newAssignmentDraft.current = { name: "", score: "" };
     setNewAssignmentName("");
@@ -3619,6 +3649,11 @@ function CategoryCard({
           {isBonusCategory || hideWeights ? null : (
             <span className="muted mono">Weight: {fmtWeightPct(cat.effective_weight)}%</span>
           )}
+          {pointsMode && categoryTotals ? (
+            <span className="category-section-total mono">
+              = {formatGradeNumber(categoryTotals.earned)}/{formatGradeNumber(categoryTotals.possible)}
+            </span>
+          ) : null}
           <button
             type="button"
             className="cat-gear"
@@ -3636,7 +3671,7 @@ function CategoryCard({
             </svg>
           </button>
           </div>
-          {!isBonusCategory && categoryTotals ? (
+          {!isBonusCategory && !pointsMode && categoryTotals ? (
             <span className="category-section-total mono">
               = {formatGradeNumber(categoryTotals.earned)}/{formatGradeNumber(categoryTotals.possible)}
             </span>
@@ -3655,8 +3690,10 @@ function CategoryCard({
         </thead>
         <tbody>
           {cat.assignments.map((a) => {
-            const savedDisplay = isBonusCategory && pointsMode && Number(a.possible) === 0
+            const savedDisplay = isBonusCategory && bonusUsesPoints && a.earned != null && Number(a.possible) === 0
               ? `${formatGradeNumber(a.earned)}/0`
+              : isBonusCategory && bonusPercentMode && a.earned != null
+                ? formatGradeNumber(a.earned)
               : !pointsMode && !isBonusCategory && cat.aggregation !== "points_ratio" && a.possible != null && Number(a.possible) !== 0 && Number(a.possible) !== 100
                   ? formatGradeNumber(assignmentPercent({
                       display: a.display,
@@ -3665,7 +3702,9 @@ function CategoryCard({
                       isBonus: a.is_bonus,
                     }))
                 : a.display;
-            const savedInput = !pointsMode
+            const savedInput = bonusPercentMode
+              ? (a.earned == null ? "" : formatGradeNumber(a.earned))
+              : !pointsMode
               && !isBonusCategory
               && cat.aggregation !== "points_ratio"
               && a.possible != null
@@ -3941,6 +3980,7 @@ function CategoryCard({
                 }}
                 onBlur={(e) => {
                   if (!validScoreEntry(e.target.value)) {
+                    newAssignmentDraft.current.score = "";
                     setNewAssignmentScore("");
                   }
                 }}
