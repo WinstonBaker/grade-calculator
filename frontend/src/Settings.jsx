@@ -1579,7 +1579,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
       <section className="panel update-panel">
         <h2>Updates</h2>
         <p className="muted settings-note" style={{ marginTop: 0 }}>
-          Current version <span className="mono">{meta?.version || "…"}</span>
+          Current version <span className="mono">{meta?.version ? `v${meta.version}` : "…"}</span>
           {meta?.frozen
             ? " — installs over this app and restarts."
             : " — this development build can not replace itself; Update opens the GitHub release."}
