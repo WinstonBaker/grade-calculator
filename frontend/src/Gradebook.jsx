@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
@@ -438,10 +438,10 @@ function speculativeCompositeFields(composite, categoryAggregation) {
     let percent = null;
     if (mode === "points") {
       const ratio = raw.replace(/^=/, "").match(/^(-?\d+(?:\.\d+)?)\s*[/,]\s*(-?\d+(?:\.\d+)?)$/);
-      if (!ratio || Number(ratio[2]) <= 0) return null;
+      if (!ratio || Number(ratio[2]) < 0) return null;
       earned = Number(ratio[1]);
       possible = Number(ratio[2]);
-      percent = (100 * earned) / possible;
+      percent = possible > 0 ? (100 * earned) / possible : null;
     } else if (raw.startsWith("=") || raw.includes("/") || raw.includes(",")) {
       const parsed = raw.startsWith("=")
         ? parseScoreExpression(raw)
@@ -459,9 +459,16 @@ function speculativeCompositeFields(composite, categoryAggregation) {
   }).filter(Boolean);
   if (!items.length) return { earned: null, possible: null, score_text: null };
 
-  const drop = Math.min(Math.max(Number(composite?.drop_count) || 0, 0), Math.max(items.length - 1, 0));
-  const kept = [...items].sort((a, b) => a.percent - b.percent).slice(drop);
   if (mode === "points") {
+    const fixed = items.filter((item) => item.possible === 0);
+    const eligible = items.filter((item) => item.possible > 0);
+    const drop = Math.min(
+      Math.max(Number(composite?.drop_count) || 0, 0),
+      Math.max(eligible.length - 1, 0),
+    );
+    const kept = fixed.concat(
+      [...eligible].sort((a, b) => a.percent - b.percent).slice(drop),
+    );
     const earned = sumNumbers(kept.map((item) => item.earned));
     const possible = sumNumbers(kept.map((item) => item.possible));
     return {
@@ -470,6 +477,8 @@ function speculativeCompositeFields(composite, categoryAggregation) {
       score_text: `${categoryAggregation === "points_ratio" ? "" : "="}${formatGradeNumber(earned)}/${formatGradeNumber(possible)}`,
     };
   }
+  const drop = Math.min(Math.max(Number(composite?.drop_count) || 0, 0), Math.max(items.length - 1, 0));
+  const kept = [...items].sort((a, b) => a.percent - b.percent).slice(drop);
 
   const totalWeight = sumNumbers(kept.map((item) => item.weight));
   const percent = mode === "weighted_percent"
@@ -3162,12 +3171,57 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
   );
   const draftRef = useRef({ mode, dropCount, totalPoints, items });
   const saveTimer = useRef(null);
+  const compositeModeRef = useRef(null);
+  const compositeTotalRef = useRef(null);
+  const compositeTotalTextRef = useRef(null);
+  const [compositeTotalShift, setCompositeTotalShift] = useState(0);
+  const [compositeTotalClip, setCompositeTotalClip] = useState(0);
   const target = categoryAggregation === "points_ratio" ? "Points" : "Grade as Percent";
   const scorePlaceholder = mode === "points" ? "19/20" : "95 or =19/20";
   const droppedItemIndexes = useMemo(
     () => droppedCompositeItemIndexes(items, dropCount, mode),
     [items, dropCount, mode],
   );
+  const compositeTotal = mode === "points" && target === "Grade as Percent"
+    ? speculativeCompositeFields({ mode, drop_count: dropCount, items }, categoryAggregation)
+    : null;
+
+  useLayoutEffect(() => {
+    const total = compositeTotalRef.current;
+    const totalText = compositeTotalTextRef.current;
+    const modeLabel = compositeModeRef.current;
+    if (!total || !totalText || !modeLabel || !compositeTotal?.score_text) {
+      setCompositeTotalShift(0);
+      setCompositeTotalClip(0);
+      return undefined;
+    }
+
+    const updateTotalPosition = () => {
+      const totalStyle = window.getComputedStyle(total);
+      const horizontalPadding = Number.parseFloat(totalStyle.paddingLeft || "0")
+        + Number.parseFloat(totalStyle.paddingRight || "0");
+      const availableWidth = Math.max(0, total.clientWidth - horizontalPadding);
+      const overflow = Math.max(0, totalText.scrollWidth - availableWidth);
+      const availableBeforeMode = Math.max(
+        0,
+        total.getBoundingClientRect().left - modeLabel.getBoundingClientRect().right - 8,
+      );
+      const shift = Math.min(overflow, availableBeforeMode);
+      const clip = Math.max(0, overflow - shift);
+      setCompositeTotalShift((current) => (current === shift ? current : shift));
+      setCompositeTotalClip((current) => (current === clip ? current : clip));
+    };
+
+    updateTotalPosition();
+    const observer = new ResizeObserver(updateTotalPosition);
+    observer.observe(total);
+    observer.observe(modeLabel);
+    window.addEventListener("resize", updateTotalPosition);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateTotalPosition);
+    };
+  }, [compositeTotal?.score_text]);
 
   useEffect(() => {
     if (speculationMode) return;
@@ -3214,10 +3268,8 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
         : null,
       items: next.items,
     };
-    if (speculationMode) {
-      onSpeculativeChange?.(composite);
-      return;
-    }
+    onSpeculativeChange?.(composite);
+    if (speculationMode) return;
     if (!persist) return;
     saveTimer.current = setTimeout(() => {
       onSave(composite);
@@ -3266,7 +3318,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
   return (
     <div className="composite-editor" onClick={(event) => event.stopPropagation()}>
       <div className="composite-editor-topline">
-        <label className="muted composite-mode-field">
+        <label className="muted composite-mode-field" ref={compositeModeRef}>
           Composite
           <select
             className="select"
@@ -3299,6 +3351,18 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
             </>
           ) : null}
         </label>
+        {compositeTotal?.score_text ? (
+          <span
+            className="mono composite-total"
+            ref={compositeTotalRef}
+            style={{
+              "--composite-total-shift": `${compositeTotalShift}px`,
+              "--composite-total-clip": `${compositeTotalClip}px`,
+            }}
+          >
+            <span className="composite-total-text" ref={compositeTotalTextRef}>{compositeTotal.score_text}</span>
+          </span>
+        ) : null}
         <label className="muted composite-drop-field">
           Drop Lowest:
           <input
@@ -3611,6 +3675,12 @@ function CategoryCard({
   async function saveComposite(assignmentId, composite) {
     try {
       const next = await api.patchAssignment(assignmentId, { composite });
+      setSpeculativeScores((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, assignmentId)) return current;
+        const copy = { ...current };
+        delete copy[assignmentId];
+        return copy;
+      });
       setOpenCompositeIds((current) => new Set(current).add(assignmentId));
       onChange(next);
     } catch (err) {

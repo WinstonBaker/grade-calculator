@@ -946,9 +946,9 @@ def composite_score_fields(composite: dict, category_aggregation: str) -> dict:
             if denominator_only_score(raw) is not None:
                 continue
             earned, possible = parse_score(raw)
-            if earned is None or possible is None or possible <= 0:
-                raise ValueError("Composite points must use a positive denominator, like 3/5")
-            percent = 100.0 * earned / possible
+            if earned is None or possible is None or possible < 0:
+                raise ValueError("Composite points must use a non-negative denominator, like 3/5 or 2/0")
+            percent = 100.0 * earned / possible if possible > 0 else None
         else:
             if raw.startswith("=") or "/" in raw or "," in raw:
                 earned, possible = parse_score(raw)
@@ -965,15 +965,24 @@ def composite_score_fields(composite: dict, category_aggregation: str) -> dict:
         parsed.append({"earned": earned if mode == "points" else None, "possible": possible if mode == "points" else None, "percent": percent, "weight": item["weight"]})
     if not parsed:
         return {"earned": None, "possible": None, "score_text": None}
-    drop = min(composite["drop_count"], max(len(parsed) - 1, 0))
-    kept = sorted(parsed, key=lambda item: item["percent"])[drop:]
     if mode == "points":
+        # Zero-denominator composite parts are numerator-only points. Keep
+        # them out of the drop ranking, just like points-category bonuses.
+        fixed = [item for item in parsed if item["possible"] == 0]
+        eligible = [item for item in parsed if item["possible"] > 0]
+        drop = min(composite["drop_count"], max(len(eligible) - 1, 0))
+        kept = fixed + sorted(
+            eligible,
+            key=lambda item: item["percent"],
+        )[drop:]
         earned = sum(item["earned"] for item in kept)
         possible = sum(item["possible"] for item in kept)
         score_text = f"{_compact_number(earned)}/{_compact_number(possible)}"
         if category_aggregation != "points_ratio":
             score_text = f"={score_text}"
         return {"earned": earned, "possible": possible, "score_text": score_text}
+    drop = min(composite["drop_count"], max(len(parsed) - 1, 0))
+    kept = sorted(parsed, key=lambda item: item["percent"])[drop:]
     if mode == "weighted_percent":
         total_weight = sum(item["weight"] for item in kept)
         percent = sum(item["percent"] * item["weight"] for item in kept) / total_weight

@@ -78,6 +78,63 @@ def test_points_composite_ignores_denominator_only_item():
     }
 
 
+def test_points_composite_accepts_zero_denominator_numerator_only_item():
+    composite = normalize_composite(
+        {
+            "mode": "points",
+            "items": [
+                {"name": "Graded", "score": "4/5"},
+                {"name": "Bonus", "score": "2/0"},
+            ],
+        }
+    )
+
+    assert composite_score_fields(composite, "points_ratio") == {
+        "earned": 6.0,
+        "possible": 5.0,
+        "score_text": "6/5",
+    }
+
+
+def test_points_composite_zero_denominator_item_is_not_dropped():
+    composite = normalize_composite(
+        {
+            "mode": "points",
+            "drop_count": 1,
+            "items": [
+                {"name": "Low", "score": "1/10"},
+                {"name": "High", "score": "8/10"},
+                {"name": "Bonus", "score": "2/0"},
+            ],
+        }
+    )
+
+    assert composite_score_fields(composite, "points_ratio") == {
+        "earned": 10.0,
+        "possible": 10.0,
+        "score_text": "10/10",
+    }
+
+
+def test_points_composite_drop_does_not_remove_only_positive_denominator_item():
+    composite = normalize_composite(
+        {
+            "mode": "points",
+            "drop_count": 1,
+            "items": [
+                {"name": "Graded", "score": "4/5"},
+                {"name": "Bonus", "score": "2/0"},
+            ],
+        }
+    )
+
+    assert composite_score_fields(composite, "average") == {
+        "earned": 6.0,
+        "possible": 5.0,
+        "score_text": "=6/5",
+    }
+
+
 def test_weighted_composite_ignores_items_without_a_weight():
     composite = normalize_composite(
         {

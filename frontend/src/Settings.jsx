@@ -2513,7 +2513,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
           </div>
           <section className="semester-title-settings">
             <h3>{(data.gradebook_type || "college") === "high_school" ? "Academic periods" : "Semester titles"}</h3>
-            <p className="muted settings-note">The first listed period occurs first and the last listed period occurs last.</p>
+            <p className="muted settings-note">The first listed period occurs first in the calendar year and the last listed period occurs last.</p>
             <table className="semester-titles-table"><thead><tr><th>Name</th><th>Order</th><th aria-label="Delete" /></tr></thead><tbody>
               {(data.gradebook_type || "college") === "high_school" ? orderedAcademicPeriods.map((period, index) => {
                 const key = String(period.key);

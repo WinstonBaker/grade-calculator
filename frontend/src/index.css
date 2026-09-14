@@ -3199,10 +3199,9 @@ th button.active {
 }
 
 .composite-editor-topline {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14ch calc(9rem - 19px);
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .composite-editor-topline {
@@ -3215,6 +3214,14 @@ th button.active {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.composite-mode-field {
+  justify-self: start;
+}
+
+.composite-drop-field {
+  grid-column: 3;
 }
 
 .composite-mode-field .select {
@@ -3267,6 +3274,25 @@ th button.active {
   box-shadow: none;
 }
 
+.composite-total {
+  grid-column: 2;
+  color: var(--text);
+  font-size: 15.2px;
+  line-height: 1.15;
+  white-space: nowrap;
+  padding-left: 6px;
+  padding-right: 8px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.composite-total-text {
+  display: inline-block;
+  white-space: nowrap;
+  transform: translateX(calc(-1 * var(--composite-total-shift, 0px)));
+  clip-path: inset(0 var(--composite-total-clip, 0px) 0 0);
+}
+
 .composite-items-table {
   margin: 0;
 }
@@ -3295,10 +3321,25 @@ th button.active {
   width: calc(9rem - 19px);
 }
 
+.cat-card table.cat-scores.composite-items-table .col-actions > .btn.danger {
+  position: relative;
+  left: -48px;
+}
+
 @media (max-width: 680px) {
   .composite-editor-topline {
+    display: flex;
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .composite-total,
+  .composite-drop-field {
+    grid-column: auto;
+  }
+
+  .composite-mode-field {
+    justify-self: auto;
   }
 }
 
@@ -3400,13 +3441,19 @@ th button.active {
 }
 
 .cat-card table.cat-scores tr.cat-score-dropped .assignment-name-pill > .input,
-.cat-card table.cat-scores tr.cat-score-dropped .assignment-score-cell > .input {
+.cat-card table.cat-scores tr.cat-score-dropped .assignment-score-cell > .input,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-name > .input,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-score > .input {
   text-decoration: line-through;
   color: var(--muted);
 }
 
 .cat-card table.cat-scores tr.cat-score-dropped input.is-editing,
-.cat-card table.cat-scores tr.cat-score-dropped input:focus {
+.cat-card table.cat-scores tr.cat-score-dropped input:focus,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-name > .input.is-editing,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-score > .input.is-editing,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-name > .input:focus,
+.cat-card table.cat-scores.composite-items-table tr.cat-score-dropped .col-score > .input:focus {
   color: var(--text);
   text-decoration: none !important;
 }
