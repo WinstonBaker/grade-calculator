@@ -341,13 +341,25 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   async function saveSemester(e) {
     e.preventDefault();
     if (!current) return;
+    const nextYear = Number(year);
+    const nextSeason = String(season || "").trim().toLowerCase();
+    const duplicate = semesters.some((semester) => (
+      String(semester.id) !== String(current.id)
+      && Number(semester.year) === nextYear
+      && String(semester.season || "").trim().toLowerCase() === nextSeason
+    ));
+    if (duplicate) {
+      const termName = semesterTitles.find((term) => String(term.id).toLowerCase() === nextSeason)?.name || nextSeason;
+      warning(`${nextYear} ${termName} already exists.`);
+      return;
+    }
     try {
-      await api.patchSemester(current.id, { year: Number(year), season });
+      await api.patchSemester(current.id, { year: nextYear, season: nextSeason });
       setSaveError("");
       setSemesterSettingsOpen(false);
       onChange?.();
     } catch (err) {
-      setSaveError(err.message);
+      warning(err.message);
     }
   }
 
@@ -617,6 +629,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         <div>
           <div className="gradebook-title-row">
             <h1>{isHighSchool ? (academicPeriodName || `${currentAcademicYearKey}–${String(Number(currentAcademicYearKey) + 1).slice(-2)}`) : displaySemesterName(current)}</h1>
+            {!isHighSchool ? <button type="button" className="cat-gear" aria-label={`Edit ${displaySemesterName(current)} name`} onClick={() => setSemesterSettingsOpen(true)}><span className="pencil-icon" aria-hidden="true">✎</span></button> : null}
             {isHighSchool ? <button type="button" className="cat-gear" aria-label={`Edit ${(academicPeriodName || `${currentAcademicYearKey}–${String(Number(currentAcademicYearKey) + 1).slice(-2)}`)} name`} onClick={() => setAcademicPeriodNameOpen(true)}><span className="pencil-icon" aria-hidden="true">✎</span></button> : null}
             {isHighSchool ? <div className="semester-term-picker header-semester-term-picker title-semester-term-picker" aria-label="Term to display">
               <div className="view-toggle semester-term-toggle" role="group" aria-label="Term to display">
@@ -650,7 +663,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                 id: `delete-semester-${semester.id}`,
                 type: "persistent",
                 title: "Delete semester?",
-                message: `Delete ${semester.name} and its classes? This can not be undone.`,
+                message: `Delete ${displaySemesterName(semester)} and its classes? This can not be undone.`,
                 confirmLabel: "Delete",
                 onConfirm: async () => {
                   try {
@@ -734,6 +747,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         <SemesterSettingsModal
           year={year}
           season={season}
+          termOptions={semesterTitles}
           error={saveError}
           onYear={setYear}
           onSeason={setSeason}
@@ -1611,7 +1625,7 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
   );
 }
 
-function SemesterSettingsModal({ year, season, error, onYear, onSeason, onClose, onSubmit }) {
+function SemesterSettingsModal({ year, season, termOptions = [], error, onYear, onSeason, onClose, onSubmit }) {
   useEffect(() => {
     function onKey(event) {
       if (event.key === "Escape") onClose();
@@ -1650,9 +1664,9 @@ function SemesterSettingsModal({ year, season, error, onYear, onSeason, onClose,
           <label className="muted">
             Term
             <select className="select" value={season} onChange={(event) => onSeason(event.target.value)}>
-              {SEASONS.map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
+              {(termOptions.length ? termOptions : SEASONS.map(([value, label]) => ({ id: value, name: label }))).map((term) => (
+                <option key={term.id} value={term.id}>
+                  {term.name}
                 </option>
               ))}
             </select>

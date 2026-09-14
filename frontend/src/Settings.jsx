@@ -1192,11 +1192,35 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
   }
 
   function deleteSemesterTitle(item) {
-    onAppearanceChange((current) => ({
-      ...current,
-      semesterTitles: (Array.isArray(current.semesterTitles) ? current.semesterTitles : [])
-        .filter((term) => term.id !== item.id),
-    }));
+    push({
+      id: `delete-semester-title-${item.id}`,
+      type: "persistent",
+      title: "Delete term title?",
+      message: "Delete all semesters of this type and the classes in them?",
+      confirmLabel: "Delete",
+      dismissLabel: "Cancel",
+      onConfirm: async () => {
+        setAcademicPeriodBusy(true);
+        try {
+          const matchingSemesters = semesters.filter((semester) => (
+            String(semester.season || "").trim().toLowerCase() === String(item.id || "").trim().toLowerCase()
+          ));
+          for (const semester of matchingSemesters) {
+            await api.deleteSemester(semester.id);
+          }
+          onAppearanceChange((current) => ({
+            ...current,
+            semesterTitles: (Array.isArray(current.semesterTitles) ? current.semesterTitles : [])
+              .filter((term) => term.id !== item.id),
+          }));
+          await onChange?.();
+        } catch (err) {
+          warning(err.message);
+        } finally {
+          setAcademicPeriodBusy(false);
+        }
+      },
+    });
   }
 
   function deleteAcademicPeriod(period) {

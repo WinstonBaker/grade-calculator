@@ -814,6 +814,13 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const handledAssignmentHashRef = useRef("");
   const gradingMenuRef = useRef(null);
 
+  function collegeSemesterName(semester) {
+    if (!semester) return "Semester";
+    const season = String(semester.season || "").trim().toLowerCase();
+    const match = semesterTitles.find((term) => String(term?.id || "").trim().toLowerCase() === season);
+    return match?.name ? `${semester.year} ${match.name}` : semester.name || "Semester";
+  }
+
   function highSchoolTermName(semester) {
     if (!semester) return "Term";
     const periodKey = highSchoolAcademicYearKey(semester);
@@ -1336,7 +1343,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
         <div className="gradebook-header-title">
           <p className="muted">
             <Link to={`/courses?gradebook=${gradebookId}&term=${course.semester_id}`}>
-              {highSchoolMode ? `${academicPeriodNames[String(highSchoolAcademicYearKey(semesters.find((s) => s.id === course.semester_id)))] || highSchoolAcademicYearLabel(semesters.find((s) => s.id === course.semester_id))} / ${highSchoolTermName(semesters.find((s) => s.id === course.semester_id))}` : (semesters.find((s) => s.id === course.semester_id)?.name || "Semester")}
+              {highSchoolMode ? `${academicPeriodNames[String(highSchoolAcademicYearKey(semesters.find((s) => s.id === course.semester_id)))] || highSchoolAcademicYearLabel(semesters.find((s) => s.id === course.semester_id))} / ${highSchoolTermName(semesters.find((s) => s.id === course.semester_id))}` : collegeSemesterName(semesters.find((s) => s.id === course.semester_id))}
             </Link>{" "}
             /
           </p>
