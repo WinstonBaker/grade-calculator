@@ -3149,6 +3149,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
   const [dropCount, setDropCount] = useState(String(initial.drop_count ?? 0));
   const [totalPoints, setTotalPoints] = useState(String(initial.total_points ?? 100));
   const [editingWeightIndex, setEditingWeightIndex] = useState(null);
+  const [editingNameIndex, setEditingNameIndex] = useState(null);
   const [editingScoreIndex, setEditingScoreIndex] = useState(null);
   const [speculativeEditedScoreIndexes, setSpeculativeEditedScoreIndexes] = useState(new Set());
   const [items, setItems] = useState(
@@ -3328,12 +3329,16 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
               <tr className={droppedItemIndexes.has(index) ? "cat-score-dropped" : denominatorOnly ? "composite-item-denominator-only" : undefined} key={index}>
               <td className="col-name">
                 <input
-                  className="input"
+                  className={`input ${editingNameIndex === index ? "is-editing" : ""}`.trim()}
                   placeholder="Name"
-                    value={item.name}
-                    onChange={(event) => updateItem(index, "name", event.target.value, { persist: false })}
-                    onBlur={commitDraft}
-                  />
+                  onFocus={() => setEditingNameIndex(index)}
+                  value={item.name}
+                  onChange={(event) => updateItem(index, "name", event.target.value, { persist: false })}
+                  onBlur={() => {
+                    setEditingNameIndex(null);
+                    commitDraft();
+                  }}
+                />
               </td>
               {mode === "weighted_percent" ? (
                 <td className="col-composite-weight">
@@ -3361,7 +3366,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
               ) : null}
               <td className="col-score">
                 <input
-                  className={`input mono ${itemTone} ${denominatorOnly ? "is-denominator-only" : ""} ${speculationMode && speculativeEditedScoreIndexes.has(index) ? "speculative-grade" : ""}`.trim()}
+                  className={`input mono ${itemTone} ${denominatorOnly ? "is-denominator-only" : ""} ${speculationMode && speculativeEditedScoreIndexes.has(index) ? "speculative-grade" : ""} ${editingScoreIndex === index ? "is-editing" : ""}`.trim()}
                   placeholder={scorePlaceholder}
                   value={compositeScoreDisplay(item.score, mode, editingScoreIndex === index)}
                   onFocus={() => setEditingScoreIndex(index)}
@@ -3423,6 +3428,7 @@ function CategoryCard({
   const [scoreDrafts, setScoreDrafts] = useState({});
   const [scoreErrors, setScoreErrors] = useState({});
   const [focusedScoreId, setFocusedScoreId] = useState(null);
+  const [editingNameId, setEditingNameId] = useState(null);
   const [commentEditorId, setCommentEditorId] = useState(null);
   const [activeAnnotationKey, setActiveAnnotationKey] = useState(null);
   const [newAssignmentName, setNewAssignmentName] = useState("");
@@ -3851,14 +3857,18 @@ function CategoryCard({
                     </button>
                   ) : <span className="composite-toggle-spacer" aria-hidden="true" />}
                   <input
-                    className="input"
+                    className={`input ${editingNameId === a.id ? "is-editing" : ""}`.trim()}
                     defaultValue={a.name}
                     readOnly={speculationMode}
                     size={Math.max(1, String(a.name || "").length)}
+                    onFocus={() => setEditingNameId(a.id)}
                     onInput={(e) => {
                       e.currentTarget.size = Math.max(1, e.currentTarget.value.length);
                     }}
-                    onBlur={async (e) => onChange(await api.patchAssignment(a.id, { name: e.target.value }))}
+                    onBlur={async (e) => {
+                      setEditingNameId(null);
+                      onChange(await api.patchAssignment(a.id, { name: e.target.value }));
+                    }}
                   />
                   </div>
                   {assignmentFlags.length || a.comment || commentEditorId === a.id ? (
@@ -3898,7 +3908,7 @@ function CategoryCard({
                     </span>
                   ) : null}
                   <input
-                    className={`input ${scoreTone} ${denominatorOnly ? "is-denominator-only" : ""} ${isReplaced ? "assignment-score-original-replaced" : ""} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}
+                    className={`input ${scoreTone} ${denominatorOnly ? "is-denominator-only" : ""} ${isReplaced ? "assignment-score-original-replaced" : ""} ${isSpeculativeEdit ? "speculative-grade" : ""} ${focusedScoreId === a.id ? "is-editing" : ""}`.trim()}
                     placeholder={scorePlaceholder}
                     value={draft}
                     style={assignmentFlags.length && colorFlaggedAssignments

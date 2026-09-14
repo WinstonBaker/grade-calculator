@@ -2430,7 +2430,10 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             item for item in overall_classes if str(item.get("period")) in included_periods
         ]
         gpa_pairs = [
-            (item["units"], item["final"]["quality_points"])
+            (
+                item["units"],
+                item["final"].get("base_quality_points", item["final"]["quality_points"]),
+            )
             for item in included_overall_classes
             if item["final"] is not None
             and (

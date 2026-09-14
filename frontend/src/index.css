@@ -3405,6 +3405,16 @@ th button.active {
   color: var(--muted);
 }
 
+.cat-card table.cat-scores tr.cat-score-dropped input.is-editing,
+.cat-card table.cat-scores tr.cat-score-dropped input:focus {
+  color: var(--text);
+  text-decoration: none !important;
+}
+
+.cat-card table.cat-scores tr.cat-score-dropped:has(input.is-editing) {
+  text-decoration: none;
+}
+
 .cat-head {
   display: flex;
   justify-content: space-between;

@@ -2124,6 +2124,7 @@ function FumblesPanel({ data, showScore, weightedGpa = false, fumbleCourse, setF
 
 function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrder = FALLBACK_LETTERS, termNames = {}, periodNames = {}, termLabel = "Period", highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, embedded = false, courseHref, semesterTitles = [] }) {
   const [openTags, setOpenTags] = useState(() => new Set());
+  const showScore = useShowScore();
   const displayCodes = useMemo(() => buildCourseDisplayCodes(terms, null, semesterTitles), [semesterTitles, terms]);
   const rows = useMemo(() => {
     const definitions = new Map((weightTags || []).map((tag) => [String(tag.id), tag]));
@@ -2634,7 +2635,10 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   }
 
   async function load() {
-    setData(await api.gpa(semesterIds ? { semester_ids: semesterIds } : {}));
+    setData(await api.gpa({
+      ...(semesterIds ? { semester_ids: semesterIds } : {}),
+      ...(gradebookId && gradebookId !== "default" ? { gradebook_id: gradebookId } : {}),
+    }));
   }
 
   async function apply() {
@@ -2644,7 +2648,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
 
   useEffect(() => {
     load().catch(console.error);
-  }, [semesterIds?.join(",")]);
+  }, [gradebookId, semesterIds?.join(",")]);
 
   useEffect(() => {
     if (!showScore && sort === "score") {

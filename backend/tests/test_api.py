@@ -1076,7 +1076,8 @@ def test_high_school_score_uses_unweighted_gpa_with_weighted_classes(tmp_path):
         assert course["score"] == -3.0
 
         gpa = client.get("/api/gpa").json()
-        assert gpa["overall_gpa"] == 3.5
+        assert gpa["overall_gpa"] == 3.0
+        assert gpa["weighted_overall_gpa"] == 3.5
         assert gpa["overall_score"] == -3.0
     finally:
         teardown()
