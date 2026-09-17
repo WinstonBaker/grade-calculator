@@ -604,15 +604,21 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   const periodName = isHighSchool
     ? (availableTerms.find((term) => term.season === current.season)?.name || current.name)
     : current.name;
+  const capGpa = (value) => {
+    const numeric = Number(value);
+    const cap = Number(gpaSettings.gpa_cap);
+    if (!Number.isFinite(numeric) || !Number.isFinite(cap)) return value;
+    return Math.min(numeric, cap);
+  };
   const termGpa = (() => {
     const graded = gradedCourses;
     const units = (course) => gpaSettings.gpa_basis === "classes" ? 1 : Number(course.credits) || 0;
     const totalUnits = graded.reduce((sum, course) => sum + units(course), 0);
-    if (!totalUnits) return current.term_gpa;
+    if (!totalUnits) return capGpa(current.term_gpa);
     // `quality_points` is the effective value for college terms, including a
     // GP override. High-school terms expose the corresponding unweighted
     // effective value as `base_quality_points`.
-    return graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.quality_points) * units(course), 0) / totalUnits;
+    return capGpa(graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.quality_points) * units(course), 0) / totalUnits);
   })();
   const termWgpa = weightedGpa ? (() => {
     const graded = gradedCourses;
@@ -620,7 +626,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     const units = (course) => gpaSettings.gpa_basis === "classes" ? 1 : Number(course.credits) || 0;
     const totalUnits = graded.reduce((sum, course) => sum + units(course), 0);
     if (!totalUnits) return null;
-    return graded.reduce((sum, course) => sum + Number(weightedQualityPoints(course, isHighSchool)) * units(course), 0) / totalUnits;
+    return capGpa(graded.reduce((sum, course) => sum + Number(weightedQualityPoints(course, isHighSchool)) * units(course), 0) / totalUnits);
   })() : null;
 
   return (
@@ -696,7 +702,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         {showScore ? (
           <div className="stat">
             <div className="label">{periodLabel} Score</div>
-            <div className={`value ${current.included ? scoreClass(current.term_score) : ""}`}>
+            <div className={`value ${scoreClass(current.term_score)}`}>
               {fmtScore(current.term_score)}
             </div>
           </div>

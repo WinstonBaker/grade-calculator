@@ -944,6 +944,154 @@ a {
   gap: 6px;
 }
 
+.grade-interval {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 16px;
+  padding: 10px 5px 0;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.grade-interval-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.grade-interval-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.76rem;
+}
+
+.grade-interval-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 0;
+}
+
+.grade-interval-fill-button {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--gold) 62%, var(--line));
+  border-radius: 50%;
+  background: var(--bg-raised);
+  color: var(--gold);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.grade-interval-fill-button:hover,
+.grade-interval-fill-button:focus-visible {
+  background: color-mix(in srgb, var(--gold) 16%, var(--bg-raised));
+}
+
+.grade-interval-track {
+  position: relative;
+  height: 44px;
+  margin: 0 5px;
+}
+
+.grade-interval-range {
+  position: absolute;
+  top: 18px;
+  right: 0;
+  left: 0;
+  height: 3px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--gold) 62%, var(--line));
+}
+
+.grade-interval-boundary {
+  position: absolute;
+  top: 6px;
+  width: 2px;
+  height: 14px;
+  border-radius: 99px;
+  background: var(--gold);
+  transform: translateX(-50%);
+}
+
+.grade-interval-start {
+  left: 0;
+}
+
+.grade-interval-end {
+  left: 100%;
+}
+
+.grade-interval-cutoff {
+  position: absolute;
+  top: 15px;
+  width: 1px;
+  height: 20px;
+  transform: translateX(-50%);
+}
+
+.grade-interval-cutoff-tick {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 10px;
+  background: color-mix(in srgb, var(--text) 72%, var(--line));
+}
+
+.grade-interval-cutoff-label {
+  position: absolute;
+  top: 28px;
+  left: 50%;
+  color: var(--muted);
+  font-size: 0.58rem;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.grade-interval-current {
+  position: absolute;
+  top: 0;
+  width: 14px;
+  height: 32px;
+  transform: translateX(-50%);
+}
+
+.grade-interval-current-dot {
+  position: absolute;
+  top: 11px;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid var(--bg-raised);
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--text);
+}
+
+.grade-interval-current-label {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
 .letter.letter-hero-circle {
   flex-shrink: 0;
   min-width: 2.6rem;

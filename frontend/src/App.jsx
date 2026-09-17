@@ -1535,7 +1535,7 @@ export default function App() {
                       {sidebarGpa != null ? (
                         <span className="meta">
                           <span className="meta-gpa">{fmtGpa(sidebarGpa)}</span>
-                          {activeAppearance.showScore !== false && groupScore != null ? (
+                          {activeAppearance.showScore === true && groupScore != null ? (
                             <span className={`meta-score ${scoreClass(groupScore)}`}>{fmtSidebarScore(groupScore)}</span>
                           ) : null}
                         </span>
@@ -1552,7 +1552,7 @@ export default function App() {
                     {(activeAppearance.weightedGpa === true && activeAppearance.wgpaInSidebar === true ? sem.term_wgpa : sem.term_gpa) != null ? (
                       <span className={`meta ${sem.included ? "" : "meta-excluded"}`}>
                         <span className="meta-gpa">{fmtGpa(activeAppearance.weightedGpa === true && activeAppearance.wgpaInSidebar === true ? sem.term_wgpa : sem.term_gpa)}</span>
-                        {activeAppearance.showScore !== false && sem.term_score != null ? (
+                        {activeAppearance.showScore === true && sem.term_score != null ? (
                           <span className={`meta-score ${sem.included ? scoreClass(sem.term_score) : ""}`}>{fmtSidebarScore(sem.term_score)}</span>
                         ) : null}
                       </span>
@@ -1645,6 +1645,7 @@ export default function App() {
                   colorFlaggedAssignments={activeAppearance.colorFlaggedAssignments}
                   readableTextBackground={activeAppearance.readableTextBackground}
                   gradebookId={selectedGradebookId}
+                  showPossibleGradeRange={activeAppearance.showPossibleGradeRange !== false}
                   semesterTitles={activeAppearance.semesterTitles}
                   highSchoolMode={isHighSchool}
                   classType={activeAppearance.classType}

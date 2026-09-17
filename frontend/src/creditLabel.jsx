@@ -5,7 +5,7 @@ import TooltipIcon from "./Tooltip.svg";
 
 const CreditLabelContext = createContext(resolveCreditTerms());
 const GpaBasisContext = createContext("credits");
-const ShowScoreContext = createContext(true);
+const ShowScoreContext = createContext(false);
 const TooltipsContext = createContext(true);
 
 export function CreditLabelProvider({ appearance, gpaBasis, children }) {
@@ -13,7 +13,7 @@ export function CreditLabelProvider({ appearance, gpaBasis, children }) {
   return (
     <CreditLabelContext.Provider value={resolveCreditTerms(appearance)}>
       <GpaBasisContext.Provider value={resolvedGpaBasis}>
-        <ShowScoreContext.Provider value={appearance?.showScore !== false}>
+        <ShowScoreContext.Provider value={appearance?.showScore === true}>
           <TooltipsContext.Provider value={appearance?.tooltips !== false}>
             {children}
           </TooltipsContext.Provider>

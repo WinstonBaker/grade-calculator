@@ -84,6 +84,7 @@ const SETUP_APPEARANCE_FIELDS = [
   "weightedGpa",
   "wgpaInSidebar",
   "showScore",
+  "showPossibleGradeRange",
   "classType",
   "termLabelId",
   "termLabelCustom",
@@ -2514,8 +2515,14 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                 </label>
                 {mode === "gradebook" ? (
                   <label className="checkbox settings-gpa-option settings-show-score-option">
-                    <input type="checkbox" checked={appearance.showScore !== false} onChange={(e) => onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))} />
+                    <input type="checkbox" checked={appearance.showScore === true} onChange={(e) => onAppearanceChange((current) => ({ ...current, showScore: e.target.checked }))} />
                     <span className="settings-show-score-label"><strong>Show Score</strong><Tooltip anchor="icon" text="Target-relative Score on the GPA dashboard, course lists, and sidebar. Assignment scores stay visible." /></span>
+                  </label>
+                ) : null}
+                {mode === "gradebook" ? (
+                  <label className="checkbox settings-gpa-option settings-show-range-option">
+                    <input type="checkbox" checked={appearance.showPossibleGradeRange !== false} onChange={(e) => onAppearanceChange((current) => ({ ...current, showPossibleGradeRange: e.target.checked }))} />
+                    <span><strong>Show Possible Grade Range</strong><Tooltip anchor="icon" text="At the bottom of a class page, show an interval that provides an upper and lower bound on the class grade depending on if remaining ungraded assignments all get no or max points" /></span>
                   </label>
                 ) : null}
               </div>

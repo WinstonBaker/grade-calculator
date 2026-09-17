@@ -547,6 +547,188 @@ function sumNumbers(values) {
   return values.reduce((sum, value) => sum + Number(value), 0);
 }
 
+function intervalAssignmentValues(assignment, category, gradingMode, fill) {
+  const spec = intervalAssignmentSpec(assignment, category, gradingMode);
+  if (!spec) return assignment;
+  return {
+    ...assignment,
+    display: fill ? spec.maximumScore : spec.minimumScore,
+    score_input: fill ? spec.maximumScore : spec.minimumScore,
+    earned: fill ? spec.maximumEarned : spec.minimumEarned,
+    possible: spec.possible,
+  };
+}
+
+function intervalAssignmentSpec(assignment, category, gradingMode) {
+  if (
+    assignment?.is_bonus
+    || assignment?.earned != null
+    || !String(assignment?.name || "").trim()
+  ) {
+    return null;
+  }
+
+  const pointsBased = gradingMode === "points" || category?.aggregation === "points_ratio";
+  if (pointsBased) {
+    const denominator = Number(assignment.possible);
+    // A points-based blank only has a meaningful range when its placeholder
+    // denominator was supplied (for example, /20).
+    if (!Number.isFinite(denominator) || denominator <= 0) return null;
+    return {
+      minimumScore: `0/${formatGradeNumber(denominator)}`,
+      maximumScore: `${formatGradeNumber(denominator)}/${formatGradeNumber(denominator)}`,
+      minimumEarned: 0,
+      maximumEarned: denominator,
+      possible: denominator,
+    };
+  }
+
+  return {
+    minimumScore: "0",
+    maximumScore: "100",
+    minimumEarned: 0,
+    maximumEarned: 100,
+    possible: 100,
+  };
+}
+
+function intervalAssignmentInputs(course) {
+  return (course?.categories || []).flatMap((category) => (category.assignments || [])
+    .map((assignment) => {
+      const spec = intervalAssignmentSpec(assignment, category, course.grading_mode);
+      return spec ? { id: assignment.id, minimum: spec.minimumScore, maximum: spec.maximumScore } : null;
+    })
+    .filter(Boolean));
+}
+
+function courseWithIntervalValues(course, fill) {
+  let changed = false;
+  const categories = (course?.categories || []).map((category) => ({
+    ...category,
+    assignments: (category.assignments || []).map((assignment) => {
+      const next = intervalAssignmentValues(assignment, category, course.grading_mode, fill);
+      if (next !== assignment) changed = true;
+      return next;
+    }),
+  }));
+  if (!changed) return null;
+
+  const next = { ...course, categories, speculative: true };
+  if (course.grading_mode === "weighted") {
+    const summary = weightedCourseSummary(next);
+    next.percent = summary ? summary.classPercent + summary.bonusPercent : null;
+  } else {
+    const summary = pointsCourseSummary(next);
+    next.percent = summary ? (100 * summary.totalEarned) / summary.totalPossible : null;
+  }
+  return next;
+}
+
+function courseGradeInterval(course, currentCourse = course) {
+  if (!course) return null;
+  const minimumCourse = courseWithIntervalValues(course, false);
+  const maximumCourse = courseWithIntervalValues(course, true);
+  const minimum = Number(minimumCourse?.percent);
+  const calculatedMaximum = Number(maximumCourse?.percent);
+  const current = Number(currentCourse?.percent);
+  if (![minimum, calculatedMaximum, current].every(Number.isFinite) || calculatedMaximum <= minimum) return null;
+  const maximum = Math.max(calculatedMaximum, current);
+  const range = maximum - minimum;
+  const cutoffs = (course.scale || [])
+    .map((row) => ({ letter: row.letter, percent: Number(row.min_percent) }))
+    .filter(({ letter, percent }) => letter && Number.isFinite(percent))
+    .filter(({ percent }) => percent > minimum && percent < maximum)
+    .map(({ letter, percent }) => ({
+      letter,
+      percent,
+      position: ((percent - minimum) / range) * 100,
+    }));
+  return {
+    minimum,
+    maximum,
+    current,
+    currentAtBoundary: Math.abs(current - minimum) < 1e-6 || Math.abs(current - maximum) < 1e-6,
+    currentLetter: letterFromPercent(current, currentCourse?.scale || course.scale) || currentCourse?.letter || course.letter || "—",
+    cutoffs,
+    fillableAssignments: intervalAssignmentInputs(course),
+  };
+}
+
+function GradeInterval({ interval, speculationMode = false, onFill }) {
+  if (!interval) return null;
+  const position = Math.max(
+    0,
+    Math.min(100, ((interval.current - interval.minimum) / (interval.maximum - interval.minimum)) * 100),
+  );
+  return (
+    <div
+      className="grade-interval"
+      aria-label={`Possible grade range from ${fmtPct(interval.minimum)}% to ${fmtPct(interval.maximum)}%; current grade ${fmtPct(interval.current)}%`}
+    >
+      <span className="grade-interval-caption">
+        Possible Grade Range
+        <Tooltip
+          anchor="icon"
+          text={`Minimum class grade fills in remaining grades with 0's, providing a lower bound on the grade, and maximum fills in remaining grades with 100s, providing an upper bound. Tip: enter ungraded points based assignments as "/5" where 5 is the total number of points in the assignment; ungraded percent based assignments only need to exist/be named to be included in this grade range calculation`}
+        />
+      </span>
+      {speculationMode && interval.fillableAssignments.length ? (
+        <div className="grade-interval-actions">
+          <button
+            className="grade-interval-fill-button"
+            type="button"
+            aria-label="Fill ungraded assignments with minimum scores"
+            title="Fill ungraded assignments with minimum scores"
+            onClick={() => onFill?.("minimum")}
+          >
+            +
+          </button>
+          <button
+            className="grade-interval-fill-button"
+            type="button"
+            aria-label="Fill ungraded assignments with maximum scores"
+            title="Fill ungraded assignments with maximum scores"
+            onClick={() => onFill?.("maximum")}
+          >
+            +
+          </button>
+        </div>
+      ) : null}
+      <div className="grade-interval-labels mono">
+        <span>{fmtPct(interval.minimum)}%</span>
+        <span>{fmtPct(interval.maximum)}%</span>
+      </div>
+      <div
+        className="grade-interval-track"
+        aria-label={`Grade cutoffs: ${interval.cutoffs.map(({ letter, percent }) => `${letter} at ${fmtPct(percent)}%`).join(", ") || "none in this range"}`}
+      >
+        <span className="grade-interval-range" />
+        <span className="grade-interval-boundary grade-interval-start" />
+        <span className="grade-interval-boundary grade-interval-end" />
+        {interval.cutoffs.map(({ letter, percent, position: cutoffPosition }) => (
+          <span
+            className="grade-interval-cutoff"
+            key={`${letter}-${percent}`}
+            style={{ left: `${cutoffPosition}%` }}
+            title={`${letter}: ${fmtPct(percent)}%`}
+          >
+            <span className="grade-interval-cutoff-tick" />
+            <span className="grade-interval-cutoff-label">{letter}</span>
+          </span>
+        ))}
+        <span
+          className="grade-interval-current"
+          style={{ left: `${position}%` }}
+          title={`Current: ${interval.currentLetter} (${fmtPct(interval.current)}%)`}
+        >
+          {!interval.currentAtBoundary ? <span className="grade-interval-current-label">{fmtPct(interval.current)}%</span> : null}
+          <span className="grade-interval-current-dot" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function speculativeCourseFromScores(course, scores) {
   if (!course || !Object.keys(scores).length) return course;
   const mappedCategories = (course.categories || []).map((category) => ({
@@ -781,7 +963,7 @@ function ClassLabelsPicker({ course, classLabels, selectedLabels, onLabelsChange
   );
 }
 
-export default function Gradebook({ onChange, colorAssignmentGrades = true, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, colorFlaggedAssignments = false, readableTextBackground = true, gradebookId = "default", semesterTitles = [], speculationMode = false, onSpeculationSummaryChange, highSchoolMode = false, academicPeriodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false }) {
+export default function Gradebook({ onChange, colorAssignmentGrades = true, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, colorFlaggedAssignments = false, readableTextBackground = true, gradebookId = "default", semesterTitles = [], speculationMode = false, onSpeculationSummaryChange, highSchoolMode = false, academicPeriodNames = {}, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, showPossibleGradeRange = true }) {
   const showScore = useShowScore();
   const { warning, push } = useToasts();
   const { id } = useParams();
@@ -1236,6 +1418,11 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const displayCoursePercent = displayCourse.percent;
   const pointsSummary = displayCourse.grading_mode === "points" ? pointsCourseSummary(displayCourse) : null;
   const percentSummary = displayCourse.grading_mode === "weighted" ? weightedCourseSummary(displayCourse) : null;
+  // Keep the interval's min/max and fill targets based on the real course. In
+  // speculation mode, displayCourse may have every blank filled temporarily;
+  // using it as the range source would make the interval disappear. Only the
+  // current marker should follow those speculative values.
+  const gradeInterval = courseGradeInterval(course, displayCourse);
   const actualGradeCourse = displayCourse.credit_mode === "pass_fail"
     ? { ...displayCourse, pass_fail_override: null }
     : displayCourse;
@@ -1259,6 +1446,14 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     tone: speculationTone,
     speculative: speculationPreview,
   };
+
+  function fillSpeculativeAssignments(bound) {
+    if (!gradeInterval?.fillableAssignments?.length) return;
+    const values = Object.fromEntries(
+      gradeInterval.fillableAssignments.map(({ id, minimum, maximum }) => [id, bound === "minimum" ? minimum : maximum]),
+    );
+    setSpeculativeScores((current) => ({ ...current, ...values }));
+  }
 
   async function setBonusMode(mode) {
     if (bonusCategory && mode !== "category") {
@@ -1816,6 +2011,13 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           />
         ) : null}
       </div>
+      {showPossibleGradeRange ? (
+        <GradeInterval
+          interval={gradeInterval}
+          speculationMode={speculationMode}
+          onFill={fillSpeculativeAssignments}
+        />
+      ) : null}
       {categoryModal ? (
         <CategorySettingsModal
           mode={categoryModal.mode}

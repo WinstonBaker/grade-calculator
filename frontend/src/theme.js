@@ -292,7 +292,8 @@ export function parseAppearance(parsed) {
     : {};
   return {
     gradeColors: parsed.gradeColors !== false,
-    showScore: parsed.showScore !== false,
+    showScore: parsed.showScore === true,
+    showPossibleGradeRange: parsed.showPossibleGradeRange !== false,
     tooltips: parsed.tooltips !== false,
     gradeScale: resolveGradeScaleId(parsed.gradeScale, gradeScalePresets),
     customGradeColors: normalizeGradeColors(parsed.customGradeColors),
@@ -325,7 +326,8 @@ export function parseAppearance(parsed) {
 function defaultAppearance() {
   return {
     gradeColors: true,
-    showScore: true,
+    showScore: false,
+    showPossibleGradeRange: true,
     tooltips: true,
     gradeScale: DEFAULT_GRADE_SCALE,
     customGradeColors: { ...DEFAULT_CUSTOM_GRADE_COLORS },
@@ -356,7 +358,8 @@ function defaultAppearance() {
 export function appearancePayload(appearance) {
   return {
     gradeColors: appearance.gradeColors,
-    showScore: appearance.showScore !== false,
+    showScore: appearance.showScore === true,
+    showPossibleGradeRange: appearance.showPossibleGradeRange !== false,
     tooltips: appearance.tooltips !== false,
     gradeScale: resolveGradeScaleId(appearance.gradeScale, appearance.gradeScalePresets),
     customGradeColors: normalizeGradeColors(appearance.customGradeColors),
