@@ -567,9 +567,105 @@ export function replaceMinWithPercent(cat, replacement) {
   );
   for (let index = 0; index < replacements; index += 1) {
     const lowest = Math.min(...scores);
+    if (exam <= lowest) break;
     scores.splice(scores.indexOf(lowest), 1, exam);
   }
   return scores.reduce((sum, n) => sum + n, 0) / scores.length;
+}
+
+function categoryPercentWithReplacement(cat, replacement) {
+  const replacementPercent = Number(replacement);
+  if (!Number.isFinite(replacementPercent)) return null;
+
+  if (cat.aggregation === "points_ratio") {
+    const scored = (cat.assignments || [])
+      .filter((item) => (
+        !item.is_bonus
+        && item.earned != null
+        && Number.isFinite(Number(item.earned))
+        && Number(item.possible) > 0
+      ))
+      .map((item) => ({
+        earned: Number(item.earned),
+        possible: Number(item.possible),
+        percent: (100 * Number(item.earned)) / Number(item.possible),
+      }));
+    if (!scored.length) return null;
+
+    const drop = Math.min(
+      Math.max(Number(cat.drop_count) || 0, 0),
+      Math.max(scored.length - 1, 0),
+    );
+    const kept = scored
+      .sort((a, b) => b.percent - a.percent)
+      .slice(0, scored.length - drop);
+    const replacements = Math.min(
+      Math.max(Number(cat.replace_count ?? 0) || 0, 0),
+      kept.length,
+    );
+    for (let index = 0; index < replacements; index += 1) {
+      const lowest = kept.reduce((best, item) => item.percent < best.percent ? item : best);
+      if (replacementPercent <= lowest.percent) break;
+      lowest.earned = (replacementPercent / 100) * lowest.possible;
+      lowest.percent = replacementPercent;
+    }
+
+    const earned = kept.reduce((sum, item) => sum + item.earned, 0);
+    const possible = kept.reduce((sum, item) => sum + item.possible, 0);
+    if (!possible) return null;
+    const zeroDenominatorBonus = (cat.assignments || [])
+      .filter((item) => item.earned != null && Number(item.possible) === 0)
+      .reduce((sum, item) => sum + Number(item.earned), 0);
+    const assignmentBonus = (cat.assignments || [])
+      .filter((item) => (
+        item.is_bonus
+        && item.bonus_type !== "category"
+        && item.earned != null
+        && item.possible != null
+        && Number(item.possible) !== 0
+      ))
+      .reduce((sum, item) => sum + Number(item.earned), 0);
+    const categoryBonus = (cat.assignments || [])
+      .filter((item) => (
+        item.is_bonus
+        && item.bonus_type === "category"
+        && item.earned != null
+        && item.possible != null
+        && Number(item.possible) !== 0
+      ))
+      .reduce((sum, item) => sum + Number(item.earned), 0);
+    return (
+      (100 * earned) / possible
+      + (100 * zeroDenominatorBonus) / possible
+      + (kept.length ? assignmentBonus / kept.length : 0)
+      + categoryBonus
+    );
+  }
+
+  const regular = regularAssignmentPercents(cat);
+  if (!regular.length) return null;
+  const drop = Math.min(
+    Math.max(Number(cat.drop_count) || 0, 0),
+    Math.max(regular.length - 1, 0),
+  );
+  const scores = regular.sort((a, b) => b - a).slice(0, regular.length - drop);
+  const replacements = Math.min(
+    Math.max(Number(cat.replace_count ?? 0) || 0, 0),
+    scores.length,
+  );
+  for (let index = 0; index < replacements; index += 1) {
+    const lowest = Math.min(...scores);
+    if (replacementPercent <= lowest) break;
+    scores.splice(scores.indexOf(lowest), 1, replacementPercent);
+  }
+  if (!scores.length) return null;
+  const assignmentBonus = (cat.assignments || [])
+    .filter((item) => item.is_bonus && item.bonus_type !== "category" && item.earned != null)
+    .reduce((sum, item) => sum + Number(item.earned), 0);
+  const categoryBonus = (cat.assignments || [])
+    .filter((item) => item.is_bonus && item.bonus_type === "category" && item.earned != null)
+    .reduce((sum, item) => sum + Number(item.earned), 0);
+  return (scores.reduce((sum, score) => sum + score, 0) + assignmentBonus) / scores.length + categoryBonus;
 }
 
 function assignmentPossible(item) {
@@ -636,8 +732,8 @@ export function projectPercentFromExam(course, examCategoryId, examPercent, weig
     if (cat.id === examCategoryId) {
       pct = examPct;
       weight = weightFor(cat);
-    } else if (cat.aggregation !== "points_ratio" && cat.replace_with_category_id === examCategoryId) {
-      pct = replaceMinWithPercent(cat, examPct);
+    } else if (cat.replace_with_category_id === examCategoryId) {
+      pct = categoryPercentWithReplacement(cat, examPct);
       weight = weightFor(cat);
     } else if (cat.percent != null && weightFor(cat)) {
       pct = cat.percent;

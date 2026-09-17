@@ -606,7 +606,11 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     : current.name;
   const capGpa = (value) => {
     const numeric = Number(value);
-    const cap = Number(gpaSettings.gpa_cap);
+    // An unset cap is represented as null by the API. Number(null) is 0,
+    // which incorrectly reduced every semester GPA to 0.000 in this view.
+    const cap = gpaSettings.gpa_cap == null || gpaSettings.gpa_cap === ""
+      ? null
+      : Number(gpaSettings.gpa_cap);
     if (!Number.isFinite(numeric) || !Number.isFinite(cap)) return value;
     return Math.min(numeric, cap);
   };

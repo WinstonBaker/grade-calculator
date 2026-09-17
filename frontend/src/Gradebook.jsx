@@ -634,6 +634,7 @@ function courseGradeInterval(course, currentCourse = course) {
   if (![minimum, calculatedMaximum, current].every(Number.isFinite) || calculatedMaximum <= minimum) return null;
   const maximum = Math.max(calculatedMaximum, current);
   const range = maximum - minimum;
+  const maximumTickPosition = ((calculatedMaximum - minimum) / range) * 100;
   const cutoffs = (course.scale || [])
     .map((row) => ({ letter: row.letter, percent: Number(row.min_percent) }))
     .filter(({ letter, percent }) => letter && Number.isFinite(percent))
@@ -646,8 +647,11 @@ function courseGradeInterval(course, currentCourse = course) {
   return {
     minimum,
     maximum,
+    calculatedMaximum,
+    maximumTickPosition,
     current,
-    currentAtBoundary: Math.abs(current - minimum) < 1e-6 || Math.abs(current - maximum) < 1e-6,
+    currentAtBoundary: Math.abs(current - minimum) < 1e-6 || Math.abs(current - calculatedMaximum) < 1e-6,
+    currentBeyondCalculatedMaximum: maximum > calculatedMaximum + 1e-6,
     currentLetter: letterFromPercent(current, currentCourse?.scale || course.scale) || currentCourse?.letter || course.letter || "—",
     cutoffs,
     fillableAssignments: intervalAssignmentInputs(course),
@@ -696,7 +700,7 @@ function GradeInterval({ interval, speculationMode = false, onFill }) {
       ) : null}
       <div className="grade-interval-labels mono">
         <span>{fmtPct(interval.minimum)}%</span>
-        <span>{fmtPct(interval.maximum)}%</span>
+        {!interval.currentBeyondCalculatedMaximum ? <span>{fmtPct(interval.maximum)}%</span> : null}
       </div>
       <div
         className="grade-interval-track"
@@ -704,7 +708,14 @@ function GradeInterval({ interval, speculationMode = false, onFill }) {
       >
         <span className="grade-interval-range" />
         <span className="grade-interval-boundary grade-interval-start" />
-        <span className="grade-interval-boundary grade-interval-end" />
+        <span
+          className="grade-interval-boundary grade-interval-end"
+          style={{ left: `${interval.maximumTickPosition}%` }}
+        >
+          {interval.currentBeyondCalculatedMaximum ? (
+            <span className="grade-interval-boundary-label">{fmtPct(interval.calculatedMaximum)}%</span>
+          ) : null}
+        </span>
         {interval.cutoffs.map(({ letter, percent, position: cutoffPosition }) => (
           <span
             className="grade-interval-cutoff"

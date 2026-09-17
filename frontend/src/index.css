@@ -1031,6 +1031,18 @@ a {
   left: 100%;
 }
 
+.grade-interval-boundary-label {
+  position: absolute;
+  top: -15px;
+  left: 50%;
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
 .grade-interval-cutoff {
   position: absolute;
   top: 15px;

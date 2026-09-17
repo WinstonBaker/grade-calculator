@@ -1,7 +1,7 @@
 {
   "name": "grade-calculator-ui",
   "private": true,
-  "version": "2.1",
+  "version": "2.1.1",
   "license": "MIT",
   "type": "module",
   "scripts": {
