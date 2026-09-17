@@ -918,9 +918,24 @@ a {
   pointer-events: auto;
 }
 
+.speculation-mode .gradebook-header .gradebook-semester-link {
+  pointer-events: auto;
+}
+
 .speculation-mode .gradebook-cat-toolbar .exam-needed-toggle,
 .speculation-mode .gradebook-cat-toolbar .exam-needed-toggle * {
   pointer-events: auto;
+}
+
+.speculation-mode .gradebook-cat-toolbar > .btn:not(.exam-needed-toggle) {
+  pointer-events: auto;
+}
+
+.speculation-mode .cards > .btn {
+  pointer-events: none;
+  border-color: var(--line);
+  color: var(--muted);
+  cursor: default;
 }
 
 .speculation-mode .cat-card .col-score input {
@@ -963,38 +978,124 @@ a {
   text-transform: uppercase;
 }
 
-.grade-interval-labels {
+.grade-interval-heading {
+  position: relative;
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  min-height: 28px;
+  align-items: center;
+}
+
+.grade-interval-labels {
+  position: relative;
+  height: 1em;
+  margin: 0 5px;
   font-size: 0.76rem;
+}
+
+.grade-interval-minimum-label,
+.grade-interval-maximum-label {
+  position: absolute;
+  top: 0;
+  color: var(--muted);
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.grade-interval-minimum-label {
+  left: 0;
+}
+
+.grade-interval-maximum-label {
+  transform: translateX(-50%);
+}
+
+.grade-interval-maximum-label-at-end {
+  right: 0;
+  left: auto !important;
+  transform: none;
+}
+
+.grade-interval-action-group {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Keep the pill itself centered; the fixed circular clear control sits just
+     to its right without pulling the pill off the interval midpoint. */
+  transform: translateX(calc(-50% + 18px));
 }
 
 .grade-interval-actions {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 2px 0 0;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--gold) 62%, var(--line));
+  border-radius: 999px;
+  background: var(--bg-raised);
+  overflow: hidden;
 }
 
 .grade-interval-fill-button {
-  display: inline-grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--gold) 62%, var(--line));
-  border-radius: 50%;
-  background: var(--bg-raised);
-  color: var(--gold);
-  font-size: 1.5rem;
+  height: 27px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.7rem;
+  font-weight: 600;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+.grade-interval-fill-button + .grade-interval-fill-button {
+  border-left: 1px solid color-mix(in srgb, var(--gold) 42%, var(--line));
 }
 
 .grade-interval-fill-button:hover,
 .grade-interval-fill-button:focus-visible {
   background: color-mix(in srgb, var(--gold) 16%, var(--bg-raised));
+  outline: none;
+}
+
+.grade-interval-fill-button:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--gold);
+}
+
+.grade-interval-fill-button:active {
+  background: color-mix(in srgb, var(--gold) 24%, var(--bg-raised));
+}
+
+.grade-interval-clear-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--gold) 62%, var(--line));
+  border-radius: 50%;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.grade-interval-clear-button:hover,
+.grade-interval-clear-button:focus-visible {
+  background: color-mix(in srgb, var(--gold) 16%, var(--bg-raised));
+  outline: none;
+}
+
+.grade-interval-clear-button:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--gold);
+}
+
+.grade-interval-clear-button:active {
+  background: color-mix(in srgb, var(--gold) 24%, var(--bg-raised));
 }
 
 .grade-interval-track {
@@ -1015,9 +1116,11 @@ a {
 
 .grade-interval-boundary {
   position: absolute;
-  top: 6px;
+  /* Center the endpoint marker on the axis and make it just longer than a
+     cutoff tick, extending evenly above and below the line. */
+  top: 12px;
   width: 2px;
-  height: 14px;
+  height: 15px;
   border-radius: 99px;
   background: var(--gold);
   transform: translateX(-50%);
@@ -1029,18 +1132,6 @@ a {
 
 .grade-interval-end {
   left: 100%;
-}
-
-.grade-interval-boundary-label {
-  position: absolute;
-  top: -15px;
-  left: 50%;
-  color: var(--text);
-  font-size: 0.68rem;
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-  transform: translateX(-50%);
 }
 
 .grade-interval-cutoff {
@@ -1081,7 +1172,8 @@ a {
 
 .grade-interval-current-dot {
   position: absolute;
-  top: 11px;
+  /* Center the dot on the 3px interval line (top: 18px). */
+  top: 12.5px;
   left: 0;
   width: 14px;
   height: 14px;

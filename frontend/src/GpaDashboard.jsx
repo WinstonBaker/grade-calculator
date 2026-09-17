@@ -861,20 +861,37 @@ function trendCourseQualityPoints(course, weighted, periodMode, weightTags) {
   return Number(base) + (Number(tag?.boost) || 0);
 }
 
+function cappedTrendWeightedPoints(course, rawWeightedPoints, periodMode, weightTags, gpaCap) {
+  if (rawWeightedPoints == null || gpaCap == null) return rawWeightedPoints;
+  const base = periodMode
+    ? Number(course?.base_quality_points ?? course?.quality_points)
+    : Number(course?.quality_points);
+  if (!Number.isFinite(base)) return rawWeightedPoints;
+  const boost = Number(rawWeightedPoints) - base;
+  return Math.min(base, Number(gpaCap)) + boost;
+}
+
 function trendTermGpa(term, weighted, classBasis, periodMode, weightTags, gpaCap) {
   const stored = weighted ? term?.term_wgpa : term?.term_gpa;
-  if (stored != null && Number.isFinite(Number(stored))) return Number(stored);
+  if (stored != null && Number.isFinite(Number(stored))) {
+    // Backend term WGPA values already cap only their unweighted component;
+    // never cap the resulting weighted value itself.
+    return Number(stored);
+  }
   const pairs = [];
   for (const course of term?.courses || []) {
     const qualityPoints = trendCourseQualityPoints(course, weighted, periodMode, weightTags);
     if (qualityPoints == null) continue;
+    const weightedQualityPoints = weighted
+      ? cappedTrendWeightedPoints(course, qualityPoints, periodMode, weightTags, gpaCap)
+      : qualityPoints;
     const units = classBasis ? 1 : (Number(course.credits) || 0);
-    if (units) pairs.push([units, qualityPoints]);
+    if (units) pairs.push([units, weightedQualityPoints]);
   }
   if (!pairs.length) return null;
   const totalUnits = pairs.reduce((sum, [units]) => sum + units, 0);
   const value = pairs.reduce((sum, [units, qualityPoints]) => sum + units * qualityPoints, 0) / totalUnits;
-  return gpaCap == null ? value : Math.min(value, Number(gpaCap));
+  return weighted || gpaCap == null ? value : Math.min(value, Number(gpaCap));
 }
 
 function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false, periodOrder = [], semesterTitles = [], weightedGpa = false, showScore = true, weightTags = [], termLabel = "Semester" }) {
@@ -946,9 +963,10 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
         const gpaPoints = periodMode
           ? Number(course.quality_points)
           : trendCourseQualityPoints(course, false, periodMode, weightTags);
-        const wgpaPoints = periodMode
+        const rawWgpaPoints = periodMode
           ? Number(course.weighted_quality_points ?? course.quality_points)
           : trendCourseQualityPoints(course, true, periodMode, weightTags);
+        const wgpaPoints = cappedTrendWeightedPoints(course, rawWgpaPoints, periodMode, weightTags, gpaCap);
         if (gpaPoints == null && wgpaPoints == null) continue;
         const courseCredits = classBasis
           ? 1
@@ -977,7 +995,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, periodMode = false,
           ? Math.min(qualityPoints / credits, gpaCap == null ? Infinity : Number(gpaCap))
           : null,
         cumulativeWgpa: Number.isFinite(metricValue) && credits
-          ? Math.min(weightedQualityPoints / credits, gpaCap == null ? Infinity : Number(gpaCap))
+          ? weightedQualityPoints / credits
           : null,
         semesterScore: Number.isFinite(semesterScore) ? semesterScore : null,
         cumulativeScore: Number.isFinite(metricValue) ? cumulativeScore : null,
@@ -2412,6 +2430,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   };
   const overallPeriodRollups = useMemo(() => {
     if (!highSchoolMode) return new Map();
+    const cap = data?.gpa_cap == null || data?.gpa_cap === "" ? null : Number(data.gpa_cap);
     const groups = new Map();
     (data?.overall_classes || []).forEach((item) => {
       if (item?.quality_points == null) return;
@@ -2421,7 +2440,12 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       current.count += 1;
       current.units += units;
       current.qualityPoints += Number(item.quality_points) * units;
-      current.weightedQualityPoints += Number(item.weighted_quality_points ?? item.quality_points) * units;
+      const weightedPoints = Number(item.weighted_quality_points ?? item.quality_points);
+      const basePoints = Number(item.quality_points);
+      const weightedValue = Number.isFinite(cap)
+        ? Math.min(basePoints, cap) + (weightedPoints - basePoints)
+        : weightedPoints;
+      current.weightedQualityPoints += weightedValue * units;
       groups.set(key, current);
     });
     return groups;
@@ -2490,12 +2514,18 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       const periodKey = highSchoolAcademicYearKey(group.terms?.[0]);
       const backendPeriodScore = data?.high_school_period_scores?.[periodKey];
       const backendPeriodRollup = overallPeriodRollups.get(periodKey);
+      const backendPeriodGpa = data?.high_school_period_gpas?.[periodKey];
+      const cap = data?.gpa_cap == null || data?.gpa_cap === "" ? null : Number(data.gpa_cap);
       const courses = [...courseGroups.values()].map((courseGroup) => {
         const course = courseGroup.finalCourse || courseGroup.latestCourse;
         const units = termCount ? courseGroup.occurrenceCount / termCount : 0;
-        const weightedQualityPoints = course?.quality_points == null
+        const rawWeightedQualityPoints = course?.quality_points == null
           ? null
           : Number(course.base_quality_points ?? course.quality_points) + courseGroup.weightBoost;
+        const weightedQualityPoints = rawWeightedQualityPoints != null && Number.isFinite(cap)
+          ? Math.min(Number(course.base_quality_points ?? course.quality_points), cap)
+            + (rawWeightedQualityPoints - Number(course.base_quality_points ?? course.quality_points))
+          : rawWeightedQualityPoints;
         return {
           ...course,
           period_units: Number(units.toFixed(3)),
@@ -2512,16 +2542,24 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         overall_class_count: highSchoolMode
           ? (backendPeriodRollup?.count ?? 0)
           : courses.length,
-        term_gpa: backendPeriodRollup?.units
-          ? backendPeriodRollup.qualityPoints / backendPeriodRollup.units
-          : total
-          ? graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.quality_points) * units(course), 0) / total
-          : null,
-        term_wgpa: backendPeriodRollup?.units
+        term_gpa: backendPeriodGpa?.gpa ?? (() => {
+          const value = backendPeriodRollup?.units
+            ? backendPeriodRollup.qualityPoints / backendPeriodRollup.units
+            : total
+              ? graded.reduce((sum, course) => sum + Number(course.base_quality_points ?? course.quality_points) * units(course), 0) / total
+              : null;
+          return value != null && Number.isFinite(cap) ? Math.min(value, cap) : value;
+        })(),
+        term_wgpa: backendPeriodGpa?.wgpa ?? (backendPeriodRollup?.units
           ? backendPeriodRollup.weightedQualityPoints / backendPeriodRollup.units
           : total
-          ? graded.reduce((sum, course) => sum + Number(course.period_weighted_quality_points ?? course.quality_points) * units(course), 0) / total
-          : null,
+          ? graded.reduce((sum, course) => {
+            const points = Number(course.period_weighted_quality_points ?? course.quality_points);
+            const base = Number(course.base_quality_points ?? course.quality_points);
+            const boost = points - base;
+            return sum + (Number.isFinite(cap) ? Math.min(base, cap) + boost : points) * units(course);
+          }, 0) / total
+          : null),
         term_score: highSchoolMode
           ? backendPeriodScore != null
             ? Number(backendPeriodScore)

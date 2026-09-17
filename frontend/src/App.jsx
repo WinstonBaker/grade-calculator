@@ -267,25 +267,36 @@ function highSchoolPeriodScore(group, targetGp = 4, highSchoolTerms = [], highSc
   );
 }
 
-function highSchoolPeriodGpaValues(overallClasses = []) {
+function highSchoolPeriodGpaValues(overallClasses = [], gpaCap = null) {
   const grouped = new Map();
   for (const item of overallClasses || []) {
     const period = String(item?.period ?? "");
     const gpa = Number(item?.quality_points);
     if (!period || !Number.isFinite(gpa)) continue;
-    const current = grouped.get(period) || { gpa: [], wgpa: [] };
-    current.gpa.push(gpa);
+    const units = Number(item?.units);
+    const weight = Number.isFinite(units) && units > 0 ? units : 1;
+    const current = grouped.get(period) || { gpaPoints: 0, gpaUnits: 0, wgpa: [] };
+    current.gpaPoints += gpa * weight;
+    current.gpaUnits += weight;
     const wgpa = Number(item?.weighted_quality_points ?? item?.quality_points);
-    if (Number.isFinite(wgpa)) current.wgpa.push(wgpa);
+    if (Number.isFinite(wgpa)) current.wgpa.push({ base: gpa, weighted: wgpa, units: weight });
     grouped.set(period, current);
   }
-  return Object.fromEntries([...grouped.entries()].map(([period, values]) => [
-    period,
-    {
-      gpa: values.gpa.length ? values.gpa.reduce((sum, value) => sum + value, 0) / values.gpa.length : null,
-      wgpa: values.wgpa.length ? values.wgpa.reduce((sum, value) => sum + value, 0) / values.wgpa.length : null,
-    },
-  ]));
+  const cap = gpaCap == null || gpaCap === "" ? null : Number(gpaCap);
+  return Object.fromEntries([...grouped.entries()].map(([period, values]) => {
+    const gpa = values.gpaUnits ? values.gpaPoints / values.gpaUnits : null;
+    const wgpaUnits = values.wgpa.reduce((sum, item) => sum + item.units, 0);
+    const wgpa = wgpaUnits
+      ? values.wgpa.reduce((sum, item) => sum + item.weighted * item.units, 0) / wgpaUnits
+      : null;
+    const cappedWgpa = wgpaUnits && Number.isFinite(cap)
+      ? values.wgpa.reduce((sum, item) => sum + (Math.min(item.base, cap) + (item.weighted - item.base)) * item.units, 0) / wgpaUnits
+      : wgpa;
+    return [period, {
+      gpa: gpa != null && Number.isFinite(cap) ? Math.min(gpa, cap) : gpa,
+      wgpa: cappedWgpa,
+    }];
+  }));
 }
 
 function academicYearRecordKey(record, semesters) {
@@ -868,7 +879,12 @@ export default function App() {
       if (gpa?.gpa_basis) setGpaBasis(gpa.gpa_basis);
       if (gpa?.target_gp != null) setTargetGp(Number(gpa.target_gp));
       setHighSchoolPeriodScores(gpa?.high_school_period_scores || {});
-      setHighSchoolPeriodGpas(highSchoolPeriodGpaValues(gpa?.overall_classes || []));
+      const backendPeriodGpas = gpa?.high_school_period_gpas;
+      setHighSchoolPeriodGpas(
+        backendPeriodGpas && Object.keys(backendPeriodGpas).length
+          ? backendPeriodGpas
+          : highSchoolPeriodGpaValues(gpa?.overall_classes || [], gpa?.gpa_cap),
+      );
       const storedAppearance = gradebookAppearance[requestGradebookId] || {};
       const backendRounding = gpa?.high_school_overall_rounding
         ? { __default__: gpa.high_school_overall_rounding }

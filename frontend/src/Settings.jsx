@@ -1424,7 +1424,10 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
       ...overallRounding,
       [field]: checked,
     };
-    await updateSettings({ high_school_overall_rounding: next });
+    await updateSettings({
+      high_school_overall_rounding: next,
+      high_school_overall_rounding_by_period: { __default__: next },
+    });
     onAppearanceChange?.((current) => ({
       ...current,
       highSchoolOverallRoundingByPeriod: { __default__: next },
@@ -2511,7 +2514,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
               <div className="settings-display-gpa-options">
                 <label className="checkbox settings-gpa-option">
                   <input type="checkbox" checked={data.gpa_cap === 4} onChange={(e) => updateSettings({ gpa_cap: e.target.checked ? 4 : null })} />
-                  <span><strong>Cap GPA at 4.000</strong><Tooltip anchor="icon" text={`Caps semester and cumulative GPA only.${showScore ? " A+ quality points still count toward Score." : ""}`} /></span>
+                  <span><strong>Cap GPA at 4.000</strong><Tooltip anchor="icon" text={`Caps semester and cumulative GPA. When WGPA is enabled, each weighted contribution first caps its unweighted GP at the same limit, then adds the weighting boost; individual class GP values remain unchanged.${showScore ? " A+ quality points still count toward Score." : ""}`} /></span>
                 </label>
                 {mode === "gradebook" ? (
                   <label className="checkbox settings-gpa-option settings-show-score-option">

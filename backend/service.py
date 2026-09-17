@@ -1353,6 +1353,39 @@ def high_school_period_scores(overall_classes: list[dict], target_gp: float) -> 
     return scores
 
 
+def high_school_period_gpas(
+    overall_classes: list[dict],
+    gpa_cap: float | None,
+) -> dict[str, dict[str, float]]:
+    """Return the authoritative GPA and WGPA rollup for each academic period."""
+    totals: dict[str, dict[str, float]] = {}
+    for item in overall_classes:
+        final = item.get("final")
+        units = float(item.get("units") or 0)
+        if final is None or units <= 0:
+            continue
+        period = str(item.get("period"))
+        base_points = final.get("base_quality_points", final.get("quality_points"))
+        weighted_points = final.get("quality_points")
+        if base_points is None or weighted_points is None:
+            continue
+        current = totals.setdefault(period, {"units": 0.0, "gpa_points": 0.0, "wgpa_points": 0.0})
+        current["units"] += units
+        current["gpa_points"] += float(base_points) * units
+        base_points = float(base_points)
+        weighted_points = float(weighted_points)
+        boost = weighted_points - base_points
+        current["wgpa_points"] += (cap_gpa(base_points, gpa_cap) + boost) * units
+    return {
+        period: {
+            "gpa": cap_gpa(values["gpa_points"] / values["units"], gpa_cap),
+            "wgpa": values["wgpa_points"] / values["units"],
+        }
+        for period, values in totals.items()
+        if values["units"]
+    }
+
+
 def high_school_final_course(course: dict) -> dict | None:
     """Return the overall-only version of a high-school course.
 
@@ -1825,16 +1858,15 @@ def serialize_semester(
         (unit(c), gpa_value(c)) for c in gpa_courses
     ]
     gpa = cap_gpa(weighted_gpa(pairs, include_zero=any(gpa_value(c) == 0 for c in gpa_courses)), gpa_cap)
-    weighted_pairs = [
-        (
-            unit(c),
-            c["quality_points"]
-            if gradebook_type == "high_school"
-            else c["quality_points"] + float(c.get("gpa_weight_boost") or 0),
+    weighted_pairs = []
+    for course in gpa_courses:
+        base_quality_points = course.get("base_quality_points", course["quality_points"])
+        boost = float(course.get("gpa_weight_boost") or 0)
+        weighted_points = (
+            cap_gpa(base_quality_points, gpa_cap) + boost
         )
-        for c in gpa_courses
-    ]
-    wgpa = cap_gpa(weighted_gpa(weighted_pairs, include_zero=any(c["quality_points"] == 0 for c in gpa_courses)), gpa_cap)
+        weighted_pairs.append((unit(course), weighted_points))
+    wgpa = weighted_gpa(weighted_pairs, include_zero=any(c["quality_points"] == 0 for c in gpa_courses))
     gpa_credits = sum(unit(c) for c in gpa_courses)
     for_credit_credits = sum(
         unit(c)
@@ -1987,6 +2019,7 @@ def _future_guess_summary(
     default_rows: list[tuple[str, float, float]],
     gpa_basis: str,
     gpa_credits: float,
+    gpa_current_points: float,
     overall_score: float,
     weighted_current_units: float,
     weighted_current_points: float,
@@ -2043,14 +2076,28 @@ def _future_guess_summary(
         target_gp,
         1.0 if gpa_basis == "classes" else None,
     )
-    adjusted_credits = gpa_credits + extra if extra else None
+    future_gpa_units = 0.0
+    future_gpa_points = 0.0
+    for credits, letters in guess_counts.items():
+        unit_count = 1.0 if gpa_basis == "classes" else float(credits)
+        for letter, count in letters.items():
+            number = float(count or 0)
+            quality_points = next(
+                (row.quality_points for row in scale_rows if row.letter == letter),
+                None,
+            )
+            if number <= 0 or quality_points is None or unit_count <= 0:
+                continue
+            future_gpa_units += number * unit_count
+            future_gpa_points += number * unit_count * quality_points
+    adjusted_credits = gpa_credits + future_gpa_units if future_gpa_units else None
     adjusted_score = (overall_score + delta) if delta is not None else None
     adjusted_gpa = (
         cap_gpa(
-            overall_gpa_from_score(adjusted_score, adjusted_credits, target_gp),
+            (gpa_current_points + future_gpa_points) / adjusted_credits,
             settings.gpa_cap,
         )
-        if adjusted_score is not None and adjusted_credits
+        if future_gpa_units and adjusted_credits
         else None
     )
 
@@ -2070,14 +2117,11 @@ def _future_guess_summary(
                 if number <= 0 or quality_points is None:
                     continue
                 future_units += number
-                future_points += number * (quality_points + boost)
+                future_points += number * (cap_gpa(quality_points, settings.gpa_cap) + boost)
         if future_units:
             adjusted_wgpa = (
-                cap_gpa(
-                    (weighted_current_points + future_points)
-                    / (weighted_current_units + future_units),
-                    settings.gpa_cap,
-                )
+                (weighted_current_points + future_points)
+                / (weighted_current_units + future_units)
                 if weighted_current_units + future_units
                 else None
             )
@@ -2140,6 +2184,7 @@ def _fumble_summary(
     target_gp: float,
     gpa_cap: float | None,
     gpa_credits: float,
+    gpa_current_points: float,
     overall_score: float,
     weighted_current_units: float,
     weighted_current_points: float,
@@ -2149,6 +2194,7 @@ def _fumble_summary(
     credits_delta = 0
     weighted_units_delta = 0.0
     weighted_points_delta = 0.0
+    gpa_points_delta = 0.0
     by_id = {}
     course_term = {}
     term_keys = {}
@@ -2204,7 +2250,7 @@ def _fumble_summary(
             else course.get("gpa_weight_boost") or 0
         )
         weighted_quality_points = (
-            float(score_quality_points) + weighted_boost
+            cap_gpa(float(score_quality_points), gpa_cap) + weighted_boost
             if score_quality_points is not None
             else None
         )
@@ -2268,6 +2314,7 @@ def _fumble_summary(
                     weighted_info["units"] if weighted_info else basis_units
                 )
                 credits_delta -= basis_units
+                gpa_points_delta -= basis_units * float(score_quality_points)
                 weighted_units_delta -= weighted_units
                 if weighted_quality_points is not None:
                     weighted_points_delta -= (
@@ -2282,14 +2329,17 @@ def _fumble_summary(
         ):
             if score_quality_points is None:
                 credits_delta += fumble_units
+                gpa_points_delta += float(fumble_units) * float(fumble.should_have_been_gp)
                 weighted_units_delta += float(fumble_units)
                 weighted_points_delta += float(fumble_units) * (
-                    float(fumble.should_have_been_gp) + weighted_boost
+                    cap_gpa(float(fumble.should_have_been_gp), gpa_cap) + weighted_boost
                 )
             elif weighted_info:
+                gpa_points_delta += float(weighted_info["units"]) * (
+                    float(fumble.should_have_been_gp) - float(score_quality_points)
+                )
                 weighted_points_delta += float(weighted_info["units"]) * (
-                    float(fumble.should_have_been_gp)
-                    + weighted_boost
+                    cap_gpa(float(fumble.should_have_been_gp), gpa_cap) + weighted_boost
                     - weighted_quality_points
                 )
 
@@ -2327,7 +2377,7 @@ def _fumble_summary(
     score_with = overall_score + total
     gpa_with = (
         cap_gpa(
-            overall_gpa_from_score(score_with, adjusted_credits, target_gp),
+            (gpa_current_points + gpa_points_delta) / adjusted_credits,
             gpa_cap,
         )
         if adjusted_credits
@@ -2335,11 +2385,7 @@ def _fumble_summary(
     )
     weighted_units = max(0, weighted_current_units + weighted_units_delta)
     weighted_points = weighted_current_points + weighted_points_delta
-    weighted_gpa_with = (
-        cap_gpa(weighted_points / weighted_units, gpa_cap)
-        if weighted_units
-        else None
-    )
+    weighted_gpa_with = weighted_points / weighted_units if weighted_units else None
     return {
         "rows": rows,
         "total": total,
@@ -2386,6 +2432,8 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
     included_terms = [t for t in terms if t["included"]]
     overall_classes = []
     overall_period_scores = {}
+    overall_period_gpas = {}
+    gpa_current_points = 0.0
     if gradebook_type == "high_school":
         # One academic-year course is one unit, distributed equally across the
         # terms that exist for that year. A one-term class in a two-term year
@@ -2430,6 +2478,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             overall_rounding_by_period,
         )
         overall_period_scores = high_school_period_scores(overall_classes, target_gp)
+        overall_period_gpas = high_school_period_gpas(overall_classes, settings.gpa_cap)
         period_included: dict[str, bool] = {}
         for term in terms:
             period = str(high_school_academic_year_key(term["year"], term["season"]))
@@ -2451,6 +2500,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             )
         ]
         gpa_credits = sum(unit for unit, _ in gpa_pairs)
+        gpa_current_points = sum(unit * quality_points for unit, quality_points in gpa_pairs)
         total_credits = sum(item["units"] for item in included_overall_classes if item["final"] is not None and course_meets_passing_cutoff(item["final"]))
         unpassed_credits = sum(item["units"] for item in included_overall_classes if item["final"] is not None and not course_meets_passing_cutoff(item["final"]))
         pass_fail_credits = 0.0
@@ -2486,6 +2536,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
             )
         ]
         gpa_credits = sum(unit for unit, _ in overall_gpa_pairs)
+        gpa_current_points = sum(unit * quality_points for unit, quality_points in overall_gpa_pairs)
         overall = cap_gpa(
             weighted_gpa(
                 overall_gpa_pairs,
@@ -2506,6 +2557,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         ]
         class_pairs = [(1.0, course["quality_points"]) for course in scored_class_courses]
         gpa_credits = float(len(class_pairs))
+        gpa_current_points = sum(unit * quality_points for unit, quality_points in class_pairs)
         total_credits = float(sum(1 for course in class_courses if course_meets_passing_cutoff(course)))
         unpassed_credits = float(sum(1 for course in class_courses if not course_meets_passing_cutoff(course)))
         # Sum each class's already-rounded fixed-unit score. Summing the raw
@@ -2555,14 +2607,14 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         else:
             tag = next((item for item in weight_tags if item["id"] == course.get("gpa_weight_tag")), None)
             boost = float(tag["boost"]) if tag else 0.0
-        weighted_pairs.append((unit, float(quality_points) + boost))
+        weighted_pairs.append((unit, cap_gpa(float(quality_points), settings.gpa_cap) + boost))
         if gradebook_type != "high_school":
             weighted_course_info[course["id"]] = {
                 "course": course,
                 "units": float(unit),
                 "boost": boost,
             }
-    weighted_overall = cap_gpa(weighted_gpa(weighted_pairs, include_zero=any(gp == 0 for _, gp in weighted_pairs)), settings.gpa_cap) if weighted_pairs else None
+    weighted_overall = weighted_gpa(weighted_pairs, include_zero=any(gp == 0 for _, gp in weighted_pairs)) if weighted_pairs else None
     weighted_current_units = sum(unit for unit, _ in weighted_pairs)
     weighted_current_points = sum(unit * quality_points for unit, quality_points in weighted_pairs)
 
@@ -2589,6 +2641,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         target_gp=target_gp,
         gpa_cap=settings.gpa_cap,
         gpa_credits=gpa_credits,
+        gpa_current_points=gpa_current_points,
         overall_score=overall_score,
         weighted_current_units=weighted_current_units,
         weighted_current_points=weighted_current_points,
@@ -2599,6 +2652,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         default_rows,
         gpa_basis,
         gpa_credits,
+        gpa_current_points,
         overall_score,
         weighted_current_units,
         weighted_current_points,
@@ -2616,6 +2670,7 @@ def build_gpa(db: Session, semester_ids: set[int] | None = None) -> dict:
         "high_school_overall_rounding_by_period": overall_rounding_by_period,
         "high_school_term_weights_by_period": term_weights_by_period,
         "high_school_period_scores": overall_period_scores,
+        "high_school_period_gpas": overall_period_gpas,
         "overall_classes": _overall_classes_payload(overall_classes),
         "semesters_remaining": settings.semesters_remaining,
         "gpa_cap": settings.gpa_cap,
@@ -2872,13 +2927,18 @@ def snapshot_term_gpa(
     pairs = []
     for course in payload.get("courses") or []:
         quality_points = snapshot_quality_points(course, weighted)
+        if weighted and quality_points is not None and gpa_cap is not None:
+            base_quality_points = snapshot_quality_points(course, False)
+            if base_quality_points is not None:
+                quality_points = cap_gpa(base_quality_points, gpa_cap) + (quality_points - base_quality_points)
         if quality_points is None:
             continue
         course = {**course, "quality_points": quality_points}
         pairs.append((unit(course), quality_points))
     if not pairs:
         return None
-    return cap_gpa(weighted_gpa(pairs, include_zero=any(gp == 0 for _, gp in pairs)), gpa_cap)
+    value = weighted_gpa(pairs, include_zero=any(gp == 0 for _, gp in pairs))
+    return cap_gpa(value, gpa_cap) if not weighted else value
 
 
 def record_grade_snapshot(

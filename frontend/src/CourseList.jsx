@@ -61,6 +61,14 @@ function weightedQualityPoints(course, highSchool = false) {
   return highSchool ? qualityPoints : qualityPoints + (Number(course.gpa_weight_boost) || 0);
 }
 
+function cappedWeightedQualityPoints(course, highSchool, cap) {
+  const weighted = Number(weightedQualityPoints(course, highSchool));
+  if (!Number.isFinite(weighted)) return weighted;
+  const boost = Number(course?.gpa_weight_boost) || 0;
+  const base = weighted - boost;
+  return Number.isFinite(cap) ? Math.min(base, cap) + boost : weighted;
+}
+
 const RESERVED_TERM_NAMES = new Set(["settings", "overall"]);
 
 function hsAcademicYearKey(semester) {
@@ -616,9 +624,10 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   };
   const termGpa = (() => {
     const graded = gradedCourses;
+    if (!graded.length) return null;
     const units = (course) => gpaSettings.gpa_basis === "classes" ? 1 : Number(course.credits) || 0;
     const totalUnits = graded.reduce((sum, course) => sum + units(course), 0);
-    if (!totalUnits) return capGpa(current.term_gpa);
+    if (!totalUnits) return null;
     // `quality_points` is the effective value for college terms, including a
     // GP override. High-school terms expose the corresponding unweighted
     // effective value as `base_quality_points`.
@@ -630,7 +639,11 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     const units = (course) => gpaSettings.gpa_basis === "classes" ? 1 : Number(course.credits) || 0;
     const totalUnits = graded.reduce((sum, course) => sum + units(course), 0);
     if (!totalUnits) return null;
-    return capGpa(graded.reduce((sum, course) => sum + Number(weightedQualityPoints(course, isHighSchool)) * units(course), 0) / totalUnits);
+    const cap = gpaSettings.gpa_cap == null || gpaSettings.gpa_cap === "" ? null : Number(gpaSettings.gpa_cap);
+    return graded.reduce((sum, course) => {
+      const points = cappedWeightedQualityPoints(course, isHighSchool, cap);
+      return sum + points * units(course);
+    }, 0) / totalUnits;
   })() : null;
 
   return (
@@ -1009,6 +1022,7 @@ function averageDelta(courses) {
 function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, semesters, termSemesters = [], courses, termWeights = {}, overallRounding = {}, overallClasses = [], termLabel = "Semester", weightedGpa = false, gpaSettings = {}, onSelectTerm, onEditPeriodName, onDeletePeriod, onChange }) {
   const [overrides, setOverrides] = useState(() => ({}));
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const showScore = useShowScore();
   const roundTermPercents = overallRounding.roundTermPercents === true;
   const roundOverallPercent = overallRounding.roundOverallPercent === true;
   const rows = useMemo(() => {
@@ -1119,7 +1133,12 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
       0,
       ...termEntries.map((entry) => Number(entry?.course?.gpa_weight_boost) || 0),
     );
-    const weightedGp = unweightedGp == null ? null : (backendClass?.weighted_quality_points ?? Number(unweightedGp) + periodWeightBoost);
+    const rawWeightedGp = unweightedGp == null ? null : (backendClass?.weighted_quality_points ?? Number(unweightedGp) + periodWeightBoost);
+    const cap = gpaSettings.gpa_cap == null || gpaSettings.gpa_cap === "" ? null : Number(gpaSettings.gpa_cap);
+    const weightedGp = rawWeightedGp == null
+      ? null
+      : (Number.isFinite(cap) ? Math.min(Number(unweightedGp), cap) : Number(unweightedGp))
+        + (Number(rawWeightedGp) - Number(unweightedGp));
     const overallScore = unweightedGp == null
       ? null
       : Math.round((Number(unweightedGp) - Number(gpaSettings.target_gp ?? 4)) * 3) * Number(classCredit || 0);
@@ -1127,6 +1146,8 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
   });
   const graded = rollups.filter((item) => item.unweightedGp != null);
   const semesterGpa = graded.length ? graded.reduce((sum, item) => sum + Number(item.unweightedGp), 0) / graded.length : null;
+  const semesterGpaCap = gpaSettings.gpa_cap == null || gpaSettings.gpa_cap === "" ? null : Number(gpaSettings.gpa_cap);
+  const cappedSemesterGpa = semesterGpa != null && Number.isFinite(semesterGpaCap) ? Math.min(semesterGpa, semesterGpaCap) : semesterGpa;
   const semesterWgpa = weightedGpa && graded.length ? graded.reduce((sum, item) => sum + Number(item.weightedGp), 0) / graded.length : null;
   const targetGp = Number(gpaSettings.target_gp ?? 4);
   const unweightedScore = graded.length
@@ -1171,10 +1192,10 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
       <div className="row topbar-actions"><button className="btn danger" type="button" onClick={onDeletePeriod}>Delete Period</button></div>
     </div>
     <div className="grid-stats semester-stats high-school-semester-stats high-school-overall-stats">
-      <div className="stat"><div className="label">{termLabel} GPA</div><div className="value">{fmtGpa(semesterGpa)}</div></div>
-      {weightedGpa ? <div className="stat"><div className="label">{termLabel} WGPA</div><div className="value">{fmtGpa(semesterWgpa)}</div></div> : null}
+      <div className="stat"><div className="label">Period GPA</div><div className="value">{fmtGpa(cappedSemesterGpa)}</div></div>
+      {weightedGpa ? <div className="stat"><div className="label">Period WGPA</div><div className="value">{fmtGpa(semesterWgpa)}</div></div> : null}
       <div className="stat stat-info-hover" tabIndex={0} aria-describedby={`overall-classes-info-${academicYearKey}`}>
-        <div className="label">{termLabel} Classes</div>
+        <div className="label">Period Classes</div>
         <div className="value mono">{graded.length}</div>
         <p className="stat-info-hover-bubble" id={`overall-classes-info-${academicYearKey}`} role="note">
           <span>Total units: {Number(unitTotal.toFixed(3)).toString()}</span>
@@ -1183,7 +1204,7 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
           )) : <span>No units yet</span>}
         </p>
       </div>
-      <div className="stat"><div className="label">Unweighted Score</div><div className={`value ${unweightedScore == null ? "" : scoreClass(unweightedScore)}`}>{fmtScore(unweightedScore)}</div></div>
+      {showScore ? <div className="stat"><div className="label">Unweighted Score</div><div className={`value ${unweightedScore == null ? "" : scoreClass(unweightedScore)}`}>{fmtScore(unweightedScore)}</div></div> : null}
     </div>
     <section className="panel table-wrap high-school-overall-wrap">
       <table className="high-school-overall-table">
@@ -1191,7 +1212,7 @@ function HighSchoolOverallView({ academicPeriodName, academicYearKey, terms, sem
         <tbody>{rollups.map((item) => <tr key={item.row.key}>
           <th>{item.row.label}<div className="overall-class-length">{displayRatio(item.classCredit)} Units</div></th>
           {terms.map((term, index) => { const entry = item.entries[index]; return <td key={term.id}>{entry ? <><div className={`overall-cell-grade ${entry.course.gp_override === -1 ? "letter-neutral" : courseGradeClass(entry.course)}`}>{displayPercent(coursePercent(entry.course))}</div><div className="overall-cell-weight">({displayPercent(entry.weight)})</div></> : null}</td>; })}
-          <td className="overall-class-summary">{item.representative ? <><div className={`overall-cell-score ${item.overallScore == null ? "muted" : scoreClass(item.overallScore)}`}>Score: {fmtScore(item.overallScore)}</div><div className={`overall-class-grade ${gradeClass(item)} ${item.override != null ? "overall-overridden-value" : ""}`}><span>{item.grade.letter || "—"}</span> <span className="mono overall-class-unweighted-gp">{fmtGpa(item.unweightedGp)}</span></div>{weightedGpa ? <div className={`overall-weighted-gp ${isNeutralWeightedGp(item.representative, item.unweightedGp, item.weightedGp) ? "weighted-gp-neutral" : ""} ${item.override != null ? "overall-overridden-value" : ""}`}>WGP: {fmtGpa(item.weightedGp)}</div> : null}</> : null}</td>
+          <td className="overall-class-summary">{item.representative ? <>{showScore ? <div className={`overall-cell-score ${item.overallScore == null ? "muted" : scoreClass(item.overallScore)}`}>Score: {fmtScore(item.overallScore)}</div> : null}<div className={`overall-class-grade ${gradeClass(item)} ${item.override != null ? "overall-overridden-value" : ""}`}><span>{item.grade.letter || "—"}</span> <span className="mono overall-class-unweighted-gp">{fmtGpa(item.unweightedGp)}</span></div>{weightedGpa ? <div className={`overall-weighted-gp ${isNeutralWeightedGp(item.representative, item.unweightedGp, item.weightedGp) ? "weighted-gp-neutral" : ""} ${item.override != null ? "overall-overridden-value" : ""}`}>WGP: <span className="mono">{fmtGpa(item.weightedGp)}</span></div> : null}</> : null}</td>
           <td className="overall-class-override">{item.representative ? <select className={`select override-select ${item.override == null ? "is-none" : ""} ${overrideGradeClass(item.override == null ? "" : item.override === -1 ? "na" : String(item.override), gpOptions(item.representative))}`} value={item.override == null ? "" : item.override === -1 ? "na" : String(item.override)} aria-label={`${item.row.label} final override`} onChange={(event) => updateOverride(item, event.target.value)}><option value="">None</option><option value="na">N/A</option>{gpOptions(item.representative).map(([letter, gp]) => <option key={letter} value={gp} className={letterClass(letter)}>{letter} ({fmtGpa(gp)})</option>)}</select> : null}</td>
          </tr>)}{!rollups.length ? <tr><td colSpan={terms.length + 3} className="muted">No classes in this academic period yet.</td></tr> : null}</tbody>
       </table>

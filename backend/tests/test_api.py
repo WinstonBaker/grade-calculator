@@ -619,6 +619,28 @@ def test_gradebook_type_is_scoped_per_gradebook(tmp_path):
         teardown()
 
 
+def test_high_school_overall_rounding_is_saved_per_gradebook(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        rounding = {"roundTermPercents": True, "roundOverallPercent": False}
+        updated = client.patch(
+            "/api/settings?gradebook_id=gradebook-1",
+            json={"gradebook_type": "high_school", "high_school_overall_rounding": rounding},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["high_school_overall_rounding"] == rounding
+
+        reread = client.get("/api/gpa?gradebook_id=gradebook-1").json()
+        assert reread["high_school_overall_rounding"] == rounding
+        assert reread["high_school_overall_rounding_by_period"]["__default__"] == rounding
+
+        other = client.get("/api/gpa?gradebook_id=gradebook-2").json()
+        assert other["high_school_overall_rounding"]["roundTermPercents"] is False
+        assert other["high_school_overall_rounding"]["roundOverallPercent"] is False
+    finally:
+        teardown()
+
+
 def test_course_name_is_shared_across_semesters(tmp_path):
     client = make_client(tmp_path)
     try:
@@ -808,7 +830,7 @@ def test_grade_prompt_is_unchanged_for_another_or_new_gradebook(tmp_path):
         teardown()
 
 
-def test_fumble_can_not_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_path):
+def test_fumble_can_not_be_added_twice_and_adjusted_gpa_matches_overall_rollup(tmp_path):
     client = make_client(tmp_path)
     try:
         sem_id = client.post(
@@ -825,10 +847,10 @@ def test_fumble_can_not_be_added_twice_and_adjusted_gpa_uses_score_formula(tmp_p
         )
         assert created.status_code == 200
         body = created.json()
-        # The B contributes -9 and the A+ contributes +3, so the adjusted
-        # score is 3 and GPA is ((3 / 3) + (4 * 3)) / 3 = 4.333.
+        # The score remains useful for the score what-if, while the adjusted
+        # GPA follows the same quality-point rollup as the actual GPA.
         assert body["score_with_fumbles"] == 3
-        assert abs(body["gpa_with_fumbles"] - 4.3333333333) < 1e-9
+        assert body["gpa_with_fumbles"] == pytest.approx(4.333)
 
         duplicate = client.post(
             "/api/fumbles", json={"course_id": cid, "should_have_been_gp": 4.0}
@@ -870,7 +892,7 @@ def test_high_school_fumble_replaces_overall_grade_from_final_override(tmp_path)
         assert body["fumbles"][0]["did_get"] == pytest.approx(4.0)
         assert body["fumbles"][0]["should_have_been_gp"] == pytest.approx(4.333)
         assert body["score_with_fumbles"] == pytest.approx(1.0)
-        assert body["gpa_with_fumbles"] == pytest.approx(4.3333333333)
+        assert body["gpa_with_fumbles"] == pytest.approx(4.333)
     finally:
         teardown()
 
@@ -1059,7 +1081,8 @@ def test_high_school_score_uses_unweighted_gpa_with_weighted_classes(tmp_path):
         )
         assert settings.status_code == 200
 
-        semester_id = client.get("/api/semesters").json()[0]["id"]
+        semester = client.get("/api/semesters").json()[0]
+        semester_id = semester["id"]
         course = client.post(
             "/api/courses",
             json={
@@ -1079,6 +1102,7 @@ def test_high_school_score_uses_unweighted_gpa_with_weighted_classes(tmp_path):
         assert gpa["overall_gpa"] == 3.0
         assert gpa["weighted_overall_gpa"] == 3.5
         assert gpa["overall_score"] == -3.0
+        assert list(gpa["high_school_period_gpas"].values()) == [{"gpa": 3.0, "wgpa": 3.5}]
     finally:
         teardown()
 
@@ -1129,6 +1153,126 @@ def test_college_term_wgpa_uses_class_weight_tag(tmp_path):
         gpa = client.get("/api/gpa").json()
         assert gpa["overall_gpa"] == pytest.approx((3.0 + 4.333) / 2)
         assert gpa["weighted_overall_gpa"] == pytest.approx((3.5 + 4.333) / 2)
+    finally:
+        teardown()
+
+
+def test_high_school_cap_limits_unweighted_wgpa_component(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        client.patch(
+            "/api/settings",
+            json={
+                "gradebook_type": "high_school",
+                "gpa_basis": "classes",
+                "gpa_cap": 4.0,
+                "gpa_weight_tags": [
+                    {"id": "unweighted", "name": "CP", "boost": 0},
+                    {"id": "weighted", "name": "Honors", "boost": 0.5},
+                ],
+            },
+        )
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "HON 101",
+                "gp_override": 4.333,
+                "gpa_weight_tag": "weighted",
+            },
+        ).json()
+
+        assert course["quality_points"] == 4.833
+        gpa = client.get("/api/gpa").json()
+        assert gpa["overall_gpa"] == 4.0
+        assert gpa["weighted_overall_gpa"] == 4.5
+        assert list(gpa["high_school_period_gpas"].values()) == [{"gpa": 4.0, "wgpa": 4.5}]
+        assert gpa["overall_classes"][0]["quality_points"] == 4.333
+    finally:
+        teardown()
+
+
+def test_fumbles_and_future_guess_cap_only_unweighted_gpa_component(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={
+                "gradebook_type": "high_school",
+                "gpa_basis": "classes",
+                "gpa_cap": 4.0,
+                "gpa_weight_tags": [
+                    {"id": "unweighted", "name": "CP", "boost": 0},
+                    {"id": "weighted", "name": "Honors", "boost": 0.5},
+                ],
+            },
+        )
+        assert settings.status_code == 200
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "HON 101",
+                "gp_override": 4.333,
+                "gpa_weight_tag": "weighted",
+            },
+        ).json()
+
+        fumble = client.post(
+            "/api/fumbles",
+            json={"course_id": course["id"], "should_have_been_gp": 4.333},
+        )
+        assert fumble.status_code == 200
+        fumble_body = fumble.json()
+        assert fumble_body["gpa_with_fumbles"] == pytest.approx(4.0)
+        assert fumble_body["weighted_gpa_with_fumbles"] == pytest.approx(4.5)
+
+        future = client.patch(
+            "/api/settings",
+            json={"future_guess": {"weighted": {"weighted": {"A+": 1}}}},
+        )
+        assert future.status_code == 200
+        future_body = future.json()["future_guess"]
+        assert future_body["adjusted_gpa"] == pytest.approx(4.0)
+        assert future_body["adjusted_wgpa"] == pytest.approx(4.5)
+    finally:
+        teardown()
+
+
+def test_gpa_cap_limits_weighted_inputs_without_changing_course_gpa(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        settings = client.patch(
+            "/api/settings",
+            json={
+                "gpa_cap": 4.0,
+                "gpa_weight_tags": [
+                    {"id": "unweighted", "name": "Unweighted", "boost": 0},
+                    {"id": "weighted", "name": "Weighted", "boost": 0.5},
+                ],
+            },
+        )
+        assert settings.status_code == 200
+        semester_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={
+                "semester_id": semester_id,
+                "code": "HON 401",
+                "credits": 3,
+                "gp_override": 4.333,
+                "gpa_weight_tag": "weighted",
+            },
+        ).json()
+
+        assert course["quality_points"] == 4.333
+        gpa = client.get("/api/gpa").json()
+        assert gpa["overall_gpa"] == 4.0
+        assert gpa["weighted_overall_gpa"] == 4.5
+        assert gpa["terms"][0]["term_gpa"] == 4.0
+        assert gpa["terms"][0]["term_wgpa"] == 4.5
     finally:
         teardown()
 

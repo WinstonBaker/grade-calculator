@@ -804,7 +804,7 @@ export function examNeededRows(course, examCategoryId) {
     });
 }
 
-export function pointsExamNeededRows(course, examPossible) {
+export function pointsExamNeededRows(course, examPossible, examCategoryId = null) {
   const denominator = Number(examPossible);
   if (!Number.isFinite(denominator) || denominator <= 0) return [];
   let earned = 0;
@@ -817,6 +817,19 @@ export function pointsExamNeededRows(course, examPossible) {
       }
       for (const item of category.assignments || []) {
         if (item.earned != null && Number(item.possible) === 0) earned += Number(item.earned);
+      }
+      continue;
+    }
+    // When a final-exam category is selected, the entered final score
+    // replaces that category's regular assignments. Do not add the original
+    // category totals as well, or the exam is counted twice.
+    if (category.id === examCategoryId) {
+      for (const item of category.assignments || []) {
+        if (
+          item.is_bonus
+          && item.earned != null
+          && (category.include_bonus || item.possible == null || Number(item.possible) === 0)
+        ) earned += Number(item.earned);
       }
       continue;
     }
@@ -835,7 +848,7 @@ export function pointsExamNeededRows(course, examPossible) {
       possible += Number.isFinite(itemPossible) && itemPossible > 0 ? itemPossible : 100;
     }
   }
-  if (possible <= 0) return [];
+  if (possible <= 0 && examCategoryId == null) return [];
   return (course?.scale || [])
     .filter((row) => row.letter !== "F")
     .map((row) => {
@@ -851,7 +864,7 @@ export function pointsExamNeededRows(course, examPossible) {
     });
 }
 
-export function pointsPercentFromExam(course, examPossible, examEarned) {
+export function pointsPercentFromExam(course, examPossible, examEarned, examCategoryId = null) {
   const denominator = Number(examPossible);
   const earnedExam = Number(examEarned);
   if (!Number.isFinite(denominator) || denominator <= 0 || !Number.isFinite(earnedExam)) return null;
@@ -865,6 +878,18 @@ export function pointsPercentFromExam(course, examPossible, examEarned) {
       }
       for (const item of category.assignments || []) {
         if (item.earned != null && Number(item.possible) === 0) earned += Number(item.earned);
+      }
+      continue;
+    }
+    // A selected final-exam category is represented by the entered exam
+    // numerator/denominator above, so exclude its original regular scores.
+    if (category.id === examCategoryId) {
+      for (const item of category.assignments || []) {
+        if (
+          item.is_bonus
+          && item.earned != null
+          && (category.include_bonus || item.possible == null || Number(item.possible) === 0)
+        ) earned += Number(item.earned);
       }
       continue;
     }

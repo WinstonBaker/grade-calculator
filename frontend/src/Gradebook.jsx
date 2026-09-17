@@ -526,9 +526,13 @@ function speculativeCategoryPercent(category, categories, seen = new Set()) {
       Math.max(Number(category.replace_count ?? 0) || 0, 0),
       scores.length,
     );
-    if (replacement != null) {
+    if (replacement != null && Number.isFinite(replacement)) {
       for (let index = 0; index < replacements; index += 1) {
         const lowest = Math.min(...scores);
+        // A replacement only applies when it improves the lowest kept grade.
+        // In particular, a speculative zero from an empty replacement
+        // category must not replace an existing graded assignment.
+        if (replacement <= lowest) break;
         scores.splice(scores.indexOf(lowest), 1, replacement);
       }
     }
@@ -658,7 +662,7 @@ function courseGradeInterval(course, currentCourse = course) {
   };
 }
 
-function GradeInterval({ interval, speculationMode = false, onFill }) {
+function GradeInterval({ interval, speculationMode = false, onFill, onClear }) {
   if (!interval) return null;
   const position = Math.max(
     0,
@@ -669,38 +673,56 @@ function GradeInterval({ interval, speculationMode = false, onFill }) {
       className="grade-interval"
       aria-label={`Possible grade range from ${fmtPct(interval.minimum)}% to ${fmtPct(interval.maximum)}%; current grade ${fmtPct(interval.current)}%`}
     >
-      <span className="grade-interval-caption">
-        Possible Grade Range
-        <Tooltip
-          anchor="icon"
-          text={`Minimum class grade fills in remaining grades with 0's, providing a lower bound on the grade, and maximum fills in remaining grades with 100s, providing an upper bound. Tip: enter ungraded points based assignments as "/5" where 5 is the total number of points in the assignment; ungraded percent based assignments only need to exist/be named to be included in this grade range calculation`}
-        />
-      </span>
-      {speculationMode && interval.fillableAssignments.length ? (
-        <div className="grade-interval-actions">
-          <button
-            className="grade-interval-fill-button"
-            type="button"
-            aria-label="Fill ungraded assignments with minimum scores"
-            title="Fill ungraded assignments with minimum scores"
-            onClick={() => onFill?.("minimum")}
-          >
-            +
-          </button>
-          <button
-            className="grade-interval-fill-button"
-            type="button"
-            aria-label="Fill ungraded assignments with maximum scores"
-            title="Fill ungraded assignments with maximum scores"
-            onClick={() => onFill?.("maximum")}
-          >
-            +
-          </button>
-        </div>
-      ) : null}
+      <div className="grade-interval-heading">
+        <span className="grade-interval-caption">
+          Possible Grade Range
+          <Tooltip
+            anchor="icon"
+            text={`Minimum class grade fills in remaining grades with 0's, providing a lower bound on the grade, and maximum fills in remaining grades with 100s, providing an upper bound. Tip: enter ungraded points based assignments as "/5" where 5 is the total number of points in the assignment; ungraded percent based assignments only need to exist/be named to be included in this grade range calculation`}
+          />
+        </span>
+        {speculationMode && interval.fillableAssignments.length ? (
+          <div className="grade-interval-action-group">
+            <div className="grade-interval-actions">
+              <button
+                className="grade-interval-fill-button"
+                type="button"
+                aria-label="Fill ungraded assignments with minimum scores"
+                title="Fill ungraded assignments with minimum scores"
+                onClick={() => onFill?.("minimum")}
+              >
+                ↑ Apply Minimum
+              </button>
+              <button
+                className="grade-interval-fill-button"
+                type="button"
+                aria-label="Fill ungraded assignments with maximum scores"
+                title="Fill ungraded assignments with maximum scores"
+                onClick={() => onFill?.("maximum")}
+              >
+                Apply Maximum ↑
+              </button>
+            </div>
+            <button
+              className="grade-interval-clear-button"
+              type="button"
+              aria-label="Clear all speculative grades"
+              title="Clear all speculative grades"
+              onClick={onClear}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+      </div>
       <div className="grade-interval-labels mono">
-        <span>{fmtPct(interval.minimum)}%</span>
-        {!interval.currentBeyondCalculatedMaximum ? <span>{fmtPct(interval.maximum)}%</span> : null}
+        <span className="grade-interval-minimum-label">{fmtPct(interval.minimum)}%</span>
+        <span
+          className={`grade-interval-maximum-label${interval.maximumTickPosition >= 99.999 ? " grade-interval-maximum-label-at-end" : ""}`}
+          style={{ left: `${interval.maximumTickPosition}%` }}
+        >
+          {fmtPct(interval.calculatedMaximum)}%
+        </span>
       </div>
       <div
         className="grade-interval-track"
@@ -711,11 +733,7 @@ function GradeInterval({ interval, speculationMode = false, onFill }) {
         <span
           className="grade-interval-boundary grade-interval-end"
           style={{ left: `${interval.maximumTickPosition}%` }}
-        >
-          {interval.currentBeyondCalculatedMaximum ? (
-            <span className="grade-interval-boundary-label">{fmtPct(interval.calculatedMaximum)}%</span>
-          ) : null}
-        </span>
+        />
         {interval.cutoffs.map(({ letter, percent, position: cutoffPosition }) => (
           <span
             className="grade-interval-cutoff"
@@ -1000,6 +1018,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const [categoryModal, setCategoryModal] = useState(null);
   const [dragCatId, setDragCatId] = useState(null);
   const [speculativeScores, setSpeculativeScores] = useState({});
+  const [speculativeBulkAssignmentIds, setSpeculativeBulkAssignmentIds] = useState(new Set());
   const dragCatIdRef = useRef(null);
   const dragStartOrderRef = useRef(null);
   const categoriesRef = useRef([]);
@@ -1031,7 +1050,10 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   }
 
   useEffect(() => {
-    if (!speculationMode) setSpeculativeScores({});
+    if (!speculationMode) {
+      setSpeculativeScores({});
+      setSpeculativeBulkAssignmentIds(new Set());
+    }
   }, [speculationMode]);
 
   useEffect(() => {
@@ -1412,7 +1434,9 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     const ids = new Set(eligible.map((c) => c.id));
     if (examCatId === undefined) {
       const savedId = course.exam_category_id;
-      setExamCatId(savedId != null && ids.has(savedId) ? savedId : defaultExamCategoryId(eligible));
+      setExamCatId(savedId != null && ids.has(savedId)
+        ? savedId
+        : course.grading_mode === "points" ? null : defaultExamCategoryId(eligible));
       return;
     }
     if (examCatId != null && !ids.has(examCatId)) {
@@ -1429,16 +1453,43 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const displayCoursePercent = displayCourse.percent;
   const pointsSummary = displayCourse.grading_mode === "points" ? pointsCourseSummary(displayCourse) : null;
   const percentSummary = displayCourse.grading_mode === "weighted" ? weightedCourseSummary(displayCourse) : null;
-  // Keep the interval's min/max and fill targets based on the real course. In
-  // speculation mode, displayCourse may have every blank filled temporarily;
-  // using it as the range source would make the interval disappear. Only the
-  // current marker should follow those speculative values.
-  const gradeInterval = courseGradeInterval(course, displayCourse);
+  // Keep bulk fill values out of the range source so the interval remains
+  // visible while speculation is active, but let edits to existing grades
+  // update the range's calculated bounds.
+  const intervalSpeculativeScores = Object.fromEntries(
+    Object.entries(speculativeScores).filter(([assignmentId]) => (
+      !speculativeBulkAssignmentIds.has(String(assignmentId))
+    )),
+  );
+  const intervalCourse = speculativeCourseFromScores(course, intervalSpeculativeScores);
+  const gradeInterval = courseGradeInterval(intervalCourse, displayCourse);
   const actualGradeCourse = displayCourse.credit_mode === "pass_fail"
     ? { ...displayCourse, pass_fail_override: null }
     : displayCourse;
-  const trueGrade = trueGradeFromCourse({ ...actualGradeCourse, percent: displayCoursePercent });
   const speculationPreview = speculationMode && Object.keys(speculativeScores).length > 0;
+  const trueGrade = trueGradeFromCourse({
+    ...actualGradeCourse,
+    percent: displayCoursePercent,
+    ...(speculationPreview ? { natural_score: null } : {}),
+  });
+  const examTableSpeculative = speculationPreview && (() => {
+    if (course.grading_mode !== "points" || examCatId == null) return true;
+    const originalExamCategory = course.categories.find((category) => category.id === examCatId);
+    const displayedExamCategory = displayCourse.categories.find((category) => category.id === examCatId);
+    if (finalExamCategoryPoints(originalExamCategory) !== finalExamCategoryPoints(displayedExamCategory)) return true;
+
+    // A numerator-only speculation inside the selected exam category does not
+    // change the grade-needed table: the table replaces that category with the
+    // hypothetical final score. Changes elsewhere still change the targets.
+    return Object.keys(speculativeScores).some((assignmentId) => {
+      const owner = course.categories.find((category) => (
+        category.assignments || []).some((assignment) => String(assignment.id) === String(assignmentId)
+      ));
+      return !owner || owner.id !== examCatId || owner.assignments?.some(
+        (assignment) => String(assignment.id) === String(assignmentId) && assignment.is_bonus
+      );
+    });
+  })();
   const hasOverride = courseHasOverride(course, trueGrade);
   const showFailingPassFailMetrics = !speculationPreview && passFailGradeAffectsGpa(displayCourse, displayCourse.letter);
   const pctLetter = hasOverride ? course.letter : trueGrade.letter || course.letter;
@@ -1464,6 +1515,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
       gradeInterval.fillableAssignments.map(({ id, minimum, maximum }) => [id, bound === "minimum" ? minimum : maximum]),
     );
     setSpeculativeScores((current) => ({ ...current, ...values }));
+    setSpeculativeBulkAssignmentIds((current) => new Set([
+      ...current,
+      ...gradeInterval.fillableAssignments.map(({ id }) => String(id)),
+    ]));
+  }
+
+  function clearSpeculativeAssignments() {
+    setSpeculativeScores({});
+    setSpeculativeBulkAssignmentIds(new Set());
   }
 
   async function setBonusMode(mode) {
@@ -1548,7 +1608,10 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
       <div className="gradebook-header">
         <div className="gradebook-header-title">
           <p className="muted">
-            <Link to={`/courses?gradebook=${gradebookId}&term=${course.semester_id}`}>
+            <Link
+              className="gradebook-semester-link"
+              to={`/courses?gradebook=${gradebookId}&term=${course.semester_id}`}
+            >
               {highSchoolMode ? `${academicPeriodNames[String(highSchoolAcademicYearKey(semesters.find((s) => s.id === course.semester_id)))] || highSchoolAcademicYearLabel(semesters.find((s) => s.id === course.semester_id))} / ${highSchoolTermName(semesters.find((s) => s.id === course.semester_id))}` : collegeSemesterName(semesters.find((s) => s.id === course.semester_id))}
             </Link>{" "}
             /
@@ -1960,7 +2023,13 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           onClick={() => setShowExamCalc((v) => !v)}
         >
           <span className={`term-accordion-chevron ${showExamCalc ? "open" : ""}`}>▸</span>
-          Final Exam Grade Needed Table
+          <span>Final Exam Grade Needed Table</span>
+          <Tooltip
+            side="right"
+            text={`Course grade if this final exam scores a given percent, and what you need for each cutoff.${course.grade_rounding != null
+              ? ` Targets assume the final percent is rounded to ${ROUNDING_NOTE[course.grade_rounding] || "the set precision"}.`
+              : ""}`}
+          />
         </button>
       </div>
       <div className={showExamCalc ? "split" : undefined}>
@@ -1996,17 +2065,36 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
               speculativeScores={speculativeScores}
               onSpeculativeScoreChange={(assignmentId, raw) => {
                 setSpeculativeScores((current) => ({ ...current, [assignmentId]: raw }));
+                setSpeculativeBulkAssignmentIds((current) => {
+                  const id = String(assignmentId);
+                  if (!current.has(id)) return current;
+                  const next = new Set(current);
+                  next.delete(id);
+                  return next;
+                });
               }}
               onSpeculativeCompositeChange={(assignmentId, composite) => {
                 setSpeculativeScores((current) => ({
                   ...current,
                   [assignmentId]: { composite, categoryAggregation: cat.aggregation },
                 }));
+                setSpeculativeBulkAssignmentIds((current) => {
+                  const id = String(assignmentId);
+                  if (!current.has(id)) return current;
+                  const next = new Set(current);
+                  next.delete(id);
+                  return next;
+                });
               }}
             />
             );
           })}
-          <button className="btn" type="button" onClick={() => setCategoryModal({ mode: "create" })}>
+          <button
+            className="btn"
+            type="button"
+            disabled={speculationMode}
+            onClick={() => setCategoryModal({ mode: "create" })}
+          >
             Add category
           </button>
         </div>
@@ -2018,7 +2106,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
             onExamCatId={saveExamCategory}
             onExamScoreRaw={setExamScoreRaw}
             onExamTotalPointsChange={saveExamTotalPoints}
-            speculative={speculationPreview}
+            speculative={examTableSpeculative}
           />
         ) : null}
       </div>
@@ -2027,6 +2115,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           interval={gradeInterval}
           speculationMode={speculationMode}
           onFill={fillSpeculativeAssignments}
+          onClear={clearSpeculativeAssignments}
         />
       ) : null}
       {categoryModal ? (
@@ -2388,6 +2477,25 @@ function ScaleEditor({ course, profiles, presets, onSave, onApply, onRoundingCha
   );
 }
 
+function finalExamCategoryPoints(category) {
+  const total = (category?.assignments || []).reduce((sum, assignment) => {
+    if (assignment?.is_bonus) return sum;
+    const explicitPossible = Number(assignment?.possible);
+    if (Number.isFinite(explicitPossible) && explicitPossible > 0) return sum + explicitPossible;
+
+    const display = String(assignment?.display ?? "").trim();
+    const expression = parseScoreExpression(display);
+    if (expression && Number.isFinite(expression.possible) && expression.possible > 0) {
+      return sum + expression.possible;
+    }
+    const ratio = display.match(/^(-?\d+(?:\.\d+)?)\s*[/,]\s*(-?\d+(?:\.\d+)?)$/);
+    if (ratio && Number.isFinite(Number(ratio[2])) && Number(ratio[2]) > 0) return sum + Number(ratio[2]);
+    const denominatorOnly = display.match(/^\/\s*(-?\d+(?:\.\d+)?)$/);
+    return denominatorOnly && Number(denominatorOnly[1]) > 0 ? sum + Number(denominatorOnly[1]) : sum;
+  }, 0);
+  return total > 0 ? total : null;
+}
+
 function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw, onExamTotalPointsChange, speculative = false }) {
   const rounding = course.grade_rounding ?? null;
   const resolvedId = examCatId ?? null;
@@ -2402,6 +2510,12 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
       course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
     );
   }, [course.id, course.exam_total_points, pointsMode]);
+
+  const examCat = course.categories.find((c) => c.id === resolvedId);
+  const selectedCategoryPoints = pointsMode && selected ? finalExamCategoryPoints(examCat) : null;
+  const effectiveExamTotalPointsRaw = pointsMode && selected
+    ? selectedCategoryPoints == null ? "" : formatGradeNumber(selectedCategoryPoints)
+    : examTotalPointsRaw;
 
   async function commitExamTotalPoints() {
     const text = examTotalPointsRaw.trim();
@@ -2421,41 +2535,43 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   const examPct = assignmentPercent({ display: examScoreRaw, isBonus: false });
   const examScoreDisplay = examScoreEditing ? examScoreRaw : formatExamScoreDisplay(examScoreRaw);
   const projected = useMemo(() => {
-    if (pointsMode) return pointsPercentFromExam(course, examTotalPointsRaw, examScoreRaw);
+    if (pointsMode) {
+      return pointsPercentFromExam(
+        course,
+        effectiveExamTotalPointsRaw,
+        examScoreRaw,
+        selected ? resolvedId : null,
+      );
+    }
     return selected ? projectPercentFromExam(course, resolvedId, examPct) : null;
-  }, [course, resolvedId, examPct, selected, pointsMode, examTotalPointsRaw, examScoreRaw]);
+  }, [course, resolvedId, examPct, selected, pointsMode, effectiveExamTotalPointsRaw, examScoreRaw]);
   const grade = gradeFromPercent(projected, course.scale, rounding);
   const needed = useMemo(
-    () => (pointsMode ? pointsExamNeededRows(course, examTotalPointsRaw) : selected ? examNeededRows(course, resolvedId) : []),
-    [course, resolvedId, selected, pointsMode, examTotalPointsRaw]
+    () => (pointsMode
+      ? pointsExamNeededRows(course, effectiveExamTotalPointsRaw, selected ? resolvedId : null)
+      : selected ? examNeededRows(course, resolvedId) : []),
+    [course, resolvedId, selected, pointsMode, effectiveExamTotalPointsRaw]
   );
   const blankRows = useMemo(
     () => (course.scale || []).filter((row) => row.letter !== "F").map((row) => ({ letter: row.letter })),
     [course.scale]
   );
-  const examCat = course.categories.find((c) => c.id === resolvedId);
   const hasWeight = pointsMode
-    ? Number(examTotalPointsRaw) > 0
+    ? Number(effectiveExamTotalPointsRaw) > 0
     : Boolean(examCat && (examCat.weight || examCat.weight_per_item || examCat.effective_weight));
   const tableRows = pointsMode
-    ? (Number(examTotalPointsRaw) > 0 ? needed : blankRows)
+    ? (Number(effectiveExamTotalPointsRaw) > 0 ? needed : blankRows)
     : selected ? needed : blankRows;
 
   return (
     <div className="panel exam-calc-panel">
-      <p className="muted">
-        Course grade if this final exam scores a given percent, and what you need for each cutoff.
-        {rounding != null
-          ? ` Targets assume the final percent is rounded to ${ROUNDING_NOTE[rounding] || "the set precision"}.`
-          : ""}
-      </p>
       {course.categories.length === 0 ? (
         <p className="muted">Add a category for the exam first.</p>
       ) : (
         <>
           <div className="exam-calc-fields">
-              {pointsMode ? null : <label className="muted">
-                Final exam category
+            <label className="muted">
+              Final Exam Category
               <select
                 className="select"
                 style={{ display: "block", marginTop: 4, width: "100%" }}
@@ -2469,7 +2585,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                   </option>
                 ))}
               </select>
-            </label>}
+            </label>
             {pointsMode ? (
               <label className="muted">
                 Total Points on Final Exam
@@ -2478,15 +2594,17 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                   style={{ display: "block", marginTop: 4, width: "100%" }}
                   inputMode="decimal"
                   placeholder="20"
-                  value={examTotalPointsRaw}
+                  value={effectiveExamTotalPointsRaw}
+                  readOnly={selected}
+                  aria-readonly={selected ? "true" : undefined}
                   onChange={(e) => setExamTotalPointsRaw(e.target.value)}
                   onBlur={commitExamTotalPoints}
                 />
               </label>
             ) : null}
             <label className="muted">
-              {pointsMode && Number(examTotalPointsRaw) > 0
-                ? `Final exam score (out of ${formatGradeNumber(examTotalPointsRaw)})`
+              {pointsMode && Number(effectiveExamTotalPointsRaw) > 0
+                ? `Final exam score (out of ${formatGradeNumber(effectiveExamTotalPointsRaw)})`
                 : "Final exam score"}
               <input
                 className="input"
@@ -2499,13 +2617,13 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
               />
             </label>
           </div>
-          {(pointsMode ? examTotalPointsRaw.trim() && examScoreRaw.trim() && projected != null : selected && examScoreRaw.trim() && projected != null) ? (
+          {(pointsMode ? effectiveExamTotalPointsRaw.trim() && examScoreRaw.trim() && projected != null : selected && examScoreRaw.trim() && projected != null) ? (
             <div className="exam-preview">
               <span className={`letter ${letterClass(grade.letter)}`}>{grade.letter || "—"}</span>
               <strong className={`mono exam-pct ${letterClass(grade.letter)}`}>{fmtPct(projected)}%</strong>
               <span className="mono">{fmtGpa(grade.quality_points)}</span>
             </div>
-          ) : (pointsMode ? examTotalPointsRaw.trim() && examScoreRaw.trim() && projected == null : selected && examScoreRaw.trim() && projected == null) ? (
+          ) : (pointsMode ? effectiveExamTotalPointsRaw.trim() && examScoreRaw.trim() && projected == null : selected && examScoreRaw.trim() && projected == null) ? (
             <p className="muted">
               {course.grading_mode === "points"
                 ? "Enter a valid final exam score to preview the course grade."
@@ -2538,7 +2656,9 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
                   <tr key={row.letter}>
                     <td
                       className={`mono exam-cutoff-exam-cell ${speculative ? "speculative-exam-percent" : ""} ${
-                        row.needed > 100 ? "neg" : row.needed < 0 ? "pos" : ""
+                        (pointsMode ? row.needed_percent : row.needed) > 100
+                          ? "neg"
+                          : (pointsMode ? row.needed_percent : row.needed) < 0 ? "pos" : ""
                       }`}
                     >
               {pointsMode
@@ -3821,6 +3941,30 @@ function CategoryCard({
       setFocusedScoreId(null);
     }
   }, [speculationMode]);
+
+  useEffect(() => {
+    setScoreDrafts((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([assignmentId]) => (
+          Object.prototype.hasOwnProperty.call(speculativeScores, assignmentId)
+        )),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setScoreErrors((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([assignmentId]) => (
+          Object.prototype.hasOwnProperty.call(speculativeScores, assignmentId)
+        )),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setFocusedScoreId((current) => (
+      current != null && !Object.prototype.hasOwnProperty.call(speculativeScores, current)
+        ? null
+        : current
+    ));
+  }, [speculativeScores]);
 
   useEffect(() => {
     return () => {
