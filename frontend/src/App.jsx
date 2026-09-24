@@ -1362,8 +1362,10 @@ export default function App() {
               },
             };
           });
-          setAcademicPeriodDraft("");
         }
+        const createdPeriodName = isHighSchool ? academicPeriodDraft.trim() : "";
+        setAcademicPeriodDraft("");
+        setYear("");
         setGradebookMembers((current) => {
           const existing = current[selectedGradebookId]
             ?? (selectedGradebookId === "gradebook-1" ? semesters.map((semester) => String(semester.id)) : []);
@@ -1373,7 +1375,7 @@ export default function App() {
           };
         });
         navigate(isHighSchool
-          ? `/courses?gradebook=${selectedGradebookId}&academicPeriod=${encodeURIComponent(academicPeriodDraft.trim())}&term=${created.id}`
+          ? `/courses?gradebook=${selectedGradebookId}&academicPeriod=${encodeURIComponent(createdPeriodName)}&term=${created.id}`
           : `/courses?gradebook=${selectedGradebookId}&term=${created.id}`);
       } catch (err) {
         warning(err.message);
@@ -1422,6 +1424,8 @@ export default function App() {
       };
     });
     setGradebookMembers((current) => ({ ...current, [selectedGradebookId]: [...new Set([...(current[selectedGradebookId] || []), String(created.id)])] }));
+    setAcademicPeriodDraft("");
+    setYear("");
     await refresh();
   }
 
@@ -1675,7 +1679,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} />} />
+            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} colorAssignmentGrades={activeAppearance.gradeColors} />} />
             <Route
               path="/settings"
               element={

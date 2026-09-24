@@ -547,6 +547,18 @@ function speculativeCategoryPercent(category, categories, seen = new Set()) {
   return (sumNumbers(scores) + assignmentBonuses) / scores.length + categoryBonuses;
 }
 
+function speculativeCategoryEffectiveWeight(category) {
+  if (category?.weight_per_item != null) {
+    const itemWeight = Number(category.weight_per_item);
+    if (!Number.isFinite(itemWeight)) return 0;
+    const scoredItems = (category.assignments || []).filter((assignment) => (
+      !assignment.is_bonus && assignment.earned != null
+    )).length;
+    return itemWeight * scoredItems;
+  }
+  return Number(category?.effective_weight ?? category?.weight) || 0;
+}
+
 function sumNumbers(values) {
   return values.reduce((sum, value) => sum + Number(value), 0);
 }
@@ -773,6 +785,12 @@ function speculativeCourseFromScores(course, scores) {
     percent: course.grading_mode === "weighted"
       ? speculativeCategoryPercent(category, mappedCategories)
       : category.percent,
+    effective_weight: course.grading_mode === "weighted"
+      ? speculativeCategoryEffectiveWeight(category)
+      : category.effective_weight,
+    score_count: course.grading_mode === "weighted"
+      ? (category.assignments || []).filter((assignment) => !assignment.is_bonus && assignment.earned != null).length
+      : category.score_count,
   }));
   const next = { ...course, categories, speculative: true };
   if (course.grading_mode === "weighted") {
@@ -789,7 +807,7 @@ function weightedCourseSummary(course) {
   const regular = (course?.categories || []).filter((category) => !category.is_bonus_category);
   const used = regular
     .map((category) => [
-      Number(category.effective_weight ?? category.weight),
+      speculativeCategoryEffectiveWeight(category),
       course?.speculative ? speculativeCategoryPercent(category, course.categories) : Number(category.percent),
     ])
     .filter(([weight, percent]) => Number.isFinite(weight) && weight > 0 && Number.isFinite(percent));

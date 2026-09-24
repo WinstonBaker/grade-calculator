@@ -110,7 +110,7 @@ function HighSchoolEditModeToggle({ value, onChange, weightedGpa, ariaLabel = "E
   );
 }
 
-export default function CourseList({ semesters, academicPeriods = [], onChange, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, onAcademicPeriodDelete, classType = "alphanumeric", gradebookType = "college", semesterTitles = [], highSchoolTerms: configuredHighSchoolTerms, highSchoolTermWeights = {}, highSchoolOverallRoundingByPeriod = {}, weightedGpa = false, termLabel = "Semester", termNames = {}, academicYearKey, academicPeriodName, onAcademicPeriodChange, onSemesterCreated, dataLoaded = true, gradebookId = null }) {
+export default function CourseList({ semesters, academicPeriods = [], onChange, flags = [], classLabels = [], courseLabels = {}, onAppearanceChange, onAcademicPeriodDelete, classType = "alphanumeric", gradebookType = "college", semesterTitles = [], highSchoolTerms: configuredHighSchoolTerms, highSchoolTermWeights = {}, highSchoolOverallRoundingByPeriod = {}, weightedGpa = false, termLabel = "Semester", termNames = {}, academicYearKey, academicPeriodName, onAcademicPeriodChange, onSemesterCreated, dataLoaded = true, gradebookId = null, colorAssignmentGrades = true }) {
   const creditTerms = useCreditTerms();
   const showScore = useShowScore();
   const periodLabel = String(termLabel || "Term").trim() || "Term";
@@ -991,6 +991,13 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         weightedGpa={weightedGpa}
         currentGpa={termGpa}
         currentWgpa={termWgpa}
+        currentScore={current.term_score}
+        courses={courses}
+        targetGp={Number(gpaSettings.target_gp ?? 4)}
+        gpaBasis={gpaSettings.gpa_basis || "credits"}
+        highSchoolMode={isHighSchool}
+        colorAssignmentGrades={colorAssignmentGrades}
+        showScore={showScore}
         hasGpaOverrides={courses.some((course) => course.gp_override != null || course.pass_fail_override != null)}
       />
 

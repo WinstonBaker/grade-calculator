@@ -2260,9 +2260,49 @@ th button.active {
   padding: 16px 18px;
   background: var(--bg-raised);
   border: 0;
-  cursor: pointer;
+  cursor: default;
   text-align: left;
   color: inherit;
+}
+
+.term-accordion-link {
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
+}
+
+.term-accordion-link:hover,
+.term-accordion-link:focus {
+  color: inherit;
+  text-decoration: none;
+}
+
+.term-accordion-toggle {
+  display: inline-flex;
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.term-accordion-toggle:hover,
+.term-accordion-toggle:focus-visible {
+  color: var(--text);
+  border-color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.term-accordion-toggle.open .term-accordion-chevron {
+  transform: rotate(90deg);
 }
 
 .term-accordion-head:hover {
@@ -2304,9 +2344,33 @@ th button.active {
 }
 
 .term-accordion-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  left: 0.17em;
+  width: 1em;
+  height: 1em;
   font-family: "IBM Plex Mono", monospace;
+  font-size: inherit;
+  line-height: 1;
   color: var(--muted);
   flex-shrink: 0;
+  transform-origin: 33.333% 50%;
+}
+
+/* A mathematical equilateral triangle has its centroid one third of the
+   way from its vertical base.  Position that centroid at the circle center
+   and rotate around it, so the arrow never appears to drift when opened. */
+.term-accordion-toggle .term-accordion-chevron {
+  position: absolute;
+  left: calc(50% - 3.257834px);
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  display: block;
+  transform-box: view-box;
+  transform-origin: 3.257834px 4px;
 }
 
 .term-accordion-body {
@@ -4520,6 +4584,7 @@ th button.active {
 .gpa-trends-chart {
   width: 100%;
   overflow-x: auto;
+  position: relative;
 }
 
 .gpa-trends-empty {
@@ -6057,6 +6122,7 @@ th button.active {
 }
 
 .grade-progress {
+  position: relative;
   margin-top: 16px;
   margin-bottom: 18px;
 }
@@ -6138,6 +6204,20 @@ th button.active {
   opacity: 0.45;
 }
 
+.grade-progress-zone {
+  pointer-events: none;
+}
+
+.grade-progress-zone-high {
+  fill: var(--green);
+  opacity: 0.035;
+}
+
+.grade-progress-zone-low {
+  fill: var(--red, #e76f51);
+  opacity: 0.035;
+}
+
 .grade-progress-major-grid {
   opacity: 0.9;
 }
@@ -6145,6 +6225,52 @@ th button.active {
 .grade-progress-gpa {
   stroke-width: 2.75;
   stroke-dasharray: 5 4;
+}
+
+.grade-progress-axis-spacing {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.grade-progress-axis-spacing button {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.grade-progress-axis-spacing span {
+  display: inline-grid;
+  place-items: center;
+  width: 6px;
+  height: 16px;
+  line-height: 1;
+}
+
+.grade-progress > .grade-progress-axis-spacing {
+  right: 16px;
+  bottom: 12px;
+}
+
+.grade-progress-axis-spacing button:hover,
+.grade-progress-axis-spacing button.active {
+  color: var(--text);
 }
 
 .grade-progress-dot {
