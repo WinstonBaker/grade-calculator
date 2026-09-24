@@ -1649,6 +1649,7 @@ export default function App() {
                   colorFlaggedAssignments={activeAppearance.colorFlaggedAssignments}
                   readableTextBackground={activeAppearance.readableTextBackground}
                   gradebookId={selectedGradebookId}
+                  primaryColor={activeAppearance.primary}
                 />
               }
             />
@@ -1679,7 +1680,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} colorAssignmentGrades={activeAppearance.gradeColors} />} />
+            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} colorAssignmentGrades={activeAppearance.gradeColors} primaryColor={activeAppearance.primary} tertiaryColor={activeAppearance.tertiary} />} />
             <Route
               path="/settings"
               element={

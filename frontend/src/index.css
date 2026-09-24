@@ -6200,6 +6200,29 @@ th button.active {
   stroke-linejoin: round;
 }
 
+.grade-progress-line-foreground {
+  stroke-width: 3;
+}
+
+.grade-progress.has-foreground-series .grade-progress-line,
+.grade-progress.has-foreground-series .grade-progress-gpa,
+.grade-progress.has-foreground-series .grade-progress-dot,
+.grade-progress.has-foreground-series .grade-progress-overlap-segment {
+  opacity: 0.24;
+}
+
+.grade-progress.has-foreground-series .grade-progress-line-foreground,
+.grade-progress.has-foreground-series .grade-progress-dot.is-foreground-course,
+.grade-progress.has-foreground-series .grade-progress-dot.is-foreground-overall,
+.grade-progress.has-foreground-series .grade-progress-overlap-segment.is-foreground-course,
+.grade-progress.has-foreground-series .grade-progress-overlap-segment.is-foreground-overall {
+  opacity: 1;
+}
+
+.grade-progress.has-foreground-overall .grade-progress-gpa {
+  opacity: 1;
+}
+
 .grade-progress-minor-grid {
   opacity: 0.45;
 }
@@ -6255,7 +6278,22 @@ th button.active {
   cursor: pointer;
 }
 
-.grade-progress-axis-spacing span {
+.grade-progress-axis-spacing-icon {
+  box-sizing: border-box;
+  display: block;
+  height: 9px;
+  border: 1px solid currentColor;
+}
+
+.grade-progress-axis-spacing-icon-square {
+  width: 9px;
+}
+
+.grade-progress-axis-spacing-icon-rectangle {
+  width: 14px;
+}
+
+.grade-progress-axis-spacing > span {
   display: inline-grid;
   place-items: center;
   width: 6px;
@@ -6275,22 +6313,18 @@ th button.active {
 
 .grade-progress-dot {
   stroke: var(--bg);
-  stroke-width: 2.5;
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
   cursor: pointer;
 }
 
-.grade-progress-overlap-center {
-  fill: var(--bg-raised);
-  stroke: var(--bg);
-  stroke-width: 1.5;
-  pointer-events: none;
-  vector-effect: non-scaling-stroke;
+.grade-progress-dot:focus {
+  outline: none;
 }
 
 .grade-progress-overlap-segment {
   stroke: var(--bg);
-  stroke-width: 1.5;
+  stroke-width: 0.75;
   cursor: pointer;
   vector-effect: non-scaling-stroke;
   transition: opacity 100ms ease, stroke-width 100ms ease;
@@ -6300,7 +6334,7 @@ th button.active {
 .grade-progress-overlap-segment:focus,
 .grade-progress-overlap-segment.is-selected {
   stroke: var(--gold);
-  stroke-width: 2.5;
+  stroke-width: 2;
   outline: none;
 }
 

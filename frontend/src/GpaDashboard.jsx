@@ -894,16 +894,9 @@ function trendTermGpa(term, weighted, classBasis, periodMode, weightTags, gpaCap
   return weighted || gpaCap == null ? value : Math.min(value, Number(gpaCap));
 }
 
-function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, colorAssignmentGrades = true, periodMode = false, periodOrder = [], semesterTitles = [], weightedGpa = false, showScore = true, weightTags = [], termLabel = "Semester" }) {
+function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, colorAssignmentGrades = true, periodMode = false, periodOrder = [], semesterTitles = [], weightedGpa = false, showScore = true, weightTags = [], termLabel = "Semester", primaryColor = "#c084fc", tertiaryColor = "#8bb4e8" }) {
   const [hover, setHover] = useState(null);
   const [metric, setMetric] = useState("gpa");
-  const [axisSpacing, setAxisSpacing] = useState(() => {
-    try {
-      return window.localStorage.getItem("grade-progress-axis-spacing") === "value" ? "value" : "uniform";
-    } catch {
-      return "uniform";
-    }
-  });
   const classBasis = useGpaBasis() === "classes";
   const metricLabel = metric === "score" ? "Score" : metric === "wgpa" ? "WGPA" : "GPA";
   const termPluralLabel = pluralizeTermLabel(termLabel);
@@ -915,14 +908,6 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
       setHover(null);
     }
   }, [showScore, weightedGpa, metric]);
-
-  useEffect(() => {
-    function onAxisSpacingChanged(event) {
-      if (event.detail === "uniform" || event.detail === "value") setAxisSpacing(event.detail);
-    }
-    window.addEventListener("grade-progress-axis-spacing", onAxisSpacingChanged);
-    return () => window.removeEventListener("grade-progress-axis-spacing", onAxisSpacingChanged);
-  }, []);
 
   const points = useMemo(() => {
     // Keep excluded terms in the ordered axis data so their labels remain
@@ -1059,22 +1044,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
   for (let value = yMin; value <= yMax + 1e-8; value += tickStep) {
     yTicks.push(Number(value.toFixed(3)));
   }
-  const pointTime = (point) => {
-    const raw = point?.recorded_at || point?.date || point?.created_at;
-    if (!raw) return 0;
-    const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(String(raw)) ? String(raw) : `${raw}Z`;
-    const parsed = new Date(normalized).getTime();
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-  const pointTimes = points.map(pointTime);
-  const minTime = pointTimes.length ? Math.min(...pointTimes) : 0;
-  const maxTime = pointTimes.length ? Math.max(...pointTimes) : 0;
-  const x = (index) => {
-    const normalized = axisSpacing === "value" && maxTime > minTime
-      ? (pointTimes[index] - minTime) / (maxTime - minTime)
-      : points.length === 1 ? 0.5 : index / Math.max(1, points.length - 1);
-    return margin.left + Math.max(0, Math.min(1, normalized)) * plotWidth;
-  };
+  const x = (index) => margin.left + (points.length === 1 ? 0.5 : index / Math.max(1, points.length - 1)) * plotWidth;
   const y = (value) => margin.top + ((yMax - value) / (yMax - yMin)) * plotHeight;
   const line = (key) => points
     .map((point, index) => Number.isFinite(point[key]) ? `${x(index)},${y(point[key])}` : null)
@@ -1082,17 +1052,6 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
     .join(" ");
   const active = hover == null ? null : points[hover];
   const targetY = y(metric === "score" ? 0 : Number(targetGp));
-  const setGlobalAxisSpacing = (next) => {
-    if (next !== "uniform" && next !== "value") return;
-    setAxisSpacing(next);
-    try {
-      window.localStorage.setItem("grade-progress-axis-spacing", next);
-    } catch {
-      // Local storage can be unavailable in private or embedded contexts.
-    }
-    window.dispatchEvent(new CustomEvent("grade-progress-axis-spacing", { detail: next }));
-  };
-
   return (
     <section className="panel gpa-trends" aria-label="GPA trends">
       <div className="gpa-trends-head">
@@ -1116,8 +1075,8 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
           ) : null}
         </div>
         <div className="gpa-trends-legend" aria-label="Chart legend">
-          <span><i className="semester" />{termLabel} {metricLabel}</span>
-          <span><i className="cumulative" />Cumulative {metricLabel}</span>
+          <span><i className="semester" style={{ background: tertiaryColor }} />{termLabel} {metricLabel}</span>
+          <span><i className="cumulative" style={{ background: primaryColor }} />Cumulative {metricLabel}</span>
         </div>
       </div>
       <div className="gpa-trends-chart">
@@ -1127,7 +1086,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
           aria-label={`${termLabel} and cumulative ${metricLabel} over time`}
           onMouseLeave={() => setHover(null)}
         >
-          {colorAssignmentGrades ? (
+          {colorAssignmentGrades && metric !== "wgpa" ? (
             <>
               <rect className="grade-progress-zone grade-progress-zone-high" x={margin.left} y={margin.top} width={plotWidth} height={Math.max(0, Math.min(plotHeight, targetY - margin.top))} />
               <rect className="grade-progress-zone grade-progress-zone-low" x={margin.left} y={Math.max(margin.top, targetY)} width={plotWidth} height={Math.max(0, margin.top + plotHeight - Math.max(margin.top, targetY))} />
@@ -1158,8 +1117,8 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
             />
           </clipPath>
           <g clipPath="url(#gpa-trend-reveal)">
-            <polyline className="gpa-trend-line semester" points={line(semesterKey)} />
-            <polyline className="gpa-trend-line cumulative" points={line(cumulativeKey)} />
+            <polyline className="gpa-trend-line semester" style={{ stroke: tertiaryColor }} points={line(semesterKey)} />
+            <polyline className="gpa-trend-line cumulative" style={{ stroke: primaryColor }} points={line(cumulativeKey)} />
           </g>
           {points.map((point, index) => (
             <g key={point.id}>
@@ -1176,6 +1135,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
               {Number.isFinite(point[semesterKey]) ? (
                 <circle
                   className="gpa-trend-dot semester"
+                  style={{ fill: tertiaryColor, stroke: tertiaryColor }}
                   cx={x(index)}
                   cy={y(point[semesterKey])}
                   r={hover === index ? 6 : 4}
@@ -1185,6 +1145,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
               {Number.isFinite(point[cumulativeKey]) ? (
                 <circle
                   className="gpa-trend-dot cumulative"
+                  style={{ fill: primaryColor, stroke: primaryColor }}
                   cx={x(index)}
                   cy={y(point[cumulativeKey])}
                   r={hover === index ? 6 : 4}
@@ -1202,11 +1163,6 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
             </g>
           ))}
         </svg>
-        <div className="grade-progress-axis-spacing" role="group" aria-label="Date spacing">
-          <button type="button" className={axisSpacing === "uniform" ? "active" : ""} aria-label="Uniform date spacing" aria-pressed={axisSpacing === "uniform"} onClick={() => setGlobalAxisSpacing("uniform")}>□</button>
-          <span aria-hidden="true">|</span>
-          <button type="button" className={axisSpacing === "value" ? "active" : ""} aria-label="Date spacing by elapsed time" aria-pressed={axisSpacing === "value"} onClick={() => setGlobalAxisSpacing("value")}>▭</button>
-        </div>
       </div>
       <div className="gpa-trends-detail" aria-live="polite">
         {active ? (
@@ -2430,7 +2386,7 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
   );
 }
 
-export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", semesterTitles = [], highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period", minCreditsValue = "1", onMinCreditsChange, colorAssignmentGrades = true }) {
+export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", semesterTitles = [], highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period", minCreditsValue = "1", onMinCreditsChange, colorAssignmentGrades = true, primaryColor = "#c084fc", tertiaryColor = "#8bb4e8" }) {
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
   const showScore = useShowScore();
@@ -3279,6 +3235,8 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
         showScore={showScore}
         weightTags={data.gpa_weight_tags}
         termLabel={termLabel}
+        primaryColor={primaryColor}
+        tertiaryColor={tertiaryColor}
       />
 
       <section className="panel dashboard-summary-panel" style={{ marginTop: 16 }}>

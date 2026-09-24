@@ -215,6 +215,7 @@ class GradeSnapshot(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     term_gpa: Mapped[float | None] = mapped_column(Float, nullable=True)
     term_wgpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    term_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     # JSON: [{"course_id":1,"code":"MAE 310","percent":92.5}]
     courses_json: Mapped[str] = mapped_column(Text, default="[]")
 

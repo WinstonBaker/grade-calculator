@@ -1814,6 +1814,53 @@ def test_snapshot_skips_ungraded_and_edits_points(tmp_path):
         teardown()
 
 
+def test_snapshot_aggregate_values_survive_individual_point_deletion(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        courses = []
+        for code, score in (("CSC 101", "90"), ("CSC 202", "80")):
+            course = client.post(
+                "/api/courses", json={"semester_id": sem_id, "code": code, "credits": 3}
+            ).json()
+            category = client.post(
+                "/api/categories",
+                json={"course_id": course["id"], "name": "Exams", "weight": 1, "aggregation": "average"},
+            ).json()
+            client.post(
+                "/api/assignments",
+                json={"category_id": category["id"], "name": "Exam", "score": score},
+            )
+            courses.append(course)
+
+        snapshot = client.post(f"/api/semesters/{sem_id}/snapshots").json()
+        aggregate = {
+            key: snapshot[key]
+            for key in ("term_gpa", "term_wgpa", "term_score")
+        }
+        assert all(value is not None for value in aggregate.values())
+
+        removed = client.request(
+            "DELETE",
+            f"/api/semesters/{sem_id}/snapshots",
+            json={"course_points": [{"snapshot_id": snapshot["id"], "course_id": courses[0]["id"]}]},
+        )
+        assert removed.status_code == 200
+        remaining = client.get(f"/api/semesters/{sem_id}/snapshots").json()
+        assert len(remaining) == 1
+        assert [row["course_id"] for row in remaining[0]["courses"]] == [courses[1]["id"]]
+        assert {key: remaining[0][key] for key in aggregate} == aggregate
+
+        client.request(
+            "DELETE",
+            f"/api/semesters/{sem_id}/snapshots",
+            json={"course_points": [{"snapshot_id": snapshot["id"], "course_id": courses[1]["id"]}]},
+        )
+        assert client.get(f"/api/semesters/{sem_id}/snapshots").json() == []
+    finally:
+        teardown()
+
+
 def test_deleting_course_removes_its_saved_progression_points(tmp_path):
     client = make_client(tmp_path)
     try:

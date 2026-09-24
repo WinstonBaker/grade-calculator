@@ -2812,6 +2812,7 @@ def serialize_grade_snapshot(snapshot: GradeSnapshot) -> dict:
         "recorded_at": recorded_at.isoformat() if recorded_at else None,
         "term_gpa": snapshot.term_gpa,
         "term_wgpa": snapshot.term_wgpa,
+        "term_score": snapshot.term_score,
         "courses": courses,
     }
 
@@ -2874,7 +2875,7 @@ def _semester_has_recordable_grades(semester: Semester) -> bool:
 
 def _snapshot_is_empty(snapshot: GradeSnapshot) -> bool:
     courses = [row for row in _parse_snapshot_courses(snapshot) if _course_has_percent(row)]
-    return not courses and snapshot.term_gpa is None and snapshot.term_wgpa is None
+    return not courses and snapshot.term_gpa is None and snapshot.term_wgpa is None and snapshot.term_score is None
 
 
 def _clear_snapshot_aggregates_if_no_courses(snapshot: GradeSnapshot) -> None:
@@ -2883,6 +2884,7 @@ def _clear_snapshot_aggregates_if_no_courses(snapshot: GradeSnapshot) -> None:
     if not courses:
         snapshot.term_gpa = None
         snapshot.term_wgpa = None
+        snapshot.term_score = None
 
 
 def _prune_empty_snapshot(db: Session, snapshot: GradeSnapshot) -> bool:
@@ -2966,6 +2968,7 @@ def record_grade_snapshot(
     )
     recorded_term_gpa = snapshot_term_gpa(payload, gpa_cap, gpa_basis, gradebook_type)
     recorded_term_wgpa = snapshot_term_gpa(payload, gpa_cap, gpa_basis, gradebook_type, weighted=True)
+    recorded_term_score = payload.get("term_score")
     courses = [
         {
             "course_id": course["id"],
@@ -2993,6 +2996,7 @@ def record_grade_snapshot(
             recorded_at=now,
             term_gpa=recorded_term_gpa,
             term_wgpa=recorded_term_wgpa,
+            term_score=recorded_term_score,
             courses_json=json.dumps(courses),
         )
         db.add(snapshot)
@@ -3000,6 +3004,7 @@ def record_grade_snapshot(
         snapshot.recorded_at = now
         snapshot.term_gpa = recorded_term_gpa
         snapshot.term_wgpa = recorded_term_wgpa
+        snapshot.term_score = recorded_term_score
         snapshot.courses_json = json.dumps(courses)
     settings = settings_for_gradebook(db)
     global_settings = db.get(Settings, 1)
@@ -3037,6 +3042,7 @@ def patch_grade_snapshot(
     if clear_term_gpa:
         snapshot.term_gpa = None
         snapshot.term_wgpa = None
+        snapshot.term_score = None
     elif term_gpa is not None:
         snapshot.term_gpa = float(term_gpa)
     if course_id is not None:
@@ -3255,10 +3261,10 @@ def delete_grade_snapshots(
             db.delete(row)
             removed += 1
 
-    gpa_ids = {int(item) for item in (gpa_snapshot_ids or []) if item is not None}
-    valid_gpa_ids = _same_day_snapshot_ids(db, semester_id, gpa_ids)
-
-    touched_ids = (set(by_snapshot) | valid_gpa_ids) - deleted_snapshot_ids
+    # Aggregate checkpoint values are not independently deletable: they are
+    # the saved GPA/WGPA/Score summary for that day's class percentages and
+    # disappear automatically only after its last class point is removed.
+    touched_ids = set(by_snapshot) - deleted_snapshot_ids
     if touched_ids:
         rows = (
             db.query(GradeSnapshot)
@@ -3283,17 +3289,19 @@ def delete_grade_snapshots(
                 removed += len(original_courses) - len(courses)
                 before_gpa = row.term_gpa
                 before_wgpa = row.term_wgpa
+                before_score = row.term_score
                 _clear_snapshot_aggregates_if_no_courses(row)
                 if before_gpa != row.term_gpa:
                     removed += 1
                 if before_wgpa != row.term_wgpa:
                     removed += 1
+                if before_score != row.term_score:
+                    removed += 1
                 changed = True
-            if row.id in valid_gpa_ids and (row.term_gpa is not None or row.term_wgpa is not None):
-                row.term_gpa = None
-                row.term_wgpa = None
-                removed += 1
-                changed = True
+            # Overall checkpoint values are derived when the point is recorded
+            # and intentionally survive removal of individual class points.
+            # They are cleared only by _clear_snapshot_aggregates_if_no_courses
+            # after the last class point for that day has been removed.
             if changed and _prune_empty_snapshot(db, row):
                 continue
 
@@ -3321,10 +3329,13 @@ def delete_course_grade_points(db: Session, semester_id: int, course_id: int) ->
         removed += len(courses) - len(remaining)
         before_gpa = snapshot.term_gpa
         before_wgpa = snapshot.term_wgpa
+        before_score = snapshot.term_score
         _clear_snapshot_aggregates_if_no_courses(snapshot)
         if before_gpa != snapshot.term_gpa:
             removed += 1
         if before_wgpa != snapshot.term_wgpa:
+            removed += 1
+        if before_score != snapshot.term_score:
             removed += 1
         _prune_empty_snapshot(db, snapshot)
     return removed
