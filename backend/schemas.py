@@ -160,7 +160,7 @@ class ScaleProfileUpdate(BaseModel):
 
 class SettingsUpdate(BaseModel):
     target_letter: str | None = None
-    semesters_remaining: float | None = None
+    semesters_remaining: int | None = Field(default=None, ge=1)
     gpa_cap: float | None = None
     fail_pass_fail_affects_gpa: bool | None = None
     future_guess: dict[str, Any] | None = None

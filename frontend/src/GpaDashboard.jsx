@@ -3028,11 +3028,19 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
                 {pluralizeTermLabel(termLabel)} remaining
                 <input
                   className="input"
+                  type="number"
+                  min="1"
+                  step="1"
                   style={{ display: "block", marginTop: 4, width: 90 }}
                   defaultValue={data.semesters_remaining}
-                  onBlur={async (e) =>
-                    apply(await api.patchSettings({ semesters_remaining: Number(e.target.value) }))
-                  }
+                  onBlur={async (e) => {
+                    const value = Number(e.target.value);
+                    if (!Number.isInteger(value) || value < 1) {
+                      e.currentTarget.value = String(data.semesters_remaining || 1);
+                      return;
+                    }
+                    apply(await api.patchSettings({ semesters_remaining: value }, gradebookId));
+                  }}
                 />
               </label>
             </>

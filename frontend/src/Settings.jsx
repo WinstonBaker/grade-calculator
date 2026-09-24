@@ -2539,7 +2539,15 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                   </label>
                   <label className="muted">
                     Semesters remaining
-                    <input className="input" type="number" min="0" step="0.5" defaultValue={data.semesters_remaining} onBlur={(e) => updateSettings({ semesters_remaining: Number(e.target.value) })} />
+                    <input className="input" type="number" min="1" step="1" defaultValue={data.semesters_remaining} onBlur={(e) => {
+                      const value = Number(e.target.value);
+                      if (!Number.isInteger(value) || value < 1) {
+                        e.currentTarget.value = String(data.semesters_remaining || 1);
+                        setError("Semesters remaining must be a whole number of at least 1.");
+                        return;
+                      }
+                      updateSettings({ semesters_remaining: value });
+                    }} />
                   </label>
                 </div>
               ) : null}

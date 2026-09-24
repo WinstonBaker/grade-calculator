@@ -6254,6 +6254,7 @@ th button.active {
   position: absolute;
   right: 12px;
   bottom: 8px;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -6283,6 +6284,7 @@ th button.active {
   display: block;
   height: 9px;
   border: 1px solid currentColor;
+  pointer-events: none;
 }
 
 .grade-progress-axis-spacing-icon-square {

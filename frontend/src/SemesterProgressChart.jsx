@@ -223,7 +223,9 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     return units > 0 ? Math.round(3 * (gp - Number(targetGp)) * units) : null;
   };
   const snapshotScore = (snapshot) => {
-    if (Number.isFinite(Number(snapshot?.term_score))) return Number(snapshot.term_score);
+    if (snapshot?.term_score != null && Number.isFinite(Number(snapshot.term_score))) {
+      return Number(snapshot.term_score);
+    }
     // Checkpoints recorded before the persisted score field was introduced
     // retain their prior display behavior until recorded again.
     return (snapshot?.courses || [])

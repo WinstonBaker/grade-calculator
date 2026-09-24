@@ -1579,7 +1579,9 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if body.target_letter is not None:
         settings.target_letter = body.target_letter
     if body.semesters_remaining is not None:
-        settings.semesters_remaining = body.semesters_remaining
+        if body.semesters_remaining < 1:
+            raise HTTPException(400, "Semesters remaining must be at least 1")
+        settings.semesters_remaining = int(body.semesters_remaining)
     if "gpa_cap" in body.model_fields_set:
         if body.gpa_cap is not None and body.gpa_cap <= 0:
             raise HTTPException(400, "GPA cap must be greater than zero")

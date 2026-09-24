@@ -45,7 +45,7 @@ def _settings_payload(db: Session, gradebook_id: str) -> dict:
     values = _gradebook_values(settings, gradebook_id) if settings else dict(GRADEBOOK_SETTING_DEFAULTS)
     return {
         "target_letter": str(values.get("target_letter") or "A"),
-        "semesters_remaining": float(values.get("semesters_remaining") or 0),
+        "semesters_remaining": max(1, int(values.get("semesters_remaining") or 1)),
         "gpa_cap": values.get("gpa_cap"),
         "fail_pass_fail_affects_gpa": values.get("fail_pass_fail_affects_gpa") is True,
         "future_guess": _json(values.get("future_guess_json"), {}),
@@ -340,7 +340,7 @@ def _persist_settings(db: Session, gradebook_id: str, raw: dict, replace: bool) 
     current["default_scale_json"] = settings.default_scale_json
     current.update({
         "target_letter": str(source.get("target_letter") or current["target_letter"]),
-        "semesters_remaining": float(source.get("semesters_remaining") or 0),
+        "semesters_remaining": max(1, int(source.get("semesters_remaining") or 1)),
         "gpa_cap": source.get("gpa_cap"),
         "fail_pass_fail_affects_gpa": source.get("fail_pass_fail_affects_gpa") is True,
         "future_guess_json": json.dumps(source.get("future_guess") if isinstance(source.get("future_guess"), dict) else {}),

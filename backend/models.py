@@ -169,7 +169,7 @@ class Settings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     target_letter: Mapped[str] = mapped_column(String(8), default="A")
-    semesters_remaining: Mapped[float] = mapped_column(Float, default=8)
+    semesters_remaining: Mapped[int] = mapped_column(Integer, default=8)
     gpa_cap: Mapped[float | None] = mapped_column(Float, nullable=True)
     fail_pass_fail_affects_gpa: Mapped[bool] = mapped_column(Boolean, default=False)
     future_guess_json: Mapped[str] = mapped_column(Text, default="{}")

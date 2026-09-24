@@ -619,6 +619,30 @@ def test_gradebook_type_is_scoped_per_gradebook(tmp_path):
         teardown()
 
 
+def test_semesters_remaining_is_scoped_and_requires_a_positive_integer(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        updated = client.patch(
+            "/api/settings?gradebook_id=gradebook-2",
+            json={"semesters_remaining": 5},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["semesters_remaining"] == 5
+        assert client.get("/api/gpa?gradebook_id=gradebook-2").json()["semesters_remaining"] == 5
+        assert client.get("/api/gpa?gradebook_id=gradebook-1").json()["semesters_remaining"] == 8
+
+        assert client.patch(
+            "/api/settings?gradebook_id=gradebook-2",
+            json={"semesters_remaining": 0},
+        ).status_code == 422
+        assert client.patch(
+            "/api/settings?gradebook_id=gradebook-2",
+            json={"semesters_remaining": 2.5},
+        ).status_code == 422
+    finally:
+        teardown()
+
+
 def test_high_school_overall_rounding_is_saved_per_gradebook(tmp_path):
     client = make_client(tmp_path)
     try:
