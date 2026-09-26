@@ -489,12 +489,7 @@ export function applyThemeColors({
   root.style.setProperty("--gold", primaryHex);
   root.style.setProperty("--gold-dim", `rgba(${primaryRgb.r}, ${primaryRgb.g}, ${primaryRgb.b}, 0.16)`);
   root.style.setProperty("--blue", tertiaryHex);
-  root.style.setProperty(
-    "--sidebar-bg",
-    isLight
-      ? `rgba(${secondaryRgb.r}, ${secondaryRgb.g}, ${secondaryRgb.b}, 0.94)`
-      : `rgba(${secondaryRgb.r}, ${secondaryRgb.g}, ${secondaryRgb.b}, 0.92)`
-  );
+  root.style.setProperty("--sidebar-bg", secondaryHex);
   root.style.setProperty(
     "--surface-soft",
     isLight ? `rgba(${textRgb.r}, ${textRgb.g}, ${textRgb.b}, 0.04)` : "rgba(255, 255, 255, 0.02)"

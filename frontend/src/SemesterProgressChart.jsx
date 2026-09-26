@@ -447,6 +447,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const progressionLineGroups = (() => {
     const groups = new Map();
     const overallSegments = [];
+    const sharedCoursePoints = new Map();
     const addSegment = (startIndex, endIndex, previousValue, currentValue, entry) => {
       if (previousValue == null || currentValue == null
         || !Number.isFinite(Number(previousValue)) || !Number.isFinite(Number(currentValue))) return;
@@ -474,6 +475,23 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       : snapshotGpa(snap);
 
     if (showClasses) {
+      // A connector touching a shared-value pie cannot belong visually to a
+      // single course. Track every class at each plotted value so both sides
+      // of the shared point become neutral, rather than allowing the later
+      // rendered course line to hide the earlier one.
+      displayedSnapshots.forEach((snap, index) => {
+        series.forEach((item) => {
+          const value = courseValue(snap, item.courseId);
+          if (value == null || !Number.isFinite(Number(value))) return;
+          const key = `${index}:${Number(value).toFixed(6)}`;
+          let courseIds = sharedCoursePoints.get(key);
+          if (!courseIds) {
+            courseIds = new Set();
+            sharedCoursePoints.set(key, courseIds);
+          }
+          courseIds.add(item.courseId);
+        });
+      });
       series.forEach((item) => {
         let previousPoint = null;
         displayedSnapshots.forEach((snap, index) => {
@@ -508,7 +526,11 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     }
 
     const classGroups = [...groups.values()].map((group) => {
-      const color = group.entries.length > 1
+      const sharedEndpoint = [
+        `${group.startIndex}:${group.previousValue.toFixed(6)}`,
+        `${group.endIndex}:${group.currentValue.toFixed(6)}`,
+      ].some((key) => (sharedCoursePoints.get(key)?.size || 0) > 1);
+      const color = group.entries.length > 1 || sharedEndpoint
         ? "var(--muted)"
         : group.entries[0]?.color;
       return {

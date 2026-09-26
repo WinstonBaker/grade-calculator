@@ -522,6 +522,7 @@ export default function App() {
   const [gradebookAppearance, setGradebookAppearance] = useState({});
   const [minCredits, setMinCredits] = useState("1");
   const [gradebookMenuOpen, setGradebookMenuOpen] = useState(false);
+  const [sidebarOverlayOpen, setSidebarOverlayOpen] = useState(false);
   const [gradebookCreateOpen, setGradebookCreateOpen] = useState(false);
   const [gradebookNameDraft, setGradebookNameDraft] = useState("");
   const gradebookMenuRef = useRef(null);
@@ -547,6 +548,19 @@ export default function App() {
   useEffect(() => {
     gradebooksRef.current = gradebooks;
   }, [gradebooks]);
+
+  useEffect(() => {
+    setSidebarOverlayOpen(false);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!sidebarOverlayOpen) return undefined;
+    function closeSidebar(event) {
+      if (event.key === "Escape") setSidebarOverlayOpen(false);
+    }
+    document.addEventListener("keydown", closeSidebar);
+    return () => document.removeEventListener("keydown", closeSidebar);
+  }, [sidebarOverlayOpen]);
   const selectedSemester = query.get("term") || query.get("semester");
   gradePromptViewRef.current = {
     gradebookId: selectedGradebookId,
@@ -1462,7 +1476,28 @@ export default function App() {
   return (
     <CreditLabelProvider appearance={activeAppearance} gpaBasis={gpaBasis}>
       <div className="app">
-        <aside className="sidebar">
+        <button
+          className={`sidebar-overlay-toggle ${sidebarOverlayOpen ? "active" : ""}`}
+          type="button"
+          aria-label={sidebarOverlayOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={sidebarOverlayOpen}
+          onClick={() => setSidebarOverlayOpen((current) => !current)}
+        >
+          <svg viewBox="0 0 18 27" aria-hidden="true">
+            <circle cx="9" cy="5" r="1.8" />
+            <circle cx="9" cy="13.5" r="1.8" />
+            <circle cx="9" cy="22" r="1.8" />
+          </svg>
+        </button>
+        {sidebarOverlayOpen ? (
+          <button className="sidebar-overlay-scrim" type="button" aria-label="Close navigation" onClick={() => setSidebarOverlayOpen(false)} />
+        ) : null}
+        {isClassView && speculationMode && !sidebarOverlayOpen ? (
+          <div className="mobile-speculation-toggle">
+            <SpeculationToggle enabled={speculationMode} onToggle={toggleSpeculationMode} />
+          </div>
+        ) : null}
+        <aside className={`sidebar ${sidebarOverlayOpen ? "is-overlay-open" : ""}`}>
           <div className="brand">
             <h1>Grade Calculator</h1>
           </div>

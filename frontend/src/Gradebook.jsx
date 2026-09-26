@@ -1940,7 +1940,9 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                     key="category-bonus"
                     className="input"
                     aria-label="Total bonus"
-                    value={bonusCategory?.percent == null ? "+0%" : `+${formatBonusNumber(bonusCategory.percent)}%`}
+                    value={course.grading_mode === "points"
+                      ? `+${formatGradeNumber(bonusCategory?.percent || 0)} pts`
+                      : bonusCategory?.percent == null ? "+0%" : `+${formatBonusNumber(bonusCategory.percent)}%`}
                     readOnly
                     aria-readonly="true"
                   />
