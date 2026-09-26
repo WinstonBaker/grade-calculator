@@ -475,10 +475,9 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       : snapshotGpa(snap);
 
     if (showClasses) {
-      // A connector touching a shared-value pie cannot belong visually to a
-      // single course. Track every class at each plotted value so both sides
-      // of the shared point become neutral, rather than allowing the later
-      // rendered course line to hide the earlier one.
+      // Track every class at each plotted value. A connector is neutral only
+      // when it joins two shared-value pies; a pie-to-single-point connector
+      // remains the color of the class it belongs to.
       displayedSnapshots.forEach((snap, index) => {
         series.forEach((item) => {
           const value = courseValue(snap, item.courseId);
@@ -526,11 +525,11 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     }
 
     const classGroups = [...groups.values()].map((group) => {
-      const sharedEndpoint = [
+      const joinsTwoSharedPies = [
         `${group.startIndex}:${group.previousValue.toFixed(6)}`,
         `${group.endIndex}:${group.currentValue.toFixed(6)}`,
-      ].some((key) => (sharedCoursePoints.get(key)?.size || 0) > 1);
-      const color = group.entries.length > 1 || sharedEndpoint
+      ].every((key) => (sharedCoursePoints.get(key)?.size || 0) > 1);
+      const color = group.entries.length > 1 || joinsTwoSharedPies
         ? "var(--muted)"
         : group.entries[0]?.color;
       return {
