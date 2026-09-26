@@ -6226,7 +6226,8 @@ th button.active {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  background: transparent;
+  outline: 1px solid var(--line);
+  background: var(--surface-soft);
 }
 
 .grade-progress .tooltip-heading {
@@ -6236,7 +6237,7 @@ th button.active {
 .grade-progress-toggle button {
   border: 0;
   border-radius: 7px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   background: transparent;
   color: var(--muted);
   font: inherit;
