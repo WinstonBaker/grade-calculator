@@ -2135,6 +2135,37 @@ def test_empty_bonus_score_is_valid_in_points_course(tmp_path):
         teardown()
 
 
+def test_weighted_points_category_accepts_denominator_only_placeholder(tmp_path):
+    client = make_client(tmp_path)
+    try:
+        sem_id = client.get("/api/semesters").json()[0]["id"]
+        course = client.post(
+            "/api/courses",
+            json={"semester_id": sem_id, "code": "MATH 203", "credits": 3},
+        ).json()
+        category = client.post(
+            "/api/categories",
+            json={
+                "course_id": course["id"],
+                "name": "Homework",
+                "weight": 1,
+                "aggregation": "points_ratio",
+            },
+        ).json()
+
+        response = client.post(
+            "/api/assignments",
+            json={"category_id": category["id"], "name": "Homework 1", "score": "/115"},
+        )
+        assert response.status_code == 200
+        assignment = response.json()["categories"][0]["assignments"][0]
+        assert assignment["earned"] is None
+        assert assignment["possible"] == 115
+        assert assignment["score_input"] == "/115"
+    finally:
+        teardown()
+
+
 def test_bonus_percent_mode_uses_single_percent_value(tmp_path):
     client = make_client(tmp_path)
     try:

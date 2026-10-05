@@ -864,6 +864,266 @@ export function pointsExamNeededRows(course, examPossible, examCategoryId = null
     });
 }
 
+function remainingAverageCategoryBonus(category) {
+  const assignments = category.assignments || [];
+  const assignmentBonus = assignments
+    .filter((item) => item.is_bonus && item.bonus_type !== "category" && item.earned != null)
+    .reduce((sum, item) => sum + Number(item.earned), 0);
+  const categoryBonus = assignments
+    .filter((item) => item.is_bonus && item.bonus_type === "category" && item.earned != null)
+    .reduce((sum, item) => sum + Number(item.earned), 0);
+  return { assignmentBonus, categoryBonus };
+}
+
+function remainingAverageCourseBonus(course) {
+  if (course.bonus_mode === "category") {
+    return (course.categories || [])
+      .filter((category) => category.is_bonus_category && category.aggregation !== "points_ratio")
+      .reduce((sum, category) => sum + (Number(category.percent) || 0), 0);
+  }
+  if (course.bonus_mode === "none" || course.bonus_mode === "static_points") return 0;
+  return Number(course.bonus_points) || 0;
+}
+
+function placeholderPossible(item) {
+  const explicit = Number(item?.possible);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const display = String(item?.display ?? "").trim();
+  const expression = parseScoreExpression(display);
+  if (expression && Number.isFinite(expression.possible) && expression.possible > 0) {
+    return expression.possible;
+  }
+  const denominator = display.match(/^\/?\s*(-?\d+(?:\.\d+)?)\s*$/);
+  return denominator && display.includes("/") && Number(denominator[1]) > 0
+    ? Number(denominator[1])
+    : null;
+}
+
+// Targets are displayed to two decimal places. Always round them upward so
+// entering the value shown by the table reaches the intended cutoff instead
+// of losing a fraction of a point to display rounding.
+function roundUpGradeTarget(value, digits = 2) {
+  if (!Number.isFinite(Number(value))) return value;
+  const factor = 10 ** digits;
+  return Math.ceil(Number(value) * factor - 1e-9) / factor;
+}
+
+function remainingProjectionItems(category, sharedPercent) {
+  const regular = (category.assignments || [])
+    .filter((item) => !item.is_bonus)
+    .map((item) => {
+      const percent = assignmentPercent({
+        display: item.display,
+        earned: item.earned,
+        possible: item.possible,
+        isBonus: false,
+      });
+      const possible = placeholderPossible(item) || 100;
+      return {
+        percent: percent == null ? Number(sharedPercent) : Number(percent),
+        possible,
+        earned: percent == null ? (Number(sharedPercent) / 100) * possible : Number(item.earned ?? (Number(percent) / 100) * possible),
+        isPlaceholder: percent == null,
+      };
+    });
+  // A genuinely empty category has one normalized future assignment. Its
+  // denominator is immaterial when it is the only item in a ratio category.
+  return regular.length
+    ? regular
+    : [{ percent: Number(sharedPercent), possible: 100, earned: Number(sharedPercent), isPlaceholder: true }];
+}
+
+function remainingCategoryPercent(category, categories, sharedPercent, cache = new Map(), visiting = new Set()) {
+  if (cache.has(category.id)) return cache.get(category.id);
+  if (visiting.has(category.id)) return null;
+  visiting.add(category.id);
+
+  let items = remainingProjectionItems(category, sharedPercent);
+  const drop = Math.min(Math.max(Number(category.drop_count) || 0, 0), Math.max(items.length - 1, 0));
+  items = [...items].sort((a, b) => b.percent - a.percent).slice(0, items.length - drop);
+
+  if (category.replace_with_category_id != null) {
+    const replacementCategory = categories.find((item) => item.id === category.replace_with_category_id);
+    const replacement = replacementCategory
+      ? remainingCategoryPercent(replacementCategory, categories, sharedPercent, cache, visiting)
+      : null;
+    const replaceCount = Math.min(Math.max(Number(category.replace_count) || 0, 0), items.length);
+    for (let index = 0; index < replaceCount && replacement != null; index += 1) {
+      const lowest = items.reduce((best, item) => item.percent < best.percent ? item : best);
+      if (replacement <= lowest.percent) break;
+      lowest.percent = replacement;
+      lowest.earned = (replacement / 100) * lowest.possible;
+    }
+  }
+
+  const assignments = category.assignments || [];
+  const { assignmentBonus, categoryBonus } = remainingAverageCategoryBonus(category);
+  let result = null;
+  if (category.aggregation === "points_ratio") {
+    const possible = items.reduce((sum, item) => sum + item.possible, 0);
+    const earned = items.reduce((sum, item) => sum + item.earned, 0);
+    const zeroDenominatorBonus = assignments
+      .filter((item) => item.earned != null && (item.possible == null || Number(item.possible) === 0))
+      .reduce((sum, item) => sum + Number(item.earned), 0);
+    result = possible > 0
+      ? (100 * (earned + zeroDenominatorBonus)) / possible + categoryBonus + assignmentBonus / items.length
+      : null;
+  } else {
+    result = items.length
+      ? (items.reduce((sum, item) => sum + item.percent, 0) + assignmentBonus) / items.length + categoryBonus
+      : null;
+  }
+  visiting.delete(category.id);
+  cache.set(category.id, result);
+  return result;
+}
+
+function remainingProjectedPercent(course, sharedPercent, weightByCatId = null) {
+  const categories = (course.categories || []).filter((category) => !category.is_bonus_category);
+  const cache = new Map();
+  const used = categories.map((category) => {
+    const percent = remainingCategoryPercent(category, categories, sharedPercent, cache);
+    const projectedItemCount = remainingProjectionItems(category, sharedPercent).length;
+    const weight = weightByCatId
+      ? Number(weightByCatId[String(category.id)] ?? weightByCatId[category.id] ?? 0)
+      : category.weight_per_item != null
+        ? Number(category.weight_per_item) * projectedItemCount
+        : Number(category.weight) || 0;
+    return { percent, weight };
+  }).filter(({ percent, weight }) => percent != null && weight > 0);
+  if (!used.length) return null;
+  const totalWeight = used.reduce((sum, item) => sum + item.weight, 0);
+  return used.reduce((sum, item) => sum + item.weight * item.percent, 0) / totalWeight
+    + remainingAverageCourseBonus(course);
+}
+
+function remainingAverageNeededForCutoff(course, cutoff, weightByCatId = null) {
+  const projected = (percent) => remainingProjectedPercent(course, percent, weightByCatId);
+  const low = -100;
+  const high = 300;
+  const pLow = projected(low);
+  const pHigh = projected(high);
+  if (pLow == null || pHigh == null || Math.abs(pHigh - pLow) < 1e-12) return null;
+  if (cutoff <= pLow || cutoff >= pHigh) {
+    return low + ((cutoff - pLow) * (high - low)) / (pHigh - pLow);
+  }
+  let lo = low;
+  let hi = high;
+  for (let index = 0; index < 56; index += 1) {
+    const mid = (lo + hi) / 2;
+    const value = projected(mid);
+    if (value == null) return null;
+    if (value >= cutoff) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
+/**
+ * Targets for applying one shared percentage to every ungraded assignment.
+ * This deliberately supports only simple fixed-weight average categories;
+ * richer aggregation policies need the full course evaluator.
+ */
+export function remainingAverageNeeded(course) {
+  const scale = course?.scale || [];
+  const gradeRows = scale.filter((row) => row.letter !== "F");
+  const categories = (course?.categories || []).filter((category) => !category.is_bonus_category);
+  if (!categories.length) {
+    return { supported: false, reason: "Add a category before calculating a remaining average.", rows: [] };
+  }
+
+  if ((course?.grading_mode || "weighted") === "points") {
+    const possible = categories.reduce((sum, category) => sum + (category.assignments || [])
+      .filter((item) => !item.is_bonus && assignmentPercent({
+        display: item.display,
+        earned: item.earned,
+        possible: item.possible,
+        isBonus: false,
+      }) == null)
+      .reduce((itemSum, item) => itemSum + (placeholderPossible(item) || 0), 0), 0);
+    if (possible <= 0) {
+      return {
+        supported: true,
+        kind: "points",
+        possible: 0,
+        reason: "Add an ungraded placeholder with a denominator (for example, /20) to calculate remaining points.",
+        rows: gradeRows.map((row) => ({ letter: row.letter, needed_points: null })),
+      };
+    }
+    return {
+      supported: true,
+      kind: "points",
+      possible,
+      rows: pointsExamNeededRows(course, possible).map((row) => {
+        const neededPoints = roundUpGradeTarget(row.needed_points);
+        return {
+          ...row,
+          needed_points: neededPoints,
+          needed_percent: roundUpGradeTarget((100 * neededPoints) / possible),
+        };
+      }),
+    };
+  }
+
+  const missingPointsDenominator = categories.some((category) => (
+    category.aggregation === "points_ratio"
+    && (category.assignments || []).some((item) => (
+      !item.is_bonus
+      && assignmentPercent({
+        display: item.display,
+        earned: item.earned,
+        possible: item.possible,
+        isBonus: false,
+      }) == null
+      && placeholderPossible(item) == null
+    ))
+  ));
+  if (missingPointsDenominator) {
+    return {
+      supported: false,
+      reason: "Enter a denominator for every remaining Points assignment (for example, /25) so its category target can be calculated exactly.",
+      rows: [],
+    };
+  }
+
+  const unknownCount = categories.reduce((sum, category) => {
+    const regular = (category.assignments || []).filter((item) => !item.is_bonus);
+    const missing = regular.filter((item) => assignmentPercent({
+      display: item.display,
+      earned: item.earned,
+      possible: item.possible,
+      isBonus: false,
+    }) == null).length;
+    return sum + (regular.length ? missing : 1);
+  }, 0);
+  if (unknownCount === 0) {
+    return {
+      supported: true,
+      kind: "average",
+      reason: "Add an ungraded placeholder to calculate a remaining average.",
+      rows: gradeRows.map((row) => ({ letter: row.letter, needed: null })),
+    };
+  }
+  return {
+    supported: true,
+    kind: "average",
+    rows: gradeRows.map((row) => {
+      const cutoff = cutoffWithRounding(row.min_percent, course?.grade_rounding ?? null);
+      const dynamicSchemes = course?.dynamic_weighting_enabled
+        ? (course.dynamic_weighting?.options || []).map((option) => option.weights || {})
+        : [];
+      const schemes = dynamicSchemes.length ? dynamicSchemes : [null];
+      const needs = schemes
+        .map((weights) => remainingAverageNeededForCutoff(course, cutoff, weights))
+        .filter((value) => value != null && Number.isFinite(value));
+      return {
+        letter: row.letter,
+        needed: needs.length ? roundUpGradeTarget(Math.min(...needs)) : null,
+      };
+    }),
+  };
+}
+
 export function pointsPercentFromExam(course, examPossible, examEarned, examCategoryId = null) {
   const denominator = Number(examPossible);
   const earnedExam = Number(examEarned);

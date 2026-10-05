@@ -1335,7 +1335,10 @@ def create_assignment(body: AssignmentCreate, db: Session = Depends(get_db)):
             item,
             body,
             body.is_bonus,
-            require_ratio=not cat.is_bonus_category and cat.course.grading_mode == "points",
+            require_ratio=(
+                not cat.is_bonus_category
+                and (cat.course.grading_mode == "points" or cat.aggregation == "points_ratio")
+            ),
             allow_zero_denominator=_allows_zero_denominator(cat),
         )
     except ValueError as exc:
@@ -1387,7 +1390,11 @@ def update_assignment(assignment_id: int, body: AssignmentUpdate, db: Session = 
                 body,
                 item.is_bonus,
                 require_ratio=(
-                    not item.category.is_bonus_category and item.category.course.grading_mode == "points"
+                    not item.category.is_bonus_category
+                    and (
+                        item.category.course.grading_mode == "points"
+                        or item.category.aggregation == "points_ratio"
+                    )
                 ),
                 allow_zero_denominator=_allows_zero_denominator(item.category),
             )

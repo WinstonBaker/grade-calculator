@@ -60,8 +60,8 @@ function mmdd(iso) {
   const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(String(iso)) ? String(iso) : `${iso}Z`;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return "";
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1);
+  const day = String(date.getDate());
   return `${month}/${day}`;
 }
 
@@ -408,7 +408,10 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
   const metricMax = showOverallScore || classMetric === "score"
     ? Math.ceil((valueMax + scoreStep) / scoreStep) * scoreStep
     : Math.min(5, Math.ceil((valueMax + 0.25) * 4) / 4);
-  const metricStep = showOverallScore || classMetric === "score" ? scoreStep : 0.125;
+  const metricRange = Math.max(1, metricMax - metricMin);
+  const metricStep = showOverallScore || classMetric === "score"
+    ? scoreStep
+    : [0.125, 0.25, 0.5, 1].find((step) => (metricRange / step) * 16 <= plotHeight) || 1;
 
   function snapshotTime(snap) {
     const raw = snap?.recorded_at;
@@ -428,6 +431,27 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     return margin.left + Math.max(0, Math.min(1, normalized)) * plotWidth;
   };
   const pointX = (snap, index) => x(index, snap);
+  const dateLabelIndices = (() => {
+    const candidates = displayedSnapshots
+      .map((snap, index) => ({ snap, index }))
+      .filter(({ snap, index }) => snap.isFinalGpa || !displayedSnapshots[index + 1]?.isFinalGpa);
+    const visible = [];
+    const minimumLabelGap = 46;
+    candidates.forEach(({ snap, index }) => {
+      if (!visible.length || pointX(snap, index) - pointX(displayedSnapshots[visible.at(-1)], visible.at(-1)) >= minimumLabelGap) {
+        visible.push(index);
+      }
+    });
+    const finalCandidate = candidates.at(-1);
+    if (finalCandidate && visible.at(-1) !== finalCandidate.index) {
+      const lastVisible = visible.at(-1);
+      if (lastVisible == null || pointX(finalCandidate.snap, finalCandidate.index) - pointX(displayedSnapshots[lastVisible], lastVisible) < minimumLabelGap) {
+        visible.pop();
+      }
+      visible.push(finalCandidate.index);
+    }
+    return new Set(visible);
+  })();
   const yPct = (value) => margin.top + ((pctMax - value) / (pctMax - pctMin || 1)) * plotHeight;
   const yMetric = (value) => margin.top + ((metricMax - value) / (metricMax - metricMin || 1)) * plotHeight;
   const yValue = (value) => isPercentChart ? yPct(value) : yMetric(value);
@@ -525,13 +549,25 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
     }
 
     const classGroups = [...groups.values()].map((group) => {
+      const startKey = `${group.startIndex}:${group.previousValue.toFixed(6)}`;
+      const endKey = `${group.endIndex}:${group.currentValue.toFixed(6)}`;
+      const startPie = sharedCoursePoints.get(startKey);
+      const endPie = sharedCoursePoints.get(endKey);
+      const sharedPieCourses = startPie && endPie
+        ? [...startPie].filter((courseId) => endPie.has(courseId))
+        : [];
+      const sharedPieColor = sharedPieCourses.length === 1
+        ? series.find((item) => item.courseId === sharedPieCourses[0])?.color
+        : null;
       const joinsTwoSharedPies = [
-        `${group.startIndex}:${group.previousValue.toFixed(6)}`,
-        `${group.endIndex}:${group.currentValue.toFixed(6)}`,
-      ].every((key) => (sharedCoursePoints.get(key)?.size || 0) > 1);
-      const color = group.entries.length > 1 || joinsTwoSharedPies
+        startPie?.size > 1,
+        endPie?.size > 1,
+      ].every(Boolean);
+      const color = group.entries.length > 1
         ? "var(--muted)"
-        : group.entries[0]?.color;
+        : joinsTwoSharedPies
+          ? sharedPieColor || "var(--muted)"
+          : group.entries[0]?.color;
       return {
         ...group,
         color,
@@ -941,11 +977,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                       })
                     : null}
                   <text className="gpa-trend-axis term" x={pointX(snap, index)} y={height - 20} textAnchor="middle">
-                    {snap.isFinalGpa
-                      ? mmdd(snap.recorded_at)
-                      : displayedSnapshots[index + 1]?.isFinalGpa
-                        ? ""
-                        : mmdd(snap.recorded_at)}
+                    {dateLabelIndices.has(index) ? mmdd(snap.recorded_at) : ""}
                   </text>
                 </g>
                 );

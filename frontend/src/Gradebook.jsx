@@ -17,6 +17,7 @@ import {
   pointsExamNeededRows,
   pointsPercentFromExam,
   parseScoreExpression,
+  remainingAverageNeeded,
   passFailGradeAffectsGpa,
   scoreClass,
   trueGradeFromCourse,
@@ -2043,10 +2044,10 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
           onClick={() => setShowExamCalc((v) => !v)}
         >
           <span className={`term-accordion-chevron ${showExamCalc ? "open" : ""}`}>▸</span>
-          <span>Final Exam Grade Needed Table</span>
+          <span>Grade Needed Table</span>
           <Tooltip
             side="right"
-            text={`Course grade if this final exam scores a given percent, and what you need for each cutoff.${course.grade_rounding != null
+            text={`See what is needed for each cutoff using either a final exam or one shared average across remaining work.${course.grade_rounding != null
               ? ` Targets assume the final percent is rounded to ${ROUNDING_NOTE[course.grade_rounding] || "the set precision"}.`
               : ""}`}
           />
@@ -2525,6 +2526,7 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
     course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
   );
   const [examScoreEditing, setExamScoreEditing] = useState(false);
+  const [mode, setMode] = useState("exam");
   useEffect(() => {
     setExamTotalPointsRaw(
       course.exam_total_points == null ? "" : formatGradeNumber(course.exam_total_points),
@@ -2582,10 +2584,82 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
   const tableRows = pointsMode
     ? (Number(effectiveExamTotalPointsRaw) > 0 ? needed : blankRows)
     : selected ? needed : blankRows;
+  const remaining = useMemo(() => remainingAverageNeeded(course), [course]);
+  const remainingRows = remaining.rows || [];
+  const showingRemaining = mode === "remaining";
 
   return (
     <div className="panel exam-calc-panel">
-      {course.categories.length === 0 ? (
+      <div className="grade-needed-mode-toggle" role="tablist" aria-label="Grade needed calculation">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!showingRemaining}
+          className={!showingRemaining ? "active" : ""}
+          onClick={() => setMode("exam")}
+        >
+          Final exam
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={showingRemaining}
+          className={showingRemaining ? "active" : ""}
+          onClick={() => setMode("remaining")}
+        >
+          Remaining average
+        </button>
+      </div>
+      {showingRemaining ? (
+        <>
+          <p className="muted grade-needed-description">
+            {pointsMode
+              ? "Points needed across all ungraded placeholders."
+              : "The same percentage applied to every ungraded placeholder."}
+          </p>
+          {remaining.reason ? <p className="muted grade-needed-message">{remaining.reason}</p> : null}
+          {remainingRows.length === 0 ? (
+            <p className="muted">Add grade cutoffs to see targets.</p>
+          ) : (
+            <table className="exam-cutoff-table">
+              <thead>
+                <tr className="exam-cutoff-head-row">
+                  <th className="exam-cutoff-exam-head">
+                    {pointsMode ? "Remaining points / %" : "Remaining average"}
+                  </th>
+                  <th className="exam-cutoff-letter-head">
+                    <span className="exam-cutoff-letter-header-content">
+                      <span className="exam-cutoff-letter-label">
+                        Letter
+                        <span className="exam-cutoff-header-arrow" aria-hidden="true">→</span>
+                      </span>
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {remainingRows.map((row) => {
+                  const value = pointsMode ? row.needed_points : row.needed;
+                  return (
+                    <tr key={row.letter}>
+                      <td className={`mono exam-cutoff-exam-cell ${value > 100 ? "neg" : value < 0 ? "pos" : ""}`}>
+                        {value == null
+                          ? ""
+                          : pointsMode
+                            ? `${fmtPct(row.needed_points)} / ${fmtPct(row.needed_percent)}%`
+                            : `${fmtPct(value)}%`}
+                      </td>
+                      <td className="exam-cutoff-letter-cell">
+                        <span className={`letter ${letterClass(row.letter)}`}>{row.letter}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </>
+      ) : course.categories.length === 0 ? (
         <p className="muted">Add a category for the exam first.</p>
       ) : (
         <>
