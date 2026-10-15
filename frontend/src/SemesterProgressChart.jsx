@@ -553,21 +553,13 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
       const endKey = `${group.endIndex}:${group.currentValue.toFixed(6)}`;
       const startPie = sharedCoursePoints.get(startKey);
       const endPie = sharedCoursePoints.get(endKey);
-      const sharedPieCourses = startPie && endPie
-        ? [...startPie].filter((courseId) => endPie.has(courseId))
-        : [];
-      const sharedPieColor = sharedPieCourses.length === 1
-        ? series.find((item) => item.courseId === sharedPieCourses[0])?.color
-        : null;
       const joinsTwoSharedPies = [
         startPie?.size > 1,
         endPie?.size > 1,
       ].every(Boolean);
-      const color = group.entries.length > 1
+      const color = group.entries.length > 1 || joinsTwoSharedPies
         ? "var(--muted)"
-        : joinsTwoSharedPies
-          ? sharedPieColor || "var(--muted)"
-          : group.entries[0]?.color;
+        : group.entries[0]?.color;
       return {
         ...group,
         color,
