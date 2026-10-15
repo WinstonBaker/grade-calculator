@@ -2640,9 +2640,13 @@ function ExamCalc({ course, examCatId, examScoreRaw, onExamCatId, onExamScoreRaw
               <tbody>
                 {remainingRows.map((row) => {
                   const value = pointsMode ? row.needed_points : row.needed;
+                  const isUnachievable = pointsMode
+                    ? row.needed_points > remaining.possible
+                    : value > 100;
+                  const isBelowZero = value < 0;
                   return (
                     <tr key={row.letter}>
-                      <td className={`mono exam-cutoff-exam-cell ${value > 100 ? "neg" : value < 0 ? "pos" : ""}`}>
+                      <td className={`mono exam-cutoff-exam-cell ${isUnachievable ? "neg" : isBelowZero ? "pos" : ""}`}>
                         {value == null
                           ? ""
                           : pointsMode

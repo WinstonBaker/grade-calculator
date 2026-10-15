@@ -4632,6 +4632,14 @@ th button.active {
   stroke: var(--green);
 }
 
+.gpa-trends-legend .cumulative {
+  background: repeating-linear-gradient(
+    to right,
+    var(--series-color, var(--green)) 0 6px,
+    transparent 6px 9px
+  );
+}
+
 .gpa-trends-chart {
   width: 100%;
   overflow-x: auto;
@@ -6321,6 +6329,14 @@ th button.active {
   background: var(--green);
 }
 
+.grade-progress-legend .gpa {
+  background: repeating-linear-gradient(
+    to right,
+    var(--series-color, var(--green)) 0 6px,
+    transparent 6px 9px
+  );
+}
+
 .grade-progress-legend .final-gpa {
   background: var(--gold);
 }
@@ -6347,7 +6363,8 @@ th button.active {
 .grade-progress.has-foreground-series .grade-progress-dot.is-foreground-course,
 .grade-progress.has-foreground-series .grade-progress-dot.is-foreground-overall,
 .grade-progress.has-foreground-series .grade-progress-overlap-segment.is-foreground-course,
-.grade-progress.has-foreground-series .grade-progress-overlap-segment.is-foreground-overall {
+.grade-progress.has-foreground-series .grade-progress-overlap-segment.is-foreground-overall,
+.grade-progress.has-foreground-series .grade-progress-dot.is-foreground-top {
   opacity: 1;
 }
 

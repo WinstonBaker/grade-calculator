@@ -1076,7 +1076,7 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
         </div>
         <div className="gpa-trends-legend" aria-label="Chart legend">
           <span><i className="semester" style={{ background: tertiaryColor }} />{termLabel} {metricLabel}</span>
-          <span><i className="cumulative" style={{ background: primaryColor }} />Cumulative {metricLabel}</span>
+          <span><i className="cumulative" style={{ "--series-color": primaryColor }} />Cumulative {metricLabel}</span>
         </div>
       </div>
       <div className="gpa-trends-chart">

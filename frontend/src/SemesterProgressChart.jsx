@@ -738,7 +738,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
             {showOverall ? (
               <>
                 <span>
-                  <i className="gpa" style={{ background: overallPointColor }} />
+                  <i className="gpa" style={{ "--series-color": overallPointColor }} />
                   {showOverallScore ? "Score" : gpaLabel}
                 </span>
                 {finalGpaSnapshot ? (
@@ -828,7 +828,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
               {displayedSnapshots.map((snap, index) => {
                 const gpaMarked = selected.has(gpaKey(snap.id));
                 const gpaFocused = focused?.kind === "gpa" && focused.snapshotId === snap.id;
-                const gpaRadius = gpaMarked || gpaFocused || hover === index ? 8 : 6.5;
+                const gpaRadius = gpaMarked || gpaFocused || hover === index ? 7 : 5.5;
                 const coursePoints = showClasses
                   ? series.map((item) => {
                       const course = (snap.courses || []).find((row) => row.course_id === item.courseId);
@@ -911,7 +911,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                         const renderedPoints = focusedPoint ? [focusedPoint] : group.points;
                         if (renderedPoints.length === 1) {
                           const point = renderedPoints[0];
-                          const radius = point.marked || point.focused || hover === index ? 9 : 7.5;
+                          const radius = point.marked || point.focused || hover === index ? 8 : 6.5;
                           return (
                             <circle
                               key={`${point.kind}-${point.kind === "course" ? point.item.courseId : "overall"}`}
@@ -935,7 +935,7 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                             />
                           );
                         }
-                        const outerRadius = renderedPoints.some((point) => point.marked || point.focused) || hover === index ? 9 : 7.5;
+                        const outerRadius = renderedPoints.some((point) => point.marked || point.focused) || hover === index ? 8 : 6.5;
                         const innerRadius = 0;
                         return (
                           <g
@@ -982,6 +982,41 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
                 </g>
                 );
               })}
+              {foregroundCourseId != null
+                ? displayedSnapshots.map((snap, index) => {
+                    const course = (snap.courses || []).find((row) => row.course_id === foregroundCourseId);
+                    const value = classPointValue(course);
+                    if (value == null || !Number.isFinite(Number(value))) return null;
+                    return (
+                      <circle
+                        key={`foreground-course-point-${snap.id}-${foregroundCourseId}`}
+                        className="grade-progress-dot is-foreground-course is-foreground-top"
+                        cx={pointX(snap, index)}
+                        cy={yValue(value)}
+                        r={focused?.snapshotId === snap.id ? 8 : 6.5}
+                        fill={series.find((item) => item.courseId === foregroundCourseId)?.color}
+                        pointerEvents="none"
+                      />
+                    );
+                  })
+                : null}
+              {foregroundOverall
+                ? displayedSnapshots.map((snap, index) => {
+                    const value = overallValue(snap);
+                    if (value == null || !Number.isFinite(Number(value))) return null;
+                    return (
+                      <circle
+                        key={`foreground-overall-point-${snap.id}`}
+                        className="grade-progress-dot is-foreground-overall is-foreground-top"
+                        cx={pointX(snap, index)}
+                        cy={yValue(Number(value))}
+                        r={focused?.snapshotId === snap.id ? 7 : 5.5}
+                        fill={overallPointColor}
+                        pointerEvents="none"
+                      />
+                    );
+                  })
+                : null}
             </svg>
           </div>
           <div className="grade-progress-axis-spacing" role="group" aria-label="Date spacing">
