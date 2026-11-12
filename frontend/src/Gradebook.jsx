@@ -23,6 +23,7 @@ import {
   trueGradeFromCourse,
 } from "./api";
 import { PassFailScaleEditor, ScaleRowsEditor } from "./ScaleEditor.jsx";
+import GradeLetterBadge from "./GradeLetterBadge.jsx";
 import { Tooltip, useShowScore } from "./creditLabel.jsx";
 import { buildCourseDisplayCodes } from "./courseNames.js";
 import { sortSemesters } from "./seasons.js";
@@ -335,17 +336,10 @@ function pointsCourseSummary(course) {
   const keptByCategory = pointsCourseKeptAssignments(course);
   for (const category of course?.categories || []) {
     if (category.is_bonus_category) {
-      const hasPointBonus = category.aggregation === "points_ratio" && (category.assignments || []).some(
-        (assignment) => assignment.earned != null && Number(assignment.possible) === 0
-      );
-      if (hasPointBonus) {
-        for (const assignment of category.assignments || []) {
-          if (assignment.earned != null && Number(assignment.possible) === 0) {
-            bonusPoints += Number(assignment.earned);
-          }
-        }
-      } else {
-        bonusPercent += Number(category.percent) || 0;
+      if (course.bonus_mode === "category") {
+        const total = bonusCategoryTotal(category);
+        if (category.aggregation === "points_ratio") bonusPoints += total;
+        else bonusPercent += total;
       }
       continue;
     }
@@ -366,7 +360,9 @@ function pointsCourseSummary(course) {
   // In a points-based class, an overall-percent bonus is stored on the
   // course rather than in the bonus category. Keep it separate from the
   // numerator so the header can show both the points ratio and the bonus.
-  if (course.bonus_mode !== "category" && course.bonus_mode !== "none" && course.bonus_mode !== "static_points") {
+  if (course.bonus_mode === "static_points") {
+    bonusPoints += Number(course.bonus_points) || 0;
+  } else if (course.bonus_mode !== "category" && course.bonus_mode !== "none") {
     bonusPercent += Number(course.bonus_points) || 0;
   }
   if (possible <= 0) return null;
@@ -382,7 +378,7 @@ function pointsCourseSummary(course) {
   };
 }
 
-function speculativeAssignment(assignment, raw) {
+function speculativeAssignment(assignment, raw, category, gradingMode) {
   if (raw && typeof raw === "object" && raw.composite) {
     const fields = speculativeCompositeFields(raw.composite, raw.categoryAggregation);
     return {
@@ -396,6 +392,14 @@ function speculativeAssignment(assignment, raw) {
   }
   const text = String(raw ?? "").trim();
   if (!text) return { ...assignment, display: "", score_input: "", earned: null };
+  const pointsBased = category?.aggregation === "points_ratio"
+    || (gradingMode === "points" && !category?.is_bonus_category);
+  if (category?.is_bonus_category && !pointsBased) {
+    if (!isPercentBonusScore(text)) return assignment;
+    const score = normalizePercentBonusScore(text);
+    return { ...assignment, display: score, score_input: score, earned: Number(score), possible: null };
+  }
+
   if (isDenominatorOnlyScore(text)) {
     return {
       ...assignment,
@@ -407,7 +411,8 @@ function speculativeAssignment(assignment, raw) {
   }
 
   const expression = parseScoreExpression(text);
-  if (expression && Number.isFinite(expression.earned) && Number.isFinite(expression.possible)) {
+  if (expression && Number.isFinite(expression.earned) && Number.isFinite(expression.possible)
+      && (expression.possible !== 0 || pointsBased)) {
     return { ...assignment, display: text, score_input: text, earned: expression.earned, possible: expression.possible };
   }
 
@@ -415,13 +420,17 @@ function speculativeAssignment(assignment, raw) {
   if (ratio) {
     const earned = Number(ratio[1]);
     const possible = Number(ratio[2]);
-    if (Number.isFinite(earned) && Number.isFinite(possible) && possible !== 0) {
+    if (Number.isFinite(earned) && Number.isFinite(possible) && (possible !== 0 || pointsBased)) {
       return { ...assignment, display: text, score_input: text, earned, possible };
     }
     return assignment;
   }
 
   const percent = Number(text);
+  if (assignment.is_bonus && Number.isFinite(percent)) {
+    const possible = pointsBased && !category?.is_bonus_category ? 0 : null;
+    return { ...assignment, display: text, score_input: text, earned: percent, possible };
+  }
   return Number.isFinite(percent)
     ? { ...assignment, display: text, score_input: text, earned: percent, possible: assignment.possible ?? 100 }
     : assignment;
@@ -497,12 +506,14 @@ function speculativeCompositeFields(composite, categoryAggregation) {
   };
 }
 
+function bonusCategoryTotal(category) {
+  return (category?.assignments || [])
+    .filter((assignment) => assignment.is_bonus && assignment.earned != null)
+    .reduce((sum, assignment) => sum + Number(assignment.earned), 0);
+}
+
 function speculativeCategoryPercent(category, categories, seen = new Set()) {
-  if (category.is_bonus_category) {
-    return (category.assignments || [])
-      .filter((assignment) => assignment.is_bonus && assignment.earned != null)
-      .reduce((sum, assignment) => sum + Number(assignment.earned), 0);
-  }
+  if (category.is_bonus_category) return bonusCategoryTotal(category);
 
   const regular = (category.assignments || [])
     .filter((assignment) => !assignment.is_bonus)
@@ -565,6 +576,34 @@ function sumNumbers(values) {
 }
 
 function intervalAssignmentValues(assignment, category, gradingMode, fill) {
+  if (assignment?.is_bonus || category?.is_bonus_category) return assignment;
+  const composite = assignment?.composite;
+  if (composite && Array.isArray(composite.items)) {
+    const pointsMode = composite.mode === "points";
+    let changed = false;
+    const items = composite.items.map((item) => {
+      if (!String(item?.name || "").trim()) return item;
+      const raw = String(item?.score || "").trim();
+      let score = null;
+      if (pointsMode && isDenominatorOnlyScore(raw)) {
+        const possible = Number(raw.slice(1).trim());
+        score = `${fill ? formatGradeNumber(possible) : "0"}/${formatGradeNumber(possible)}`;
+      } else if (!raw && compositeItemWeight(item, composite.mode) != null) {
+        score = pointsMode ? null : fill ? "100" : "0";
+      }
+      if (score == null) return item;
+      changed = true;
+      return { ...item, score };
+    });
+    if (changed) {
+      return speculativeAssignment(assignment, {
+        composite: { ...composite, items },
+        categoryAggregation: category?.aggregation,
+      });
+    }
+    return assignment;
+  }
+
   const spec = intervalAssignmentSpec(assignment, category, gradingMode);
   if (!spec) return assignment;
   return {
@@ -612,6 +651,16 @@ function intervalAssignmentSpec(assignment, category, gradingMode) {
 function intervalAssignmentInputs(course) {
   return (course?.categories || []).flatMap((category) => (category.assignments || [])
     .map((assignment) => {
+      if (assignment.composite) {
+        const minimum = intervalAssignmentValues(assignment, category, course.grading_mode, false);
+        if (minimum === assignment) return null;
+        const maximum = intervalAssignmentValues(assignment, category, course.grading_mode, true);
+        return {
+          id: assignment.id,
+          minimum: { composite: minimum.composite, categoryAggregation: category.aggregation },
+          maximum: { composite: maximum.composite, categoryAggregation: category.aggregation },
+        };
+      }
       const spec = intervalAssignmentSpec(assignment, category, course.grading_mode);
       return spec ? { id: assignment.id, minimum: spec.minimumScore, maximum: spec.maximumScore } : null;
     })
@@ -777,13 +826,13 @@ function speculativeCourseFromScores(course, scores) {
     ...category,
     assignments: (category.assignments || []).map((assignment) => (
       Object.prototype.hasOwnProperty.call(scores, assignment.id)
-        ? speculativeAssignment(assignment, scores[assignment.id])
+        ? speculativeAssignment(assignment, scores[assignment.id], category, course.grading_mode)
       : assignment
     )),
   }));
   const categories = mappedCategories.map((category) => ({
     ...category,
-    percent: course.grading_mode === "weighted"
+    percent: category.is_bonus_category || course.grading_mode === "weighted"
       ? speculativeCategoryPercent(category, mappedCategories)
       : category.percent,
     effective_weight: course.grading_mode === "weighted"
@@ -818,28 +867,29 @@ function weightedCourseSummary(course) {
   const classPercent = used.reduce((sum, [weight, percent]) => sum + weight * percent, 0) / weightTotal;
   const bonusCategory = (course.categories || []).find((category) => category.is_bonus_category);
   const bonusPercent = course.bonus_mode === "category"
-    ? (course?.speculative ? Number(speculativeCategoryPercent(bonusCategory, course.categories)) || 0 : Number(bonusCategory?.percent) || 0)
+    ? (course?.speculative ? bonusCategoryTotal(bonusCategory) : Number(bonusCategory?.percent) || 0)
     : course.bonus_mode === "none" || course.bonus_mode === "static_points"
       ? 0
       : Number(course.bonus_points) || 0;
   return { classPercent, bonusPercent };
 }
 
-function PointsSummary({ summary, tone, speculative = false }) {
+function PointsSummary({ summary, tone, bonusMode, speculative = false }) {
   if (!summary) return null;
   const displayedEarned = Number(summary.classEarned || 0) + Number(summary.bonusPoints || 0);
+  const showPointBonus = bonusMode === "static_points" || summary.bonusPoints !== 0;
+  const showBreakdown = bonusMode !== "static_percent" && showPointBonus;
   const bonusLabel = [
-    summary.bonusPoints ? `${formatGradeNumber(summary.bonusPoints)} pts` : "",
+    showPointBonus ? `${formatGradeNumber(summary.bonusPoints)} pts` : "",
     summary.bonusPercent ? formatBonusPercent(summary.bonusPercent) : "",
   ].filter(Boolean).join(" · ");
-  const hasBonus = summary.bonusPoints !== 0 || summary.bonusPercent !== 0;
   return (
     <span className="grade-hero-points-wrap">
       <strong className={`mono grade-hero-points ${tone} ${speculative ? "speculative-grade" : ""}`.trim()}>
         = {formatGradeNumber(displayedEarned)}/{formatGradeNumber(summary.totalPossible)}
         {summary.bonusPercent ? <span className="grade-hero-points-percent-bonus"> {formatBonusPercent(summary.bonusPercent)}</span> : null}
       </strong>
-      {hasBonus ? (
+      {showBreakdown ? (
         <span className="grade-hero-points-popover" role="tooltip">
           <span><span>Class:</span><strong>{formatGradeNumber(summary.classEarned)}</strong></span>
           <span><span>Bonus:</span><strong>{bonusLabel}</strong></span>
@@ -921,13 +971,20 @@ function courseHasOverride(course, trueGrade) {
   );
 }
 
-function GradeHeroMeta({ letter, qualityPoints, score, showScore, struck = false, overrideLabel = false, tone = "", isPassFail = false, showPassFailMetrics = false, speculative = false }) {
+function GradeHeroMeta({ letter, qualityPoints, score, showScore, struck = false, overrideLabel = false, tone = "", isPassFail = false, showPassFailMetrics = false, speculative = false, rank, settingsTileRef, animateGrade }) {
   const showMetrics = !isPassFail || showPassFailMetrics;
+  const badgeClass = `letter letter-hero-circle ${struck ? "is-struck-letter" : tone || letterClass(letter)} ${speculative ? "speculative-grade" : ""}`.trim();
   return (
     <div className={`grade-hero-meta ${struck ? "is-struck" : ""}`}>
-      <span className={`letter letter-hero-circle ${struck ? "is-struck-letter" : tone || letterClass(letter)} ${speculative ? "speculative-grade" : ""}`.trim()}>
-        {letter || "—"}
-      </span>
+      {struck ? <span className={badgeClass}>{letter || "—"}</span> : (
+        <GradeLetterBadge
+          letter={letter}
+          className={badgeClass}
+          rank={rank}
+          settingsTileRef={settingsTileRef}
+          animateChanges={animateGrade}
+        />
+      )}
       <div className="grade-hero-gp-score">
         {showMetrics ? <span className={`mono grade-hero-gpa ${speculative ? "speculative-grade" : ""}`.trim()}>{fmtGpa(qualityPoints)}</span> : null}
         {showScore && showMetrics ? (
@@ -1038,12 +1095,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const [dragCatId, setDragCatId] = useState(null);
   const [speculativeScores, setSpeculativeScores] = useState({});
   const [speculativeBulkAssignmentIds, setSpeculativeBulkAssignmentIds] = useState(new Set());
+  const [speculativeBulkBaseScores, setSpeculativeBulkBaseScores] = useState({});
+  const [speculativeClearVersion, setSpeculativeClearVersion] = useState(0);
   const dragCatIdRef = useRef(null);
   const dragStartOrderRef = useRef(null);
   const categoriesRef = useRef([]);
   const scrollToCategoryIdRef = useRef(null);
   const handledAssignmentHashRef = useRef("");
   const gradingMenuRef = useRef(null);
+  const settingsTileRef = useRef(null);
 
   function collegeSemesterName(semester) {
     if (!semester) return "Semester";
@@ -1072,6 +1132,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     if (!speculationMode) {
       setSpeculativeScores({});
       setSpeculativeBulkAssignmentIds(new Set());
+      setSpeculativeBulkBaseScores({});
     }
   }, [speculationMode]);
 
@@ -1466,6 +1527,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   const displayCourse = speculativeCourseFromScores(course, speculativeScores);
   if (!course) return <p className="muted">{error || "Loading…"}</p>;
   const bonusCategory = course.categories.find((category) => category.is_bonus_category);
+  const displayBonusCategory = displayCourse.categories.find((category) => category.is_bonus_category);
   const bonusMode = course.grading_mode === "points" && (course.bonus_mode === "static" || course.bonus_mode == null)
     ? "static_percent"
     : course.bonus_mode || (bonusCategory ? "category" : "static");
@@ -1476,9 +1538,12 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
   // visible while speculation is active, but let edits to existing grades
   // update the range's calculated bounds.
   const intervalSpeculativeScores = Object.fromEntries(
-    Object.entries(speculativeScores).filter(([assignmentId]) => (
-      !speculativeBulkAssignmentIds.has(String(assignmentId))
-    )),
+    Object.entries(speculativeScores).flatMap(([assignmentId, score]) => {
+      if (!speculativeBulkAssignmentIds.has(String(assignmentId))) return [[assignmentId, score]];
+      return Object.prototype.hasOwnProperty.call(speculativeBulkBaseScores, assignmentId)
+        ? [[assignmentId, speculativeBulkBaseScores[assignmentId]]]
+        : [];
+    }),
   );
   const intervalCourse = speculativeCourseFromScores(course, intervalSpeculativeScores);
   const gradeInterval = courseGradeInterval(intervalCourse, displayCourse);
@@ -1510,6 +1575,14 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     });
   })();
   const hasOverride = courseHasOverride(course, trueGrade);
+  const gradeOverrideSet = course.credit_mode === "pass_fail"
+    ? course.pass_fail_override != null
+    : course.gp_override != null;
+  const showOverride = hasOverride && !speculationMode;
+  const displayedLetter = speculationMode ? trueGrade.letter : course.letter;
+  const displayedLetterRank = displayCourse.credit_mode === "pass_fail"
+    ? null
+    : displayCourse.scale?.find((row) => row.letter === displayedLetter)?.min_percent;
   const showFailingPassFailMetrics = !speculationPreview && passFailGradeAffectsGpa(displayCourse, displayCourse.letter);
   const pctLetter = hasOverride ? course.letter : trueGrade.letter || course.letter;
   const actualGradeTone = displayCourse.credit_mode === "pass_fail"
@@ -1533,16 +1606,29 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
     const values = Object.fromEntries(
       gradeInterval.fillableAssignments.map(({ id, minimum, maximum }) => [id, bound === "minimum" ? minimum : maximum]),
     );
+    setSpeculativeBulkBaseScores((current) => {
+      const next = { ...current };
+      for (const { id } of gradeInterval.fillableAssignments) {
+        if (!speculativeBulkAssignmentIds.has(String(id))) {
+          if (Object.prototype.hasOwnProperty.call(speculativeScores, id)) next[id] = speculativeScores[id];
+          else delete next[id];
+        }
+      }
+      return next;
+    });
     setSpeculativeScores((current) => ({ ...current, ...values }));
     setSpeculativeBulkAssignmentIds((current) => new Set([
       ...current,
       ...gradeInterval.fillableAssignments.map(({ id }) => String(id)),
     ]));
+    setSpeculativeClearVersion((version) => version + 1);
   }
 
   function clearSpeculativeAssignments() {
     setSpeculativeScores({});
     setSpeculativeBulkAssignmentIds(new Set());
+    setSpeculativeBulkBaseScores({});
+    setSpeculativeClearVersion((version) => version + 1);
   }
 
   async function setBonusMode(mode) {
@@ -1774,43 +1860,33 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
               ) : null}
             </div>
             <div className={`grade-hero ${displayCourse.credit_mode === "pass_fail" && !showFailingPassFailMetrics ? "no-secondary-values" : ""}`.trim()}>
-              {hasOverride && !speculationMode ? (
-                <>
-                  <GradeHeroMeta
-                    letter={trueGrade.letter}
-                    qualityPoints={trueGrade.qualityPoints}
-                    score={trueGrade.score}
-                    showScore={showScore}
-                    tone={courseGradeClass(displayCourse)}
-                    isPassFail={displayCourse.credit_mode === "pass_fail"}
-                    showPassFailMetrics={false}
-                    struck
-                    speculative={speculationPreview}
-                  />
-                  <GradeHeroMeta
-                    letter={course.letter}
-                    qualityPoints={displayCourse.quality_points}
-                    score={displayCourse.score}
-                    showScore={showScore}
-                    tone={courseGradeClass(displayCourse)}
-                    isPassFail={displayCourse.credit_mode === "pass_fail"}
-                    showPassFailMetrics={showFailingPassFailMetrics}
-                    overrideLabel
-                    speculative={speculationPreview}
-                  />
-                </>
-              ) : (
+              {showOverride ? (
                 <GradeHeroMeta
                   letter={trueGrade.letter}
-                  qualityPoints={displayCourse.credit_mode === "pass_fail" ? displayCourse.quality_points : trueGrade.qualityPoints}
-                  score={displayCourse.credit_mode === "pass_fail" ? displayCourse.score : trueGrade.score}
+                  qualityPoints={trueGrade.qualityPoints}
+                  score={trueGrade.score}
                   showScore={showScore}
-                  tone={speculationMode ? actualGradeTone : courseGradeClass(displayCourse)}
+                  tone={courseGradeClass(displayCourse)}
                   isPassFail={displayCourse.credit_mode === "pass_fail"}
-                  showPassFailMetrics={showFailingPassFailMetrics}
+                  struck
                   speculative={speculationPreview}
                 />
-              )}
+              ) : null}
+              <GradeHeroMeta
+                key={course.id}
+                letter={displayedLetter}
+                qualityPoints={showOverride || displayCourse.credit_mode === "pass_fail" ? displayCourse.quality_points : trueGrade.qualityPoints}
+                score={showOverride || displayCourse.credit_mode === "pass_fail" ? displayCourse.score : trueGrade.score}
+                showScore={showScore}
+                tone={speculationMode ? actualGradeTone : courseGradeClass(course)}
+                isPassFail={displayCourse.credit_mode === "pass_fail"}
+                showPassFailMetrics={showFailingPassFailMetrics}
+                overrideLabel={showOverride}
+                speculative={speculationPreview}
+                rank={displayedLetterRank}
+                settingsTileRef={settingsTileRef}
+                animateGrade={!speculationMode && !gradeOverrideSet}
+              />
               {percentSummary ? (
                 <PercentSummary
                   summary={percentSummary}
@@ -1823,13 +1899,20 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                   {fmtPct(displayCoursePercent)}%
                 </strong>
               )}
-              {pointsSummary ? <PointsSummary summary={pointsSummary} tone={pctTone} speculative={speculationPreview} /> : null}
+              {pointsSummary ? (
+                <PointsSummary
+                  summary={pointsSummary}
+                  tone={pctTone}
+                  bonusMode={bonusMode}
+                  speculative={speculationPreview}
+                />
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className="gradebook-header-toolbar">
-          <div className="panel row course-settings">
+          <div className="panel row course-settings" ref={settingsTileRef}>
             <div ref={gradingMenuRef} className={`course-settings-grading-menu ${showGradingMenu ? "is-open" : ""}`}>
               <span className="muted course-settings-grading-menu-label">Credit &amp; Grading</span>
               <button
@@ -1942,8 +2025,8 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                     className="input"
                     aria-label="Total bonus"
                     value={course.grading_mode === "points"
-                      ? `+${formatGradeNumber(bonusCategory?.percent || 0)} pts`
-                      : bonusCategory?.percent == null ? "+0%" : `+${formatBonusNumber(bonusCategory.percent)}%`}
+                      ? `+${formatGradeNumber(displayBonusCategory?.percent || 0)} pts`
+                      : displayBonusCategory?.percent == null ? "+0%" : `+${formatBonusNumber(displayBonusCategory.percent)}%`}
                     readOnly
                     aria-readonly="true"
                   />
@@ -2083,9 +2166,16 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                 onChange?.();
               }}
               speculationMode={speculationMode}
+              speculativeClearVersion={speculativeClearVersion}
               speculativeScores={speculativeScores}
               onSpeculativeScoreChange={(assignmentId, raw) => {
                 setSpeculativeScores((current) => ({ ...current, [assignmentId]: raw }));
+                setSpeculativeBulkBaseScores((current) => {
+                  if (!Object.prototype.hasOwnProperty.call(current, assignmentId)) return current;
+                  const next = { ...current };
+                  delete next[assignmentId];
+                  return next;
+                });
                 setSpeculativeBulkAssignmentIds((current) => {
                   const id = String(assignmentId);
                   if (!current.has(id)) return current;
@@ -2099,6 +2189,12 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
                   ...current,
                   [assignmentId]: { composite, categoryAggregation: cat.aggregation },
                 }));
+                setSpeculativeBulkBaseScores((current) => {
+                  if (!Object.prototype.hasOwnProperty.call(current, assignmentId)) return current;
+                  const next = { ...current };
+                  delete next[assignmentId];
+                  return next;
+                });
                 setSpeculativeBulkAssignmentIds((current) => {
                   const id = String(assignmentId);
                   if (!current.has(id)) return current;
@@ -3690,7 +3786,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
-  function updateDraft(patch, { persist = true } = {}) {
+  function updateDraft(patch, { persist = true, notify = true } = {}) {
     const next = { ...draftRef.current, ...patch };
     draftRef.current = next;
     setMode(next.mode);
@@ -3706,7 +3802,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
         : null,
       items: next.items,
     };
-    onSpeculativeChange?.(composite);
+    if (notify) onSpeculativeChange?.(composite);
     if (speculationMode) return;
     if (!persist) return;
     saveTimer.current = setTimeout(() => {
@@ -3761,14 +3857,14 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
           <select
             className="select"
             style={{
-              width: mode === "weighted_percent" ? "210px" : mode === "percent" ? "146px" : "58px",
+              width: mode === "weighted_percent" ? "146px" : mode === "percent" ? "146px" : "58px",
             }}
             value={mode}
             onChange={(event) => changeMode(event.target.value)}
           >
             <option value="points">Points</option>
             <option value="percent">Grades as Percent</option>
-            <option value="weighted_percent">Weighted Grades as Percent</option>
+            <option value="weighted_percent">Weighted Grades</option>
           </select>
           <span>to {target}</span>
           {mode === "percent" && categoryAggregation === "points_ratio" ? (
@@ -3850,18 +3946,21 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
                     inputMode="decimal"
                     placeholder="10%"
                     value={editingWeightIndex === index
-                      ? String(item.weight ?? "").replace(/%+$/, "")
+                      ? String(item.weight ?? "")
                       : item.weight === "" ? "" : `${String(item.weight).replace(/%+$/, "")}%`}
                     onFocus={() => setEditingWeightIndex(index)}
-                    onChange={(event) => updateItem(index, "weight", event.target.value.replace(/%+$/, ""), { persist: false })}
+                    onChange={(event) => updateItem(index, "weight", event.target.value, { persist: false, notify: false })}
                     onBlur={() => {
-                      const currentWeight = draftRef.current.items[index]?.weight;
-                      const normalizedWeight = normalizeCompositeWeight(currentWeight);
-                      if (normalizedWeight !== currentWeight) {
-                        updateItem(index, "weight", normalizedWeight, { persist: false });
-                      }
+                      const nextItems = draftRef.current.items.map((current, itemIndex) => {
+                        if (itemIndex !== index) return current;
+                        const weight = normalizeCompositeWeight(current.weight);
+                        const name = weight && !String(current.name || "").trim()
+                          ? String(assignment.name || "").trim()
+                          : current.name;
+                        return { ...current, name, weight };
+                      });
                       setEditingWeightIndex(null);
-                      commitDraft();
+                      updateDraft({ items: nextItems });
                     }}
                   />
                 </td>
@@ -3923,6 +4022,7 @@ function CategoryCard({
   onDragMove,
   onDragEnd,
   speculationMode = false,
+  speculativeClearVersion = 0,
   speculativeScores = {},
   onSpeculativeScoreChange,
   onSpeculativeCompositeChange,
@@ -4534,6 +4634,7 @@ function CategoryCard({
               <tr className="composite-detail-row" key={`${a.id}-composite`}>
                 <td colSpan={3}>
                   <CompositeEditor
+                    key={`${a.id}-${speculativeClearVersion}`}
                     assignment={a}
                     categoryAggregation={cat.aggregation}
                     colorAssignmentGrades={colorAssignmentGrades}

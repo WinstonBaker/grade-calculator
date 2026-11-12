@@ -581,7 +581,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
                           </Link>
                         </span>
                         <span className="course-letter-display">
-                          <span className="mono">{distributionCoursePercent(course) == null ? "-%" : `${fmtPct(distributionCoursePercent(course), 2)}%`}</span>
+                          <span className="mono">{distributionCoursePercent(course) == null ? "--" : `${fmtPct(distributionCoursePercent(course), 2)}%`}</span>
                           {course.gp_override != null || course.pass_fail_override != null ? <span className="grade-override-marker percentage-override-marker" aria-label="Grade overridden">*</span> : null}
                         </span>
                         <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
@@ -733,7 +733,7 @@ function DonutChart({ title, slices, total, centerTotal = total, centerValueClas
             </>
           ) : (
             <>
-              <div className={`donut-center-value mono ${centerValueClass}`}>{centerTotal}</div>
+              <div className={`donut-center-value mono ${centerValueClass}`}>{compact && tip ? (tip.displayValue ?? tip.value) : centerTotal}</div>
               <div className="donut-center-label">{unit}</div>
             </>
           )}
@@ -842,6 +842,16 @@ function pluralizeTermLabel(label) {
   if (/s$/i.test(text)) return text;
   if (/y$/i.test(text)) return `${text.slice(0, -1)}ies`;
   return `${text}s`;
+}
+
+function bufferTermLabel(label, id) {
+  if (id === "semester") return "Sem.";
+  if (id === "trimester") return "Trim.";
+  if (id === "custom") {
+    const characters = Array.from(label);
+    if (characters.length > 6) return characters.slice(0, 4).join("");
+  }
+  return label;
 }
 
 function shortTermName(term) {
@@ -2386,7 +2396,7 @@ function WeightingStats({ terms, overallClasses = [], weightTags = [], letterOrd
   );
 }
 
-export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", semesterTitles = [], highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period", minCreditsValue = "1", onMinCreditsChange, colorAssignmentGrades = true, primaryColor = "#c084fc", tertiaryColor = "#8bb4e8" }) {
+export default function GpaDashboard({ onChange, classLabels = [], courseLabels = {}, semesterIds = null, termNames = {}, periodNames = {}, periodOrder = [], gradebookId = "default", semesterTitles = [], highSchoolMode = false, highSchoolTerms = [], highSchoolTermsByPeriod = {}, classType = "alphanumeric", weightedGpa = false, termLabel = "Period", termLabelId, minCreditsValue = "1", onMinCreditsChange, colorAssignmentGrades = true, primaryColor = "#c084fc", tertiaryColor = "#8bb4e8" }) {
   const creditTerms = useCreditTerms();
   const classBasis = useGpaBasis() === "classes";
   const showScore = useShowScore();
@@ -2414,6 +2424,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
   const [showAllGuessLetters, setShowAllGuessLetters] = useState(false);
   const namedCourses = classType === "named";
   const guessSeeded = useRef(false);
+  const remainingSave = useRef(Promise.resolve());
   const dashboardTerms = useMemo(
     () => (data?.terms || []).map((term) => {
       const courses = (term.courses || []).filter(isDashboardVisibleCourse);
@@ -3027,19 +3038,26 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
               <label className="muted">
                 {pluralizeTermLabel(termLabel)} remaining
                 <input
+                  key={gradebookId}
                   className="input"
                   type="number"
                   min="1"
                   step="1"
                   style={{ display: "block", marginTop: 4, width: 90 }}
                   defaultValue={data.semesters_remaining}
-                  onBlur={async (e) => {
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    if (!e.target.value || !Number.isInteger(value) || value < 1) return;
+                    remainingSave.current = remainingSave.current.catch(() => {}).then(async () => {
+                      await api.patchSettings({ semesters_remaining: value }, gradebookId);
+                      await apply();
+                    }).catch(console.error);
+                  }}
+                  onBlur={(e) => {
                     const value = Number(e.target.value);
                     if (!Number.isInteger(value) || value < 1) {
                       e.currentTarget.value = String(data.semesters_remaining || 1);
-                      return;
                     }
-                    apply(await api.patchSettings({ semesters_remaining: value }, gradebookId));
                   }}
                 />
               </label>
@@ -3110,7 +3128,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
             className="stat"
           >
             <div className="label">
-              Buffer / {String(termLabel).toLowerCase()}
+              Buffer / {bufferTermLabel(termLabel, termLabelId)}
               <Tooltip text={`Your overall score spread across the ${data.semesters_remaining} ${Number(data.semesters_remaining) === 1 ? String(termLabel).toLowerCase() : pluralizeTermLabel(termLabel).toLowerCase()} you have left. Green/positive means you are ahead of target (${data.target_letter}) and can afford that much score drop each term; red/negative means you need to gain that much score each term.`} />
             </div>
             <div className={`value ${scoreClass(data.score_per_semester)}`}>

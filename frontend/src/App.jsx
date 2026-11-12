@@ -1560,7 +1560,7 @@ export default function App() {
                 </NavLink>
               </div>
             </div>
-            <h2>{isHighSchool ? "Academic Period" : semesterSectionLabel}</h2>
+            <h2>{isHighSchool ? termLabel : semesterSectionLabel}</h2>
             <div className="semester-nav-section">
               <div className="nav-list">
                 {isHighSchool ? (dataLoaded ? sidebarAcademicYears.map((group) => {
@@ -1715,7 +1715,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} colorAssignmentGrades={activeAppearance.gradeColors} primaryColor={activeAppearance.primary} tertiaryColor={activeAppearance.tertiary} />} />
+            <Route path="/gpa" element={<GpaDashboard onChange={refresh} flags={activeAppearance.flags} classLabels={activeAppearance.classLabels} courseLabels={activeAppearance.courseLabels} semesterIds={visibleSemesters.map((sem) => sem.id)} termNames={configuredTermNames} periodNames={configuredPeriodNames} periodOrder={visibleAcademicYears.map((group) => group.label)} gradebookId={selectedGradebookId} semesterTitles={activeAppearance.semesterTitles} highSchoolMode={isHighSchool} highSchoolTerms={activeAppearance.highSchoolTerms} highSchoolTermsByPeriod={activeAppearance.highSchoolTermsByPeriod} classType={activeAppearance.classType} weightedGpa={activeAppearance.weightedGpa === true} termLabel={termLabel} termLabelId={activeAppearance.termLabelId} minCreditsValue={minCredits} onMinCreditsChange={setMinCredits} colorAssignmentGrades={activeAppearance.gradeColors} primaryColor={activeAppearance.primary} tertiaryColor={activeAppearance.tertiary} />} />
             <Route
               path="/settings"
               element={

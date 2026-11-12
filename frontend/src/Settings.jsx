@@ -2479,7 +2479,7 @@ export default function Settings({ mode = "global", appearance, gradebookName = 
                   </select>
                 </label>
                 <label className="muted settings-display-gpa-field">
-                  <span className="settings-field-label">Period Labels <Tooltip anchor="icon" text="Choose the label used for reporting periods throughout the gradebook, such as Semester, Quarter, Trimester, or Term." /></span>
+                  <span className="settings-field-label">Period Labels <Tooltip anchor="icon" text="Choose the label used for reporting periods throughout the gradebook, such as Semester, Quarter, Trimester, Year, or Term." /></span>
                   <div className={`settings-display-gpa-control${appearance.termLabelId === "custom" ? " has-custom" : ""}`}>
                     <select className="select" value={appearance.termLabelId || "semester"} onChange={(e) => onAppearanceChange((current) => ({ ...current, termLabelId: e.target.value }))}>
                       {TERM_LABEL_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}

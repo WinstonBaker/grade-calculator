@@ -2143,6 +2143,12 @@ def _overall_classes_payload(overall_classes: list[dict]) -> list[dict]:
         final = item["final"]
         representative = ((item.get("entries") or [{}])[0].get("course") or {})
         course = final or representative
+        display_percent = final.get("percent") if final is not None else None
+        if item.get("override_candidates") and not any(
+            entry.get("course", {}).get("percent") is not None
+            for entry in item.get("entries") or []
+        ):
+            display_percent = None
         payload.append(
             {
                 # Keep an identifiable representative course even before a
@@ -2157,8 +2163,8 @@ def _overall_classes_payload(overall_classes: list[dict]) -> list[dict]:
                 # on every expected term or is currently interpolated from
                 # the graded terms. Expose it as the normal percent field so
                 # consumers do not need to distinguish those states.
-                "percent": final.get("percent") if final is not None else None,
-                "overall_percent": final.get("percent") if final is not None else None,
+                "percent": display_percent,
+                "overall_percent": display_percent,
                 "letter": final.get("letter") if final is not None else None,
                 "quality_points": (
                     final.get("base_quality_points", final.get("quality_points"))

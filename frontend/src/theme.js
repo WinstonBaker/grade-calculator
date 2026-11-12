@@ -49,6 +49,7 @@ export const TERM_LABEL_OPTIONS = [
   { id: "semester", name: "Semester" },
   { id: "quarter", name: "Quarter" },
   { id: "trimester", name: "Trimester" },
+  { id: "year", name: "Year" },
   { id: "term", name: "Term" },
   { id: "custom", name: "Custom" },
 ];

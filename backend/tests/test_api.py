@@ -1479,6 +1479,10 @@ def test_high_school_final_override_does_not_change_term_grade(tmp_path):
         assert terms[fall["id"]]["term_gpa"] == 3.0
         assert terms[spring["id"]]["term_gpa"] == 3.0
         assert gpa["overall_gpa"] == pytest.approx(4.333)
+        overall = next(row for row in gpa["overall_classes"] if row["code"] == "ENG 101")
+        assert overall["letter"] == "A+"
+        assert overall["percent"] is None
+        assert overall["overall_percent"] is None
 
         # Clearing the final override restores the natural rollup. Changing a
         # term override then changes the rollup input without changing any
