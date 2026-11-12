@@ -156,6 +156,19 @@ def create_update_backup(version: str) -> Path:
                 and "Backups" not in relative.parts
             ):
                 archive.write(path, relative)
+    backups = sorted(
+        (
+            path for path in folder.iterdir()
+            if path != target
+            and not path.is_symlink()
+            and path.is_file()
+            and re.fullmatch(r"updatebackup-\d{8}-Version[^/\\]+\.zip", path.name)
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    for old_backup in backups[4:]:
+        old_backup.unlink()
     return target
 
 

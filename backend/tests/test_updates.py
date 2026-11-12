@@ -118,6 +118,28 @@ def test_create_update_backup_uses_program_backups_folder(tmp_path, monkeypatch)
         assert archive.namelist() == ["data.txt"]
 
 
+def test_update_backups_keep_only_five_and_preserve_other_files(tmp_path, monkeypatch):
+    program = tmp_path / "program"
+    data = tmp_path / "user-data"
+    program.mkdir()
+    data.mkdir()
+    (data / "grades-v1.db").write_text("grades", encoding="utf-8")
+    monkeypatch.setattr("backend.updates.program_dir", lambda: program)
+    monkeypatch.setattr("backend.updates.user_data_dir", lambda: data)
+
+    backups = [create_update_backup("2.2") for _ in range(5)]
+    unrelated = backups[0].parent / "manual-backup.zip"
+    unrelated.write_text("keep", encoding="utf-8")
+    newest = create_update_backup("2.2")
+
+    assert not backups[0].exists()
+    assert all(path.exists() for path in backups[1:])
+    assert newest.exists()
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    with zipfile.ZipFile(newest) as archive:
+        assert archive.read("grades-v1.db") == b"grades"
+
+
 class _FakeReleaseResponse:
     def __init__(self, status_code, payload):
         self.status_code = status_code

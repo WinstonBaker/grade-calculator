@@ -33,6 +33,22 @@ def _fatal(message: str) -> None:
 DESKTOP_PORT = 18765
 
 
+class DesktopApi:
+    def save_gradebook_setup(self, filename: str, contents: str) -> dict:
+        import webview
+
+        selected = webview.windows[0].create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=Path(filename).name,
+            file_types=("JSON files (*.json)",),
+        )
+        if not selected:
+            return {"saved": False}
+        destination = Path(selected if isinstance(selected, str) else selected[0])
+        destination.write_text(contents, encoding="utf-8")
+        return {"saved": True}
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -94,6 +110,7 @@ def main() -> None:
         min_size=(960, 640),
         background_color="#12131a",
         text_select=True,
+        js_api=DesktopApi(),
     )
     webview.start(private_mode=False, storage_path=str(storage))
 

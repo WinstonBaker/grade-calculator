@@ -314,18 +314,37 @@ function GradebookSetupTransfer({ gradebooks, gradebookAppearances, onImportComp
     }
     setExportBusy(true);
     try {
+      const outputName = safeSetupFilename(filename);
+      const desktopApi = window.pywebview?.api;
+      let fileHandle = null;
+      if (!desktopApi && typeof window.showSaveFilePicker === "function") {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: outputName,
+          types: [{ description: "JSON files", accept: { "application/json": [".json"] } }],
+        });
+      }
       const payload = await api.exportGradebookSetups(selections, includeEnteredAssignments);
-      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-      const download = document.createElement("a");
-      download.href = url;
-      download.download = safeSetupFilename(filename);
-      document.body.appendChild(download);
-      download.click();
-      download.remove();
-      URL.revokeObjectURL(url);
+      const contents = JSON.stringify(payload, null, 2);
+      if (desktopApi) {
+        const result = await desktopApi.save_gradebook_setup(outputName, contents);
+        if (!result.saved) return;
+      } else if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        await writable.write(contents);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+        const download = document.createElement("a");
+        download.href = url;
+        download.download = outputName;
+        document.body.appendChild(download);
+        download.click();
+        download.remove();
+        URL.revokeObjectURL(url);
+      }
       push({ type: "timed", message: "Gradebook setup exported", durationMs: 3000 });
     } catch (err) {
-      warning(err.message);
+      if (err.name !== "AbortError") warning(err.message);
     } finally {
       setExportBusy(false);
     }
