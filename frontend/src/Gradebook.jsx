@@ -50,7 +50,7 @@ const DEFAULT_AGG_OPTIONS = [
 const ROUNDING_OPTIONS = [
   ["", "No rounding"],
   ["0", "Whole number (92.5 → 93)"],
-  ["1", "One decimal (92.45 → 92.5)"],
+  ["1", "One decimal (92.96 → 93)"],
 ];
 
 const ROUNDING_NOTE = {
@@ -923,6 +923,12 @@ function isPointsScore(raw, allowZeroDenominator = false, allowSinglePoints = fa
   const match = text.match(/^-?\d+(?:\.\d+)?\s*[/,]\s*-?\d+(?:\.\d+)?$/);
   const denominator = match ? Number(match[0].split(/[\/,]/)[1]) : null;
   return Boolean(match && (allowZeroDenominator || denominator !== 0));
+}
+
+function pointsScorePercent(raw) {
+  if (!isPointsScore(raw)) return null;
+  const percent = compositeItemPercent(raw, "points");
+  return Number.isFinite(percent) ? percent : null;
 }
 
 function isDenominatorOnlyScore(raw) {
@@ -1912,7 +1918,7 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
         </div>
 
         <div className="gradebook-header-toolbar">
-          <div className="panel row course-settings" ref={settingsTileRef}>
+          <div className={`panel row course-settings ${showScale || (showDynamic && course.grading_mode !== "points") ? "has-expansion" : ""}`.trim()} ref={settingsTileRef}>
             <div ref={gradingMenuRef} className={`course-settings-grading-menu ${showGradingMenu ? "is-open" : ""}`}>
               <span className="muted course-settings-grading-menu-label">Credit &amp; Grading</span>
               <button
@@ -1973,7 +1979,15 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
             </div>
             <div className={`course-settings-bonus-group bonus-mode-${bonusMode}${bonusMode === "none" ? " is-none" : ""}`}>
               <label className="muted course-settings-bonus">
-                Bonus Type
+                <span>
+                  Bonus Type
+                  <Tooltip
+                    anchor="icon"
+                    text={course.grading_mode === "points"
+                      ? "Overall Pts adds points to the class total. Overall % adds percentage points to the final class grade. Category lets you enter individual bonus assignments. None applies no overall bonus."
+                      : "Overall adds percentage points to the final class grade. Category lets you enter individual bonus assignments. None applies no overall bonus."}
+                  />
+                </span>
                 <select
                   className="select select-left-arrow"
                   value={bonusMode}
@@ -2067,57 +2081,58 @@ export default function Gradebook({ onChange, colorAssignmentGrades = true, flag
               </div>
             ) : null}
           </div>
+          {showScale || (showDynamic && course.grading_mode !== "points") ? (
+            <div className="course-settings-expansion">
+              {showScale ? (
+                <ScaleEditor
+                  course={course}
+                  profiles={profiles}
+                  presets={presets}
+                  onSave={async (rows, passFail, minimumPassingLetter) => {
+                    try {
+                      setCourse(await api.updateScale(course.id, rows, passFail || course.pass_fail, minimumPassingLetter || course.minimum_passing_letter));
+                      setError("");
+                    } catch (err) {
+                      setError(err.message);
+                    }
+                  }}
+                  onApply={async ({ profileId, presetId }) => {
+                    try {
+                      setCourse(await api.resetScale(course.id, profileId ? { scale_profile_id: profileId } : { preset_id: presetId }));
+                      setError("");
+                    } catch (err) {
+                      setError(err.message);
+                    }
+                  }}
+                  onRoundingChange={(grade_rounding) => saveCourse({ grade_rounding })}
+                />
+              ) : (
+                <DynamicWeightingEditor
+                  course={course}
+                  onChange={async (next) => {
+                    setCourse(next);
+                    onChange?.();
+                  }}
+                  onError={setError}
+                />
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
 
       {error ? <p className="error">{error}</p> : null}
 
-      {showScale ? (
-        <ScaleEditor
-          course={course}
-          profiles={profiles}
-          presets={presets}
-          onSave={async (rows, passFail, minimumPassingLetter) => {
-            try {
-              setCourse(await api.updateScale(course.id, rows, passFail || course.pass_fail, minimumPassingLetter || course.minimum_passing_letter));
-              setError("");
-            } catch (err) {
-              setError(err.message);
-            }
-          }}
-          onApply={async ({ profileId, presetId }) => {
-            try {
-              setCourse(await api.resetScale(course.id, profileId ? { scale_profile_id: profileId } : { preset_id: presetId }));
-              setError("");
-            } catch (err) {
-              setError(err.message);
-            }
-          }}
-          onRoundingChange={(grade_rounding) => saveCourse({ grade_rounding })}
-        />
-      ) : null}
-
-      {showDynamic && course.grading_mode !== "points" ? (
-        <DynamicWeightingEditor
-          course={course}
-          onChange={async (next) => {
-            setCourse(next);
-            onChange?.();
-          }}
-          onError={setError}
-        />
-      ) : null}
-
       <div className="row gradebook-cat-toolbar">
         {course.categories.length > 0 ? (
-          <>
+          <div className="category-expand-group" role="group" aria-label="Category visibility">
             <button className="btn small" type="button" onClick={expandAllCategories}>
               Expand all
             </button>
             <button className="btn small" type="button" onClick={collapseAllCategories}>
               Collapse all
             </button>
-          </>
+          </div>
         ) : null}
         <button
           className={`btn small exam-needed-toggle ${showExamCalc ? "primary" : ""}`}
@@ -2509,10 +2524,10 @@ function ScaleEditor({ course, profiles, presets, onSave, onApply, onRoundingCha
 
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
-      <h2>Grade cutoffs</h2>
-      <p className="muted" style={{ marginTop: 0 }}>
-        This class only. Pick a saved default to copy it here. Custom cutoff edits save automatically and stop following that default.
-      </p>
+      <div className="tooltip-heading">
+        <h2>Grade cutoffs</h2>
+        <Tooltip anchor="icon" text="Customize the grade cutoffs for this class only. Can start with a saved default as a baseline and change it as needed" />
+      </div>
       <div className="scale-config-row">
         <label className="muted scale-default-field">
           Default scale
@@ -2562,7 +2577,10 @@ function ScaleEditor({ course, profiles, presets, onSave, onApply, onRoundingCha
           </select>
         </label>
         <label className="muted scale-rounding">
-          Grade Rounding
+          <span>
+            Overall Grade Rounding
+            <Tooltip anchor="icon" text="Rounds the overall class percentage before applying grade cutoffs. Rounding can move the grade across a cutoff, changing its letter grade and grade points (GP)." />
+          </span>
           <select
             className="select"
             value={course.grade_rounding == null ? "" : String(course.grade_rounding)}
@@ -3914,6 +3932,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
           <tr>
             <th className="col-name">Sub-Assignment Name</th>
             {mode === "weighted_percent" ? <th className="col-composite-weight">Weight %</th> : null}
+            {mode === "points" ? <th className="col-points-percent" aria-label="Percentage" /> : null}
             <th className="col-score">Grade</th>
             <th className="col-actions" />
           </tr>
@@ -3923,6 +3942,7 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
             const itemPercent = colorAssignmentGrades ? compositeItemPercent(item.score, mode) : null;
             const itemTone = itemPercent == null ? "" : letterClass(letterFromPercent(itemPercent, scale));
             const denominatorOnly = mode === "points" && isDenominatorOnlyScore(item.score);
+            const pointsPercent = mode === "points" ? pointsScorePercent(item.score) : null;
             return (
               <tr className={droppedItemIndexes.has(index) ? "cat-score-dropped" : denominatorOnly ? "composite-item-denominator-only" : undefined} key={index}>
               <td className="col-name">
@@ -3963,6 +3983,11 @@ function CompositeEditor({ assignment, categoryAggregation, colorAssignmentGrade
                       updateDraft({ items: nextItems });
                     }}
                   />
+                </td>
+              ) : null}
+              {mode === "points" ? (
+                <td className={`col-points-percent mono ${itemTone} ${speculationMode && speculativeEditedScoreIndexes.has(index) ? "speculative-grade" : ""}`.trim()}>
+                  {pointsPercent == null ? null : `${formatGradeNumber(pointsPercent)}% =`}
                 </td>
               ) : null}
               <td className="col-score">
@@ -4058,6 +4083,7 @@ function CategoryCard({
   const bonusPercentMode = isBonusCategory && cat.aggregation !== "points_ratio";
   const weightedPointsCategory = !isBonusCategory && !pointsMode && cat.aggregation === "points_ratio";
   const requiresPoints = bonusPoints || weightedPointsCategory || (!isBonusCategory && pointsMode);
+  const showPointsPercent = !isBonusCategory && (pointsMode || cat.aggregation === "points_ratio");
   const scorePlaceholder = bonusPercentMode
     ? "1"
     : bonusPoints
@@ -4389,6 +4415,7 @@ function CategoryCard({
         <thead>
           <tr>
             <th className="col-name">Name</th>
+            {showPointsPercent ? <th className="col-points-percent" aria-label="Percentage" /> : null}
             <th className="col-score">Grade</th>
             <th className="col-actions" />
           </tr>
@@ -4446,6 +4473,7 @@ function CategoryCard({
                     : null
                 : null;
             const scoreTone = denominatorOnly || isDropped || isReplaced ? "" : letterClass(scoreLetter);
+            const pointsPercent = showPointsPercent ? pointsScorePercent(draft) : null;
             const replacementTone = colorAssignmentGrades
               ? letterClass(letterFromPercent(replacementScore?.percent, scale))
               : "";
@@ -4532,6 +4560,11 @@ function CategoryCard({
                   ) : null}
                 </div>
               </td>
+              {showPointsPercent ? (
+                <td className={`col-points-percent mono ${scoreTone} ${isSpeculativeEdit ? "speculative-grade" : ""}`.trim()}>
+                  {pointsPercent == null ? null : `${formatGradeNumber(pointsPercent)}% =`}
+                </td>
+              ) : null}
               <td className="col-score">
                 <div className={`assignment-score-cell assignment-score-pill ${bonusPrefix ? "has-bonus" : ""} ${denominatorOnly ? "is-denominator-only" : ""} ${isReplaced ? "is-replaced" : ""}`.trim()}>
                   {bonusPrefix ? (
@@ -4632,7 +4665,7 @@ function CategoryCard({
             </tr>
             {isComposite && compositeOpen ? (
               <tr className="composite-detail-row" key={`${a.id}-composite`}>
-                <td colSpan={3}>
+                <td colSpan={showPointsPercent ? 4 : 3}>
                   <CompositeEditor
                     key={`${a.id}-${speculativeClearVersion}`}
                     assignment={a}
@@ -4681,6 +4714,11 @@ function CategoryCard({
                 />
               </div>
             </td>
+            {showPointsPercent ? (
+              <td className="col-points-percent mono">
+                {pointsScorePercent(newAssignmentScore) == null ? null : `${formatGradeNumber(pointsScorePercent(newAssignmentScore))}% =`}
+              </td>
+            ) : null}
             <td className="col-score">
               <input
                 className="input"

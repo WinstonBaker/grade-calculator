@@ -198,7 +198,7 @@ export default function ExamImpactTable({ courses, onPatch, gradebookId = null, 
                 <td>
                   {editable ? (
                     <select
-                      className="select"
+                      className={`select${examCategoryId(course) === "" ? " muted" : ""}`}
                       value={examCategoryId(course)}
                       onChange={(e) =>
                         onPatch(course.id, { exam_category_id: e.target.value ? Number(e.target.value) : -1 })

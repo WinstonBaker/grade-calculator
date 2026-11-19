@@ -461,6 +461,7 @@ function distributionCoursePercent(course) {
 
 function DistributionTable({ distribution, courses = [], displayCodes = new Map(), simplified = false, periodMode = false, showUnits = false, courseHref, termLabel = "Semester" }) {
   const creditTerms = useCreditTerms();
+  const showScore = useShowScore();
   const classBasis = useGpaBasis() === "classes";
   const uniformCredits = courses.length > 0 && new Set(courses.map((course) => Number(course.credits) || 0)).size === 1;
   const hideCreditColumns = periodMode || showUnits || classBasis || uniformCredits;
@@ -516,6 +517,23 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
     });
     setExpanded(next);
   };
+  const courseDetails = (items, passFail = false) => (
+    <table className="level-course-table distribution-course-table">
+      <thead><tr><th>Class</th><th>Grade</th><th>{periodMode ? "Period" : termLabel}</th>{!periodMode ? <th>{creditTerms.label}</th> : null}{showScore ? <th>Score</th> : null}</tr></thead>
+      <tbody>{[...items].sort((a, b) => (b.semesterOrder ?? 0) - (a.semesterOrder ?? 0)).map((course) => (
+        <tr key={course.id}>
+          <td><Link to={courseHref?.(course) || `/courses/${course.id}`}>{displayCodes.get(course.id) || course.display_code || course.code || course.course_code || course.name || "Class"}</Link></td>
+          <td className={passFail ? "" : `mono ${dashboardCourseGradeClass(course)}`}>
+            {passFail ? <span className={`letter ${dashboardCourseGradeClass(course)}`}>{course.pass_fail_override || course.letter || "—"}</span> : distributionCoursePercent(course) == null ? "--" : `${fmtPct(distributionCoursePercent(course), 2)}%`}
+            {course.gp_override != null || course.pass_fail_override != null ? <span className="grade-override-marker percentage-override-marker" aria-label="Grade overridden">*</span> : null}
+          </td>
+          <td>{(periodMode ? course.period : course.semester) || course.semester || "—"}</td>
+          {!periodMode ? <td className="mono">{fmtUnitValue(course.credits)}</td> : null}
+          {showScore ? <td className={`mono ${scoreClass(course.score)}`}>{fmtScore(course.score)}</td> : null}
+        </tr>
+      ))}</tbody>
+    </table>
+  );
   return (
     <table style={{ marginTop: 16 }}>
       <thead>
@@ -567,27 +585,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
               {!simplified && isExpanded ? (
                 <tr className="distribution-detail-row">
               <td colSpan={showUnits ? 4 : (hideCreditColumns ? 3 : 5)}>
-                    <div className="distribution-course distribution-course-head">
-                      <span>Class</span>
-                      <span>Grade</span>
-                      <span>{periodMode ? "Period" : termLabel}</span>
-                      {!periodMode ? <span>{creditTerms.label}</span> : null}
-                    </div>
-                    {gradeCourses.map((course) => (
-                      <div className="distribution-course" key={course.id}>
-                        <span>
-                          <Link to={courseHref?.(course) || `/courses/${course.id}`}>
-                            {displayCodes.get(course.id) || course.display_code || course.code || course.course_code || course.name || "Class"}
-                          </Link>
-                        </span>
-                        <span className="course-letter-display">
-                          <span className="mono">{distributionCoursePercent(course) == null ? "--" : `${fmtPct(distributionCoursePercent(course), 2)}%`}</span>
-                          {course.gp_override != null || course.pass_fail_override != null ? <span className="grade-override-marker percentage-override-marker" aria-label="Grade overridden">*</span> : null}
-                        </span>
-                        <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
-                        {!periodMode ? <span className="mono">{fmtUnitValue(course.credits)}</span> : null}
-                      </div>
-                    ))}
+                    {courseDetails(gradeCourses)}
                   </td>
                 </tr>
               ) : null}
@@ -623,26 +621,7 @@ function DistributionTable({ distribution, courses = [], displayCodes = new Map(
               {!simplified && isExpanded ? (
                 <tr className="distribution-detail-row">
                   <td colSpan={showUnits ? 4 : (hideCreditColumns ? 3 : 5)}>
-                    <div className="distribution-course distribution-course-head">
-                      <span>Class</span>
-                      <span>Grade</span>
-                      <span>{periodMode ? "Period" : termLabel}</span>
-                      {!periodMode ? <span>{creditTerms.label}</span> : null}
-                    </div>
-                    {row.courses.map((course) => (
-                      <div className="distribution-course" key={course.id}>
-                        <span>
-                          <Link to={courseHref?.(course) || `/courses/${course.id}`}>
-                            {displayCodes.get(course.id) || course.display_code || course.code || course.course_code || course.name || "Class"}
-                          </Link>
-                        </span>
-                        <span className="course-letter-display">
-                          <span className={`letter ${dashboardCourseGradeClass(course)}`}>{course.pass_fail_override || course.letter || "—"}</span>
-                        </span>
-                        <span>{(periodMode ? course.period : course.semester) || course.semester || "—"}</span>
-                        {!periodMode ? <span className="mono">{fmtUnitValue(course.credits)}</span> : null}
-                      </div>
-                    ))}
+                    {courseDetails(row.courses, true)}
                   </td>
                 </tr>
               ) : null}
@@ -1023,7 +1002,6 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
         <div className="gpa-trends-head">
           <div>
             <h2>GPA trends</h2>
-            <p className="muted">Included {termPluralLabel.toLowerCase()}, oldest to newest.</p>
           </div>
         </div>
         <div className="gpa-trends-chart gpa-trends-empty">
@@ -1067,7 +1045,6 @@ function GpaTrendChart({ terms, overallClasses = [], gpaCap, targetGp = 4, color
       <div className="gpa-trends-head">
           <div>
             <h2>GPA trends</h2>
-            <p className="muted">Included {termPluralLabel.toLowerCase()}, oldest to newest.</p>
           </div>
         <div className="gpa-trends-toggle" role="group" aria-label="Trend metric">
           <button className={metric === "gpa" ? "active" : ""} type="button" onClick={() => { setMetric("gpa"); setHover(null); }}>
@@ -1914,16 +1891,17 @@ function ClassLabelStats({ terms, classLabels = [], courseLabels = {}, letterOrd
                           ) : null}
                           <table className="level-course-table">
                             <thead>
-                              <tr><th>Class</th><th>{highSchoolMode ? "Period" : termLabel}</th><th>Percent</th>{showCredits ? <th>{highSchoolMode ? "Units" : creditTerms.label}</th> : null}<th>Letter grade</th></tr>
+                              <tr><th>Class</th>{highSchoolMode ? <th>Period</th> : null}<th>Percent</th>{showCredits ? <th>{highSchoolMode ? "Units" : creditTerms.label}</th> : null}<th>Letter grade</th>{showScore ? <th>Score</th> : null}</tr>
                             </thead>
                             <tbody>
                               {row.items.map((course) => (
                                 <tr key={`${row.id}-${course.id}`}>
                                   <td><Link to={courseHref?.(course) || `/courses/${course.id}`}>{displayCodes.get(course.id) || course.display_code || course.code || "Class"}</Link></td>
-                                  <td>{highSchoolMode ? course.period : course.semester}</td>
+                                  {highSchoolMode ? <td>{course.period}</td> : null}
                                   <td className={`mono ${course.gp_override === -1 ? "letter-neutral" : dashboardCourseGradeClass(course)}`}>{fmtPct(course.percent)}</td>
                                   {showCredits ? <td className="mono">{fmtUnitValue(highSchoolMode ? course.units : course.credits)}</td> : null}
                                   <td><span className={`letter ${dashboardCourseGradeClass(course)}`}>{course.letter || "—"}</span></td>
+                                  {showScore ? <td className={`mono ${scoreClass(course.score)}`}>{fmtScore(course.score)}</td> : null}
                                 </tr>
                               ))}
                             </tbody>
@@ -2620,7 +2598,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
       return orderedTerms
         .filter((term) => term.included)
         .flatMap((term) => (
-          (term.courses || []).map((course) => ({ ...course, semester: displayTermName(term) }))
+          (term.courses || []).map((course) => ({ ...course, semester: displayTermName(term), semesterOrder: semesterSortValue(term, semesterTitles) }))
         ));
     }
 
@@ -2660,7 +2638,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
             : 0,
         };
       });
-  }, [data, highSchoolMode, orderedTerms, periodGroups, periodNames, termNames]);
+  }, [data, highSchoolMode, orderedTerms, periodGroups, periodNames, termNames, semesterTitles]);
   const summaryDistribution = useMemo(
     () => distributionFromCourses(distributionCourses, lettersFromScale(data?.default_scale), true),
     [data, distributionCourses, highSchoolMode]
@@ -3116,7 +3094,7 @@ export default function GpaDashboard({ onChange, classLabels = [], courseLabels 
               {isHighSchool ? "Score" : "Overall score"}
               <Tooltip text={isHighSchool
                 ? "How far your classes sit above or below an A target using Unweighted GPA. A full academic-year A+ contributes +1 point above an A target; a class present in one of two semesters contributes +0.5."
-                : "How far your classes sit above or below your target letter (A = 4.000). Each class adds about (Grade Point − Target GPA) × credits × 3. Positive means your GPA is greater than target, and negative means your GPA is less than target."} />
+                : "How far your classes sit above or below your target letter (A = 4.000). Each class adds about (Grade Point − Target GPA) × credits × 3. Positive means your GPA is greater than target, and negative means your GPA is less than target. For example, if you have a target GPA of 4.0 and a score of +20, you can get 20 credits of A− (−20 score) and still have a 4.0."} />
             </div>
             <div className={`value ${scoreClass(overallScore)}`}>
               <AnimatedValue value={hasClasses ? overallScore : null} integerFrames={!highSchoolMode && !classBasis} format={fmtAnimatedScore} />

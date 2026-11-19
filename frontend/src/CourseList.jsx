@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, courseGradeClass, fmtGpa, fmtPct, fmtScore, gradeFromPercent, gpOptions, gpSelectValue, letterClass, roundPercentForCalculation, scoreClass } from "./api";
 import { Tooltip, useCreditTerms, useShowScore } from "./creditLabel.jsx";
 import ExamImpactTable, { ExamImpactStats } from "./ExamImpact.jsx";
@@ -116,9 +116,12 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   const periodLabel = String(termLabel || "Term").trim() || "Term";
   const { warning, push } = useToasts();
   const navigate = useNavigate();
+  const location = useLocation();
   const [params] = useSearchParams();
   const semesterId = params.get("term") || params.get("semester");
   const [courses, setCourses] = useState([]);
+  const [loadedSemesterId, setLoadedSemesterId] = useState(null);
+  const scrolledLocation = useRef(null);
   const [allCourses, setAllCourses] = useState([]);
   const [sort, setSort] = useState("code");
   const [desc, setDesc] = useState(false);
@@ -126,8 +129,10 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
   const [courseNumber, setCourseNumber] = useState("");
   const [courseName, setCourseName] = useState("");
   const [credits, setCredits] = useState("");
+  const [validation, setValidation] = useState({ fields: [], attempt: 0 });
   const [gpaSettings, setGpaSettings] = useState({ gradebook_type: "college", gpa_weight_tags: [] });
   const loadSequence = useRef(0);
+  const displayedCourseContext = useRef(null);
   const canAddCourse = classType === "named"
     ? courseName.trim().length > 0
     : department.trim().length > 0
@@ -272,12 +277,30 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
     const displayCodes = buildCourseDisplayCodes(semesters, allCourses, semesterTitles);
     setAllCourses(allCourses);
     setCourses(data.map((course) => ({ ...course, display_code: displayCodes.get(course.id) || course.display_code })));
+    setLoadedSemesterId(semesterId);
   }
 
   useEffect(() => {
+    if (location.hash !== "#exam-impact" || !semesterId || loadedSemesterId !== semesterId || scrolledLocation.current === location.key) return;
+    const frame = requestAnimationFrame(() => {
+      const section = document.getElementById("exam-impact");
+      if (section) {
+        section.scrollIntoView({ block: "start" });
+        scrolledLocation.current = location.key;
+        navigate(`${location.pathname}${location.search}`, { replace: true, preventScrollReset: true });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [location.hash, location.key, location.pathname, location.search, navigate, semesterId, loadedSemesterId]);
+
+  useEffect(() => {
     if (!semesterId) return;
-    setCourses([]);
-    setAllCourses([]);
+    const context = `${gradebookQuery}:${semesterId}`;
+    if (displayedCourseContext.current !== context) {
+      displayedCourseContext.current = context;
+      setCourses([]);
+      setAllCourses([]);
+    }
     load().catch(console.error);
   }, [semesterId, sort, desc, overallView, gradebookQuery, semesterTitles, semesters]);
 
@@ -317,6 +340,14 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
 
   async function addCourse(e) {
     e.preventDefault();
+    if (!canAddCourse) {
+      const missing = classType === "named"
+        ? (!courseName.trim() ? ["name"] : [])
+        : [!department.trim() && "department", !courseNumber.trim() && "number",
+          gpaSettings.gpa_basis !== "classes" && (!credits.trim() || !Number.isFinite(Number(credits)) || Number(credits) <= 0) && "credits"].filter(Boolean);
+      setValidation((previous) => ({ fields: missing, attempt: previous.attempt + 1 }));
+      return;
+    }
     const nextCode = classType === "named"
       ? courseName.trim()
       : `${department.trim()} ${courseNumber.trim()}`.toLowerCase();
@@ -842,7 +873,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                   <th key={key}>
                     <button className={sortHeaderClass(key)} onClick={() => toggleSort(key)}>
                       {label}
-                      {sortHeaderArrow(key)}
+                      <span className="course-sort-arrow" aria-hidden="true">{sortHeaderArrow(key)}</span>
                     </button>
                   </th>
                 ))}
@@ -851,7 +882,7 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
                   <th key={key}>
                     <button className={sortHeaderClass(key)} onClick={() => toggleSort(key)}>
                       {label}
-                      {sortHeaderArrow(key)}
+                      <span className="course-sort-arrow" aria-hidden="true">{sortHeaderArrow(key)}</span>
                     </button>
                   </th>
                 ))}
@@ -936,41 +967,42 @@ export default function CourseList({ semesters, academicPeriods = [], onChange, 
         {!isHighSchool ? <form className="row course-add-form" onSubmit={addCourse}>
           {classType === "named" ? <label className="course-name-field">
             <span className="muted">Course</span>
-            <input className="input" placeholder="Course name" value={courseName} aria-label="Course name" onChange={(e) => setCourseName(e.target.value)} />
+            <span className="missing-field-wrap"><input className="input" placeholder="Course name" value={courseName} aria-label="Course name" onChange={(e) => setCourseName(e.target.value)} /><MissingFieldOutline validation={validation} field="name" missing={!courseName.trim()} /></span>
           </label> : <div className="course-code-box">
+            <MissingFieldOutline validation={validation} field="department" missing={!department.trim() && !courseNumber.trim() && validation.fields.includes("number")} shared />
             <label>
               <span className="muted">Course</span>
-              <input
+              <span className="missing-field-wrap"><input
                 className="input"
                 placeholder="MAE"
                 value={department}
                 style={{ width: `${Math.max(60, department.length * 10 + 20)}px` }}
                 onChange={(e) => setDepartment(e.target.value)}
-              />
+              /><MissingFieldOutline validation={validation} field="department" missing={!department.trim() && !!courseNumber.trim()} /></span>
             </label>
             <label>
               <span className="muted">Code</span>
-              <input
+              <span className="missing-field-wrap"><input
                 className="input"
                 type="text"
                 inputMode="numeric"
                 placeholder="310"
                 value={courseNumber}
                 onChange={(e) => setCourseNumber(e.target.value.replace(/\D/g, ""))}
-              />
+              /><MissingFieldOutline validation={validation} field="number" missing={!courseNumber.trim() && !!department.trim()} /></span>
             </label>
           </div>}
           {gpaSettings.gpa_basis !== "classes" ? <label className="course-credits-field">
             <span className="muted">Credits</span>
-            <input
+            <span className="missing-field-wrap"><input
               className="input"
               value={credits}
               placeholder="3"
               aria-label={creditTerms.label}
               onChange={(e) => setCredits(e.target.value)}
-            />
+            /><MissingFieldOutline validation={validation} field="credits" missing={!credits.trim() || !Number.isFinite(Number(credits)) || Number(credits) <= 0} /></span>
           </label> : null}
-          <button className={`btn ${canAddCourse ? "primary" : ""}`.trim()} type="submit" disabled={!canAddCourse}>
+          <button className={`btn ${canAddCourse ? "primary" : ""}`.trim()} type="submit">
             Add class
           </button>
         </form> : null}
@@ -1289,11 +1321,19 @@ function InlineClassNameInput({ row, disabled = false, onSave }) {
   );
 }
 
+function MissingFieldOutline({ validation, field, missing, shared = false }) {
+  if (!missing || !validation.fields.includes(field)) return null;
+  return <svg key={validation.attempt} className={`missing-field-outline${shared ? " missing-field-outline-shared" : ""}`} aria-hidden="true">
+    <rect x="1" y="1" width="calc(100% - 2px)" height="calc(100% - 2px)" rx="9" pathLength="100" />
+  </svg>;
+}
+
 function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses, classLabels = [], courseLabels = {}, onClassLabelsChange, currentSemesterId, academicYearKey, periodName, classType = "alphanumeric", matrixMode: requestedMatrixMode = "terms", weightedGpa = false, gpaWeightTags = [], onGpaWeightChange, termWeights = {}, onTermWeightsChange, onPeriodNameChange, onTermsChange, onChange, onClose, onSemesterCreated, modeToggle = null, page = false, showModeToggle = true }) {
   const { push, warning } = useToasts();
   const [newClass, setNewClass] = useState("");
   const [newClassDepartment, setNewClassDepartment] = useState("");
   const [newClassNumber, setNewClassNumber] = useState("");
+  const [validation, setValidation] = useState({ fields: [], attempt: 0 });
   const [periodDraft, setPeriodDraft] = useState(periodName || "");
   const [busy, setBusy] = useState(false);
   const [matrixMode, setMatrixMode] = useState(requestedMatrixMode);
@@ -1522,6 +1562,13 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
 
   async function addClass(event) {
     event.preventDefault();
+    const missing = classType === "alphanumeric"
+      ? [!newClassDepartment.trim() && "department", !newClassNumber.trim() && "number"].filter(Boolean)
+      : (!newClass.trim() ? ["name"] : []);
+    if (missing.length) {
+      setValidation((previous) => ({ fields: missing, attempt: previous.attempt + 1 }));
+      return;
+    }
     const code = classType === "alphanumeric"
       ? [newClassDepartment.trim(), newClassNumber.trim()].filter(Boolean).join(" ")
       : newClass.trim();
@@ -1648,10 +1695,10 @@ function HighSchoolTermsModal({ academicPeriods = [], terms, semesters, courses,
           </table>
           <form className="high-school-class-add" onSubmit={addClass}>
             {classType === "alphanumeric" ? <div className="course-code-box">
-              <label><span className="muted">Course</span><input className="input" value={newClassDepartment} placeholder="MAE" aria-label="Course" onChange={(event) => setNewClassDepartment(event.target.value)} /></label>
-              <label><span className="muted">Code</span><input className="input" value={newClassNumber} placeholder="310" aria-label="Code" onChange={(event) => setNewClassNumber(event.target.value.replace(/\D/g, ""))} /></label>
-            </div> : <input className="input" value={newClass} placeholder="Add a class (e.g. Algebra II)" aria-label="New class" onChange={(event) => setNewClass(event.target.value)} />}
-            <button className="btn small" type="submit" disabled={busy || (classType === "alphanumeric" ? !newClassDepartment.trim() || !newClassNumber.trim() : !newClass.trim())}>Add class</button>
+              <label><span className="muted">Course</span><span className="missing-field-wrap"><input className="input" value={newClassDepartment} placeholder="MAE" aria-label="Course" onChange={(event) => setNewClassDepartment(event.target.value)} /><MissingFieldOutline validation={validation} field="department" missing={!newClassDepartment.trim()} /></span></label>
+              <label><span className="muted">Code</span><span className="missing-field-wrap"><input className="input" value={newClassNumber} placeholder="310" aria-label="Code" onChange={(event) => setNewClassNumber(event.target.value.replace(/\D/g, ""))} /><MissingFieldOutline validation={validation} field="number" missing={!newClassNumber.trim()} /></span></label>
+            </div> : <span className="missing-field-wrap high-school-new-class"><input className="input" value={newClass} placeholder="Add a class (e.g. Algebra II)" aria-label="New class" onChange={(event) => setNewClass(event.target.value)} /><MissingFieldOutline validation={validation} field="name" missing={!newClass.trim()} /></span>}
+            <button className="btn small" type="submit" disabled={busy}>Add class</button>
           </form>
           </>}
         </div>

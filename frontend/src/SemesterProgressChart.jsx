@@ -722,17 +722,17 @@ export default function SemesterProgressChart({ semesterId, locked = false, onLo
         <>
           <div className="gpa-trends-legend grade-progress-legend" aria-label="Chart legend">
             {showClasses ? series.map((item) => (
-              <span key={item.courseId}>
+              <button key={item.courseId} type="button" className="grade-progress-legend-button" aria-pressed={foregroundCourseId === item.courseId} onClick={(event) => { event.stopPropagation(); setFocused(null); setForegroundOverall(false); setForegroundCourseId((current) => current === item.courseId ? null : item.courseId); }}>
                 <i style={{ background: item.color }} />
                 {item.code}
-              </span>
+              </button>
             )) : null}
             {showOverall ? (
               <>
-                <span>
+                <button type="button" className="grade-progress-legend-button" aria-pressed={foregroundOverall} onClick={(event) => { event.stopPropagation(); setFocused(null); setForegroundCourseId(null); setForegroundOverall((current) => !current); }}>
                   <i className="gpa" style={{ "--series-color": overallPointColor }} />
                   {showOverallScore ? "Score" : gpaLabel}
-                </span>
+                </button>
                 {finalGpaSnapshot ? (
                   <span>
                     <i className="final-gpa" />

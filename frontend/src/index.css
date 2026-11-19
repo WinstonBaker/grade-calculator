@@ -895,6 +895,25 @@ a {
   display: block;
 }
 
+.panel.course-settings.has-expansion {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: none;
+}
+
+.course-settings-expansion > .panel {
+  margin: 0 !important;
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  animation: none;
+}
+
+.speculation-mode .gradebook-header .course-settings-expansion,
+.speculation-mode .gradebook-header .course-settings-expansion * {
+  pointer-events: auto;
+}
+
 .speculative-grade {
   font-style: italic;
   font-weight: 700;
@@ -940,7 +959,8 @@ a {
   pointer-events: auto;
 }
 
-.speculation-mode .gradebook-cat-toolbar > .btn:not(.exam-needed-toggle) {
+.speculation-mode .gradebook-cat-toolbar .category-expand-group,
+.speculation-mode .gradebook-cat-toolbar .category-expand-group .btn {
   pointer-events: auto;
 }
 
@@ -1557,23 +1577,23 @@ a {
 }
 
 .panel.course-settings .course-settings-bonus .select {
-  width: 120px;
-  min-width: 120px;
+  width: max(120px, 100%);
+  min-width: 100%;
 }
 
 .course-settings-bonus-group.bonus-mode-static .course-settings-bonus .select {
-  width: 96px;
-  min-width: 96px;
+  width: max(96px, 100%);
+  min-width: 100%;
 }
 
 .course-settings-bonus-group.bonus-mode-none .course-settings-bonus .select {
-  width: 84px;
-  min-width: 84px;
+  width: max(84px, 100%);
+  min-width: 100%;
 }
 
 .course-settings-bonus-group.bonus-mode-category .course-settings-bonus .select {
-  width: 106px;
-  min-width: 106px;
+  width: max(106px, 100%);
+  min-width: 100%;
 }
 
 .course-settings-bonus-group {
@@ -2199,6 +2219,9 @@ th button.active {
   white-space: nowrap;
 }
 
+.course-list-table th button { white-space: nowrap; }
+.course-sort-arrow { display: inline-block; width: 1em; text-align: right; }
+
 .course-list-table td:first-child a {
   display: block;
   overflow: hidden;
@@ -2500,6 +2523,36 @@ th button.active {
   margin: 0;
 }
 
+.course-grouping-panel .view-toggle,
+.dashboard-summary-panel .view-toggle,
+.gpa-trends .gpa-trends-toggle,
+.view-toggle-row .term-accordion-actions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-soft);
+}
+
+.course-grouping-panel .view-toggle .btn,
+.dashboard-summary-panel .view-toggle .btn,
+.gpa-trends .gpa-trends-toggle button,
+.view-toggle-row .term-accordion-actions .btn {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.course-grouping-panel .view-toggle .btn + .btn,
+.dashboard-summary-panel .view-toggle .btn + .btn,
+.gpa-trends .gpa-trends-toggle button + button,
+.view-toggle-row .term-accordion-actions .btn + .btn {
+  border-left: 1px solid var(--line);
+}
+
 .dashboard-summary-toggle-row {
   display: flex;
   align-items: center;
@@ -2584,7 +2637,7 @@ th button.active {
   transform: rotate(90deg);
 }
 
-.distribution-detail-row td {
+.distribution-detail-row > td {
   padding: 6px 12px 10px 36px;
   background: var(--surface-soft);
 }
@@ -2642,6 +2695,60 @@ th button.active {
   background: transparent;
 }
 
+.missing-field-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.missing-field-outline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.missing-field-outline-shared {
+  inset: 25px 0 0;
+  height: calc(100% - 25px);
+}
+
+.missing-field-outline rect {
+  fill: none;
+  stroke: var(--gold);
+  stroke-width: 2;
+  stroke-dasharray: 18 82;
+  animation: missing-field-trace 1.1s linear forwards;
+}
+
+@keyframes missing-field-trace {
+  from { stroke-dashoffset: 0; opacity: 1; }
+  85% { opacity: 1; }
+  to { stroke-dashoffset: -100; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .missing-field-outline rect {
+    stroke-dasharray: none;
+    animation: missing-field-fade 1.1s ease-out forwards;
+  }
+  @keyframes missing-field-fade {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+}
+
+.high-school-new-class {
+  flex: 0 1 320px;
+  width: 320px;
+  max-width: 100%;
+}
+
+.high-school-new-class .input { width: 100%; box-sizing: border-box; }
+
 .course-code-box::after {
   content: "";
   position: absolute;
@@ -2683,6 +2790,11 @@ th button.active {
   display: grid;
   gap: 3px;
   width: 90px;
+}
+
+.course-credits-field .input {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .course-code-fields .muted {
@@ -3123,6 +3235,12 @@ th button.active {
 
 .cat-card table.cat-scores .col-score {
   width: 14ch;
+  white-space: nowrap;
+}
+
+.cat-card table.cat-scores .col-points-percent {
+  width: 9.5ch;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -3740,7 +3858,7 @@ th button.active {
 
 .assignment-score-cell.is-denominator-only,
 .assignment-score-cell.is-denominator-only .input,
-.composite-item-denominator-only .input {
+.composite-item-denominator-only .col-score .input {
   color: var(--muted);
   background: transparent;
   border-color: transparent;
@@ -3748,7 +3866,7 @@ th button.active {
 }
 
 .assignment-score-cell.is-denominator-only .input,
-.composite-item-denominator-only .input {
+.composite-item-denominator-only .col-score .input {
   opacity: 0.72;
 }
 
@@ -4149,6 +4267,26 @@ th button.active {
 
 .gradebook-cat-toolbar {
   margin-bottom: 8px;
+}
+
+.category-expand-group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-raised);
+}
+
+.category-expand-group .btn {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.category-expand-group .btn + .btn {
+  border-left: 1px solid var(--line);
 }
 
 .gradebook-cat-toolbar .exam-needed-toggle {
@@ -4609,6 +4747,18 @@ th button.active {
   flex-wrap: wrap;
 }
 
+.gpa-trends > .gpa-trends-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.gpa-trends-head .gpa-trends-legend { justify-content: flex-end; }
+
+@media (max-width: 700px) {
+  .gpa-trends > .gpa-trends-head { grid-template-columns: 1fr auto; }
+  .gpa-trends-head .gpa-trends-legend { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
 .gpa-trends-head p {
   margin: -4px 0 0;
   font-size: 0.82rem;
@@ -4659,6 +4809,18 @@ th button.active {
   width: 18px;
   height: 3px;
   border-radius: 999px;
+}
+
+.grade-progress-legend-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .gpa-trends-legend .semester,
@@ -9893,7 +10055,7 @@ tbody tr {
 }
 
 .assignment-score-cell.is-denominator-only .input:focus,
-.composite-item-denominator-only .input:focus {
+.composite-item-denominator-only .col-score .input:focus {
   color: var(--text);
   background: var(--bg);
   border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
